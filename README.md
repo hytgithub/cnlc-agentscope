@@ -4,8 +4,8 @@
 
 当前实现 **Task 01：可运行工程骨架**（架构文档第 76–77 节）。
 三个 Agent 目前为 Python 调用骨架；井数据、专业结果、模型响应均为显式 Mock。
-AgentScope 2.x Runtime、内部统一模型、PostgreSQL、Redis、OpenTelemetry 导出和 Web
-将在后续任务接入。本轮演示成功不代表 V0.1 MVP 已验收。
+Task 03 已增加 PostgreSQL/Redis 持久化实现（真实服务联调待验证）。
+AgentScope 2.x Runtime、内部统一模型、OpenTelemetry 导出和 Web 将在后续任务接入。本轮演示成功不代表 V0.1 MVP 已验收。
 
 ## 快速运行
 
@@ -73,3 +73,13 @@ uv run python -m cnlc_agent.schema validate mock-fixture mock_data/WELL_MOCK_001
 ```
 
 任务结果见 [`docs/tasks/002-contract-validation.md`](docs/tasks/002-contract-validation.md)。
+
+
+## Task 03：PostgreSQL / Redis
+
+设置 `CNLC_PERSISTENCE=postgres-redis` 后，任务通过真实 SQLAlchemy/asyncpg 与 redis-py
+适配器保存；默认 memory 模式保留离线演示。连接、迁移、Compose、历史查询与测试命令见
+[`docs/05-persistence.md`](docs/05-persistence.md)。
+
+本环境验证为普通测试通过、真实服务测试跳过；尚不标记数据库/Redis MVP 验收完成。
+执行记录见 [`docs/tasks/003-persistence.md`](docs/tasks/003-persistence.md)。

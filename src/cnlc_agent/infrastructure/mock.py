@@ -8,7 +8,7 @@ from typing import Protocol
 from pydantic import ValidationError as SchemaError
 
 from cnlc_agent.application.ports import ModelRequest
-from cnlc_agent.domain.errors import DataError, ModelError
+from cnlc_agent.domain.errors import DataError, InfrastructureError, ModelError
 from cnlc_agent.domain.models import JsonObject, MockFixture, TaskRequest
 from cnlc_agent.domain.state import InterpretationState
 
@@ -79,6 +79,14 @@ class InMemoryTaskRepository:
     def __init__(self) -> None:
         self._states: dict[str, InterpretationState] = {}
         self.reports: dict[str, str] = {}
+
+    async def create(self, state: InterpretationState) -> None:
+        if state.task.task_id in self._states:
+            raise InfrastructureError("TASK_EXISTS", "任务标识已存在，请创建新任务")
+        await self.save(state, "")
+
+    async def get_report(self, task_id: str) -> str | None:
+        return self.reports.get(task_id)
 
     async def save(self, state: InterpretationState, markdown: str) -> None:
         self._states[state.task.task_id] = state.model_copy(deep=True)
