@@ -1,0 +1,95 @@
+{
+  "schema_version": "0.1-skeleton",
+  "is_mock": true,
+  "well": {
+    "well_id": "WELL_MOCK_001",
+    "name": "虚构演示井 001",
+    "extensions": {"description": "纯虚构测试数据，无真实井坐标"}
+  },
+  "raw_data": {
+    "depth_unit": "m",
+    "depth_reference": "MD",
+    "depths": [2000.0, 2000.5, 2001.0],
+    "curves": {
+      "GR": {"unit": "API", "values": [45.0, 48.0, 46.0]},
+      "DEN": {"unit": "g/cm3", "values": [2.4, 2.42, 2.41]},
+      "CNL": {"unit": "fraction", "values": [0.18, 0.17, 0.18]},
+      "AC": {"unit": "us/ft", "values": [75.0, 76.0, 74.0]},
+      "RT": {"unit": "ohm.m", "values": [20.0, 22.0, 21.0]},
+      "RXO": {"unit": "ohm.m", "values": [8.0, 9.0, 8.5]}
+    },
+    "auxiliary": {
+      "core": {"source": "mock:core", "summary": "预设岩心证据，仅供演示"},
+      "mud_logging": {"source": "mock:mud", "summary": "预设录井证据，仅供演示"},
+      "well_test": {"source": "mock:test", "summary": "预设试油证据，仅供演示"}
+    }
+  },
+  "requirements": {
+    "required_curves": ["GR", "DEN", "CNL", "AC", "RT"],
+    "recommended_sources": ["core", "mud_logging", "well_test"]
+  },
+  "outputs": {
+    "qc": {
+      "is_mock": true,
+      "source": "fixture:qc",
+      "result": {"quality": "MOCK_PASS", "correction_applied": false},
+      "evidence": ["预设 QC 响应，曲线未经过专业校正"]
+    },
+    "lithology": {
+      "is_mock": true,
+      "source": "fixture:lithology",
+      "result": {"lithology": "砂岩（预设）"},
+      "evidence": ["fixture:GR/DEN/CNL/AC；未执行岩性判别算法"]
+    },
+    "petrophysics": {
+      "is_mock": true,
+      "source": "fixture:petrophysics",
+      "result": {
+        "vsh": {"value": 0.12, "unit": "fraction"},
+        "porosity": {"value": 0.16, "unit": "fraction"},
+        "permeability": {"value": 8.0, "unit": "mD"},
+        "reservoir": "演示储层（预设）"
+      },
+      "evidence": ["全部参数为测试预设，未执行专业计算"]
+    },
+    "sw": {
+      "is_mock": true,
+      "source": "fixture:sw",
+      "result": {"water_saturation": {"value": 0.45, "unit": "fraction"}},
+      "evidence": ["预设 calculate_sw Tool 响应"]
+    },
+    "fluid": {
+      "is_mock": true,
+      "source": "fixture:fluid",
+      "result": {"fluid_type": "油水（预设）"},
+      "evidence": ["预设模型响应，不是模型推理结论"]
+    },
+    "classification": {
+      "is_mock": true,
+      "source": "fixture:classification",
+      "result": {"layer_type": "油水同层（预设）"},
+      "evidence": ["fixture:lithology", "fixture:petrophysics", "fixture:fluid"]
+    },
+    "intervals": {
+      "is_mock": true,
+      "source": "fixture:intervals",
+      "result": {
+        "intervals": [{
+          "top_depth_m": 2000.0,
+          "bottom_depth_m": 2001.0,
+          "gross_thickness_m": 1.0,
+          "effective_thickness_m": 0.8,
+          "layer_type": "油水同层（预设）"
+        }]
+      },
+      "evidence": ["预设层段与厚度；有效厚度标准待确认"]
+    }
+  },
+  "validation": {
+    "is_mock": true,
+    "source": "fixture:validation",
+    "validation_status": "CONSISTENT",
+    "result": {"summary": "预设验证一致，用于验证 W09 正常分支"},
+    "evidence": ["mock:core", "mock:mud", "mock:test"]
+  }
+}
