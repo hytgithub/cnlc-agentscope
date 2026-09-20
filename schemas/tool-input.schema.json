@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "StepId": {
+      "enum": [
+        "W01",
+        "W02",
+        "W03",
+        "W04",
+        "W05",
+        "W06",
+        "W07",
+        "W08",
+        "W09",
+        "W10"
+      ],
+      "title": "StepId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "parameters": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Parameters",
+      "type": "object"
+    },
+    "step_id": {
+      "$ref": "#/$defs/StepId"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "trace_id": {
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "well_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+      "title": "Well Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "trace_id",
+    "well_id",
+    "step_id"
+  ],
+  "title": "ToolInput",
+  "type": "object"
+}

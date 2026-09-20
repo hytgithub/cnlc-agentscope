@@ -49,7 +49,14 @@ class ToolCaller:
         }
         with self.telemetry.span("tool", attributes):
             try:
-                output = await asyncio.wait_for(tool.execute(request), self.timeout_seconds)
+                raw_output = await asyncio.wait_for(tool.execute(request), self.timeout_seconds)
+                # Revalidate even model instances: nested containers can be mutated in place.
+                payload = (
+                    raw_output.model_dump(mode="python", warnings=False)
+                    if isinstance(raw_output, ToolOutput)
+                    else raw_output
+                )
+                output = ToolOutput.model_validate(payload)
             except TimeoutError as exc:
                 raise ToolError("TOOL_TIMEOUT", f"工具超时：{tool.name}", retryable=True) from exc
             except ApplicationError:

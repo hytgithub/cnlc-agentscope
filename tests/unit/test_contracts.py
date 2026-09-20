@@ -89,3 +89,32 @@ async def test_failed_tool_cannot_be_treated_as_success():
     )
     with pytest.raises(ToolError, match="未成功"):
         await ToolCaller(LoggingTelemetry(), 1).call(FailedTool(), request)
+
+
+@pytest.mark.parametrize("bad_output", [None, {"status": "NOT_A_STATUS"}, {"data": {}}])
+async def test_tool_boundary_rejects_invalid_return(bad_output):
+    class InvalidTool:
+        name = "invalid"
+
+        async def execute(self, request):
+            return bad_output
+
+    request = ToolInput(task_id="test", trace_id="trace", well_id="WELL_MOCK_001", step_id="W05")
+    with pytest.raises(ToolError) as caught:
+        await ToolCaller(LoggingTelemetry(), 1).call(InvalidTool(), request)
+    assert caught.value.code == "INVALID_TOOL_OUTPUT"
+
+
+async def test_tool_boundary_revalidates_mutated_model():
+    class MutatedTool:
+        name = "mutated"
+
+        async def execute(self, request):
+            output = ToolOutput(status=StepStatus.SUCCESS)
+            output.errors.append({"unknown": "invalid error"})
+            return output
+
+    request = ToolInput(task_id="test", trace_id="trace", well_id="WELL_MOCK_001", step_id="W05")
+    with pytest.raises(ToolError) as caught:
+        await ToolCaller(LoggingTelemetry(), 1).call(MutatedTool(), request)
+    assert caught.value.code == "INVALID_TOOL_OUTPUT"

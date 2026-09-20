@@ -1,0 +1,357 @@
+{
+  "$defs": {
+    "DataRequirements": {
+      "additionalProperties": false,
+      "description": "A provisional input contract, not a professional interpretation standard.",
+      "properties": {
+        "recommended_sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Recommended Sources",
+          "type": "array"
+        },
+        "required_curves": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Required Curves",
+          "type": "array"
+        }
+      },
+      "required": [
+        "required_curves"
+      ],
+      "title": "DataRequirements",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "LogCurve": {
+      "additionalProperties": false,
+      "properties": {
+        "unit": {
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "unit",
+        "values"
+      ],
+      "title": "LogCurve",
+      "type": "object"
+    },
+    "RawData": {
+      "additionalProperties": false,
+      "properties": {
+        "auxiliary": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Auxiliary",
+          "type": "object"
+        },
+        "curves": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LogCurve"
+          },
+          "title": "Curves",
+          "type": "object"
+        },
+        "depth_reference": {
+          "const": "MD",
+          "default": "MD",
+          "title": "Depth Reference",
+          "type": "string"
+        },
+        "depth_unit": {
+          "const": "m",
+          "default": "m",
+          "title": "Depth Unit",
+          "type": "string"
+        },
+        "depths": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Depths",
+          "type": "array"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "depths",
+        "curves"
+      ],
+      "title": "RawData",
+      "type": "object"
+    },
+    "StageResult": {
+      "additionalProperties": false,
+      "properties": {
+        "conflicts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "is_mock": {
+          "title": "Is Mock",
+          "type": "boolean"
+        },
+        "missing_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Evidence",
+          "type": "array"
+        },
+        "recommended_action": {
+          "default": "continue",
+          "title": "Recommended Action",
+          "type": "string"
+        },
+        "result": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Result",
+          "type": "object"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "status": {
+          "default": "SUCCESS",
+          "enum": [
+            "SUCCESS",
+            "WARNING",
+            "BLOCKED",
+            "FAILED",
+            "REVIEW_REQUIRED"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "is_mock",
+        "source"
+      ],
+      "title": "StageResult",
+      "type": "object"
+    },
+    "ValidationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "conflicts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "is_mock": {
+          "title": "Is Mock",
+          "type": "boolean"
+        },
+        "missing_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Evidence",
+          "type": "array"
+        },
+        "recommended_action": {
+          "default": "continue",
+          "title": "Recommended Action",
+          "type": "string"
+        },
+        "result": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Result",
+          "type": "object"
+        },
+        "rollback_target": {
+          "anyOf": [
+            {
+              "enum": [
+                "W06",
+                "W07"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rollback Target"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "status": {
+          "default": "SUCCESS",
+          "enum": [
+            "SUCCESS",
+            "WARNING",
+            "BLOCKED",
+            "FAILED",
+            "REVIEW_REQUIRED"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "validation_status": {
+          "$ref": "#/$defs/ValidationStatus"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "is_mock",
+        "source",
+        "validation_status"
+      ],
+      "title": "ValidationResult",
+      "type": "object"
+    },
+    "ValidationStatus": {
+      "enum": [
+        "CONSISTENT",
+        "PARTIAL_CONFLICT",
+        "SERIOUS_CONFLICT",
+        "INSUFFICIENT_EVIDENCE"
+      ],
+      "title": "ValidationStatus",
+      "type": "string"
+    },
+    "Well": {
+      "additionalProperties": false,
+      "properties": {
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "well_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+          "title": "Well Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "well_id",
+        "name"
+      ],
+      "title": "Well",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "is_mock": {
+      "const": true,
+      "default": true,
+      "title": "Is Mock",
+      "type": "boolean"
+    },
+    "outputs": {
+      "additionalProperties": {
+        "$ref": "#/$defs/StageResult"
+      },
+      "title": "Outputs",
+      "type": "object"
+    },
+    "raw_data": {
+      "$ref": "#/$defs/RawData"
+    },
+    "requirements": {
+      "$ref": "#/$defs/DataRequirements"
+    },
+    "schema_version": {
+      "const": "0.1-skeleton",
+      "default": "0.1-skeleton",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "validation": {
+      "$ref": "#/$defs/ValidationResult"
+    },
+    "well": {
+      "$ref": "#/$defs/Well"
+    }
+  },
+  "required": [
+    "well",
+    "raw_data",
+    "requirements",
+    "outputs",
+    "validation"
+  ],
+  "title": "MockFixture",
+  "type": "object"
+}
