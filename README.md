@@ -2,9 +2,10 @@
 
 测井解释智能体，技术设计见 `docs/03-system-architecture.md`。
 
-当前实现已完成 Task 01–03，并完成 Task 04 的通用 OpenAI-Compatible 模型 Gateway。
+当前实现已完成 Task 01–06，并完成 Task 007 的 AgentScope 官方 Web UI 后端适配。
 默认 provider 仍为 Mock；真实 provider 使用配置的 DashScope 北京兼容地址、模型名和本地 API Key。
-AgentScope Runtime、Web、OpenTelemetry 导出和专业业务扩展仍属于后续任务，本轮不代表 V0.1 MVP 已验收。
+官方前端源码不在本仓库；OpenTelemetry 导出和专业业务扩展仍属于后续任务，本轮不代表
+V0.1 MVP 已验收。
 
 ## 快速运行
 
@@ -158,3 +159,65 @@ uv run cnlc-agent --well-id WELL_MOCK_001 --data-dir mock_data --output-dir outp
 **Integration Dependency：** qwen-plus 最终 E2E 仍需有效本地模型配置后运行同一命令，
 将 `CNLC_MODEL_PROVIDER` 改为 `openai_compatible`；不要把 Mock E2E 或 Task 004
 模型连通性测试当作真实模型最终 E2E 已通过。
+
+## AgentScope 官方 Web UI（Task 007）
+
+本仓库只提供 AgentScope 2.0.8 Agent Service 适配层，不包含或复制官方前端源码。
+Agent Service 使用 Redis 保存官方 UI 的 Agent、Session、消息和凭证配置；测井解释任务仍由
+现有 `InterpretationTaskService` 按 `CNLC_PERSISTENCE` 使用内存或 PostgreSQL/Redis。
+
+先启动 Redis，并在仓库根目录配置本地环境。真实演示中 Demo Agent、W06 和 W07 都使用
+`qwen-plus`；API Key 只能放在本地 `.env` 或环境变量中：
+
+```dotenv
+REDIS_URL=redis://localhost:6379/0
+CNLC_MODE=demo
+CNLC_MODEL_PROVIDER=openai_compatible
+CNLC_PERSISTENCE=memory
+MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+MODEL_NAME=qwen-plus
+MODEL_API_KEY=在本地设置
+```
+
+如需让解释任务进入现有 PostgreSQL/Redis 持久化边界，将 `CNLC_PERSISTENCE` 改为
+`postgres-redis` 并同时配置 `DATABASE_URL`。AgentScope 服务元数据始终使用 `REDIS_URL`。
+
+安装锁定依赖并启动后端：
+
+```bash
+uv sync --locked --dev
+uv run python -m cnlc_agent.demo.agentscope_app
+```
+
+服务默认监听 `http://localhost:8000`，并提供官方 Agent Service 的 `/health`、Agent、
+Session、Chat 和 SSE 接口。另开终端启动 AgentScope 官方 Web UI：
+
+```bash
+git clone -b main https://github.com/agentscope-ai/agentscope.git
+cd agentscope/examples/web_ui
+pnpm install
+pnpm dev
+```
+
+首次打开官方 Web UI 时：
+
+1. Server URL 填写 `http://localhost:8000`，Username 可填写本地演示用户名。
+2. 在 Credential 页面新增 DashScope 凭证；Key 只保存在本地 Agent Service 的 Redis 中。
+3. 在 Chat 页面创建 Agent 和 Session，并为 Session 选择 DashScope 的 `qwen-plus`。后端会把
+   该会话装配为 `LoggingInterpretationDemoAgent`；如果选择其他模型，会明确拒绝执行。
+4. 输入 `对 WELL_MOCK_001 进行常规测井解释`。
+
+页面将通过官方事件流显示用户消息、`run_well_interpretation` Tool Call、包含 W01–W10
+状态的 Tool Result，以及 Agent 汇总和完整 Markdown 报告。调用路径为：
+
+```text
+examples/web_ui → Agent Service → LoggingInterpretationDemoAgent
+→ run_well_interpretation(well_id) → InterpretationTaskService
+→ MainAgent → W01-W10 → Markdown Report
+```
+
+离线验证不访问模型公网，也不需要启动 Redis：
+
+```bash
+uv run pytest tests/integration/test_demo_agentscope_web.py -q
+```

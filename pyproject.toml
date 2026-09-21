@@ -9,6 +9,7 @@ description = "A workflow-driven well interpretation agent skeleton"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "agentscope[service,storage-redis]==2.0.8",
     "alembic>=1.16,<2",
     "asyncpg>=0.30,<1",
     "httpx>=0.27,<1",
