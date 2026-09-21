@@ -11,8 +11,10 @@ class MainAgent:
         self.workflow = workflow
         self.telemetry = telemetry
 
-    async def run(self, request: TaskRequest) -> InterpretationState:
-        state = InterpretationState(task=request)
+    async def run(
+        self, request: TaskRequest, *, state: InterpretationState | None = None
+    ) -> InterpretationState:
+        state = state if state is not None else InterpretationState(task=request)
         with self.telemetry.span(
             "agent",
             {
