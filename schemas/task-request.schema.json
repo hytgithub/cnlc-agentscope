@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "instruction": {
+      "default": "执行单井测井解释骨架演示",
+      "minLength": 1,
+      "title": "Instruction",
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    },
+    "well_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+      "title": "Well Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "well_id"
+  ],
+  "title": "TaskRequest",
+  "type": "object"
+}

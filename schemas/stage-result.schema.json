@@ -1,0 +1,76 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "conflicts": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Conflicts",
+      "type": "array"
+    },
+    "evidence": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "is_mock": {
+      "title": "Is Mock",
+      "type": "boolean"
+    },
+    "missing_evidence": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Missing Evidence",
+      "type": "array"
+    },
+    "recommended_action": {
+      "default": "continue",
+      "title": "Recommended Action",
+      "type": "string"
+    },
+    "result": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Result",
+      "type": "object"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "status": {
+      "default": "SUCCESS",
+      "enum": [
+        "SUCCESS",
+        "WARNING",
+        "BLOCKED",
+        "FAILED",
+        "REVIEW_REQUIRED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "is_mock",
+    "source"
+  ],
+  "title": "StageResult",
+  "type": "object"
+}

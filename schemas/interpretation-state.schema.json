@@ -1,0 +1,775 @@
+{
+  "$defs": {
+    "DataRequirements": {
+      "additionalProperties": false,
+      "description": "A provisional input contract, not a professional interpretation standard.",
+      "properties": {
+        "recommended_sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Recommended Sources",
+          "type": "array"
+        },
+        "required_curves": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Required Curves",
+          "type": "array"
+        }
+      },
+      "required": [
+        "required_curves"
+      ],
+      "title": "DataRequirements",
+      "type": "object"
+    },
+    "ErrorDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "step_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ErrorDetail",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "LogCurve": {
+      "additionalProperties": false,
+      "properties": {
+        "unit": {
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "unit",
+        "values"
+      ],
+      "title": "LogCurve",
+      "type": "object"
+    },
+    "MissingData": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_step": {
+          "$ref": "#/$defs/StepId"
+        },
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "importance": {
+          "enum": [
+            "Required",
+            "Recommended",
+            "Optional"
+          ],
+          "title": "Importance",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "importance",
+        "affected_step"
+      ],
+      "title": "MissingData",
+      "type": "object"
+    },
+    "RawData": {
+      "additionalProperties": false,
+      "properties": {
+        "auxiliary": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Auxiliary",
+          "type": "object"
+        },
+        "curves": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LogCurve"
+          },
+          "title": "Curves",
+          "type": "object"
+        },
+        "depth_reference": {
+          "const": "MD",
+          "default": "MD",
+          "title": "Depth Reference",
+          "type": "string"
+        },
+        "depth_unit": {
+          "const": "m",
+          "default": "m",
+          "title": "Depth Unit",
+          "type": "string"
+        },
+        "depths": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Depths",
+          "type": "array"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "depths",
+        "curves"
+      ],
+      "title": "RawData",
+      "type": "object"
+    },
+    "StageResult": {
+      "additionalProperties": false,
+      "properties": {
+        "conflicts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "is_mock": {
+          "title": "Is Mock",
+          "type": "boolean"
+        },
+        "missing_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Evidence",
+          "type": "array"
+        },
+        "recommended_action": {
+          "default": "continue",
+          "title": "Recommended Action",
+          "type": "string"
+        },
+        "result": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Result",
+          "type": "object"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "status": {
+          "default": "SUCCESS",
+          "enum": [
+            "SUCCESS",
+            "WARNING",
+            "BLOCKED",
+            "FAILED",
+            "REVIEW_REQUIRED"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "is_mock",
+        "source"
+      ],
+      "title": "StageResult",
+      "type": "object"
+    },
+    "StateChange": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "after": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "After",
+          "type": "object"
+        },
+        "before": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Before",
+          "type": "object"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor",
+        "step_id",
+        "reason",
+        "before",
+        "after"
+      ],
+      "title": "StateChange",
+      "type": "object"
+    },
+    "StepExecution": {
+      "additionalProperties": false,
+      "properties": {
+        "ended_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ended At"
+        },
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/ErrorDetail"
+          },
+          "title": "Errors",
+          "type": "array"
+        },
+        "retry_count": {
+          "default": 0,
+          "title": "Retry Count",
+          "type": "integer"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/StepStatus",
+          "default": "RUNNING"
+        },
+        "step_execution_id": {
+          "title": "Step Execution Id",
+          "type": "string"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "step_id"
+      ],
+      "title": "StepExecution",
+      "type": "object"
+    },
+    "StepId": {
+      "enum": [
+        "W01",
+        "W02",
+        "W03",
+        "W04",
+        "W05",
+        "W06",
+        "W07",
+        "W08",
+        "W09",
+        "W10"
+      ],
+      "title": "StepId",
+      "type": "string"
+    },
+    "StepStatus": {
+      "enum": [
+        "PENDING",
+        "RUNNING",
+        "SUCCESS",
+        "WARNING",
+        "FAILED",
+        "BLOCKED",
+        "REVIEW_REQUIRED",
+        "SKIPPED"
+      ],
+      "title": "StepStatus",
+      "type": "string"
+    },
+    "TaskRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "instruction": {
+          "default": "执行单井测井解释骨架演示",
+          "minLength": 1,
+          "title": "Instruction",
+          "type": "string"
+        },
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "well_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+          "title": "Well Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "well_id"
+      ],
+      "title": "TaskRequest",
+      "type": "object"
+    },
+    "ValidationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "conflicts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "is_mock": {
+          "title": "Is Mock",
+          "type": "boolean"
+        },
+        "missing_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Evidence",
+          "type": "array"
+        },
+        "recommended_action": {
+          "default": "continue",
+          "title": "Recommended Action",
+          "type": "string"
+        },
+        "result": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Result",
+          "type": "object"
+        },
+        "rollback_target": {
+          "anyOf": [
+            {
+              "enum": [
+                "W06",
+                "W07"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rollback Target"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "status": {
+          "default": "SUCCESS",
+          "enum": [
+            "SUCCESS",
+            "WARNING",
+            "BLOCKED",
+            "FAILED",
+            "REVIEW_REQUIRED"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "validation_status": {
+          "$ref": "#/$defs/ValidationStatus"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "is_mock",
+        "source",
+        "validation_status"
+      ],
+      "title": "ValidationResult",
+      "type": "object"
+    },
+    "ValidationStatus": {
+      "enum": [
+        "CONSISTENT",
+        "PARTIAL_CONFLICT",
+        "SERIOUS_CONFLICT",
+        "INSUFFICIENT_EVIDENCE"
+      ],
+      "title": "ValidationStatus",
+      "type": "string"
+    },
+    "Well": {
+      "additionalProperties": false,
+      "properties": {
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "well_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+          "title": "Well Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "well_id",
+        "name"
+      ],
+      "title": "Well",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "changes": {
+      "items": {
+        "$ref": "#/$defs/StateChange"
+      },
+      "title": "Changes",
+      "type": "array"
+    },
+    "completed_steps": {
+      "items": {
+        "$ref": "#/$defs/StepId"
+      },
+      "title": "Completed Steps",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "current_step": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StepId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "data_requirements": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DataRequirements"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "errors": {
+      "items": {
+        "$ref": "#/$defs/ErrorDetail"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "executions": {
+      "items": {
+        "$ref": "#/$defs/StepExecution"
+      },
+      "title": "Executions",
+      "type": "array"
+    },
+    "final_check": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "fluid_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "interval_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "layer_classification": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "lithology_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "missing_data": {
+      "items": {
+        "$ref": "#/$defs/MissingData"
+      },
+      "title": "Missing Data",
+      "type": "array"
+    },
+    "mode": {
+      "const": "mock",
+      "default": "mock",
+      "title": "Mode",
+      "type": "string"
+    },
+    "petrophysics_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "processed_data": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawData"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "qc_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "raw_data": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawData"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "review_required": {
+      "default": false,
+      "title": "Review Required",
+      "type": "boolean"
+    },
+    "rollback_count": {
+      "default": 0,
+      "title": "Rollback Count",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "0.1-skeleton",
+      "default": "0.1-skeleton",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/StepStatus",
+      "default": "PENDING"
+    },
+    "task": {
+      "$ref": "#/$defs/TaskRequest"
+    },
+    "trace_id": {
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "validation_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ValidationResult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    },
+    "well": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Well"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "workflow_execution_id": {
+      "title": "Workflow Execution Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task"
+  ],
+  "title": "InterpretationState",
+  "type": "object"
+}

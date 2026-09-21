@@ -60,3 +60,16 @@ uv build
 详细执行范围、测试记录、未完成内容和后续依赖见
 [`docs/tasks/001-project-skeleton.md`](docs/tasks/001-project-skeleton.md)。
 Mock 格式说明见 [`mock_data/README.md`](mock_data/README.md)。
+
+## Task 02：契约校验
+
+已增加当前数据契约的 8 份 JSON Schema、独立校验命令、生成一致性检查和工具返回值校验。
+正式业务 Schema 仍待项目方样例确认，详见
+[`docs/04-data-tool-contracts.md`](docs/04-data-tool-contracts.md)。
+
+```bash
+uv run python -m cnlc_agent.schema export --check
+uv run python -m cnlc_agent.schema validate mock-fixture mock_data/WELL_MOCK_001.json
+```
+
+任务结果见 [`docs/tasks/002-contract-validation.md`](docs/tasks/002-contract-validation.md)。

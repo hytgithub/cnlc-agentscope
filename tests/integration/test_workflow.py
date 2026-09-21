@@ -140,3 +140,19 @@ async def test_unknown_well_produces_failed_task(data_dir):
     assert state.status == StepStatus.FAILED
     assert state.current_step == StepId.W01
     assert state.errors[-1].code == "WELL_NOT_FOUND"
+
+
+async def test_malformed_tool_output_stops_workflow(data_dir, monkeypatch):
+    from cnlc_agent.tools.mock import MockResultTool
+
+    async def invalid_output(self, request):
+        return None
+
+    monkeypatch.setattr(MockResultTool, "execute", invalid_output)
+    state, report = await run(data_dir)
+    assert state.status == StepStatus.FAILED
+    assert state.current_step == StepId.W03
+    assert state.errors[-1].code == "INVALID_TOOL_OUTPUT"
+    assert state.qc_result is None
+    assert state.final_check is None
+    assert "诊断摘要" in report
