@@ -7,11 +7,12 @@ from agentscope.state import AgentState
 from agentscope.tool import Toolkit
 from agentscope.workspace import Offloader
 
-from cnlc_agent.demo.tools import RUN_TOOL_NAME
+from cnlc_agent.demo.tools import RUN_TOOL_NAME, RunWellInterpretationTool
+from cnlc_agent.demo.upload_reply import UploadInterpretationReply
 
 DEMO_SYSTEM_PROMPT = """你是常规测井解释 Demo 的对话入口。
 
-收到单井测井解释请求时，从用户消息中提取 well_id，并且必须调用一次
+收到自然语言和上传井资料时，由 Demo 接入层解析文件并自动取得井标识，调用一次
 run_well_interpretation。该 Tool 已封装现有 InterpretationTaskService、MainAgent 和
 W01-W10；不要自行计算、猜测或复制业务流程。
 
@@ -48,12 +49,15 @@ class LoggingInterpretationDemoAgent(Agent):
         ]
         if len(tools) != 1:
             raise ValueError(f"Demo Agent 必须且只能注册一个 {RUN_TOOL_NAME} Tool")
+        tool = tools[0]
+        if not isinstance(tool, RunWellInterpretationTool):
+            raise ValueError("Demo Agent 需要上传井资料适配 Tool")
         super().__init__(
             name="LoggingInterpretationDemoAgent",
             system_prompt=DEMO_SYSTEM_PROMPT,
             model=model,
             toolkit=Toolkit(tools=tools),
-            middlewares=middlewares,
+            middlewares=[UploadInterpretationReply(tool), *(middlewares or [])],
             state=state,
             offloader=offloader,
             model_config=model_config,

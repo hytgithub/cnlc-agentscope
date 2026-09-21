@@ -2,11 +2,17 @@
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from time import perf_counter
 
 from cnlc_agent.domain.models import JsonObject, utc_now
+
+# Optional request-local observer; the workflow stays independent of Web/AgentScope.
+event_observer: ContextVar[Callable[[str, JsonObject], None] | None] = ContextVar(
+    "cnlc_event_observer", default=None
+)
 
 
 class LoggingTelemetry:
@@ -15,6 +21,9 @@ class LoggingTelemetry:
         self.progress_logger = logging.getLogger("cnlc_agent.progress")
 
     def event(self, name: str, attributes: JsonObject) -> None:
+        observer = event_observer.get()
+        if observer is not None:
+            observer(name, attributes)
         event = {"event": name, "timestamp": utc_now().isoformat(), **attributes}
         # Keep the complete machine-readable trace for debugging without obscuring the demo console.
         self.trace_logger.debug(json.dumps(event, ensure_ascii=False))

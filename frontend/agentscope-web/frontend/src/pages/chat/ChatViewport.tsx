@@ -876,31 +876,11 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 											/>
 										) : null
 									}
-									allowedInputTypes={(
-										selectedModelCard?.input_types ?? []
-									).filter(
-										(t) =>
-											/^(image|video|audio|text)\/.+/.test(t) ||
-											t === 'application/pdf' ||
-											t.startsWith('application/vnd.') ||
-											t.startsWith('application/msword') ||
-											t.startsWith('application/vnd.openxmlformats'),
-									)}
+									// Well data is parsed by the backend adapter, not the model.
+									allowedInputTypes={['.json', '.txt']}
 									fileProcessor={async (file) => {
-										const filePath = (file as File & { path?: string }).path;
-										if (filePath) {
-											return {
-												id: crypto.randomUUID(),
-												type: 'data' as const,
-												source: {
-													type: 'url' as const,
-													url: `file://${filePath}`,
-													media_type:
-														file.type || 'application/octet-stream',
-												},
-												name: file.name,
-												created_at: new Date().toISOString(),
-											};
+										if (file.size > 5 * 1024 * 1024) {
+											throw new Error('井资料文件不能超过 5 MiB');
 										}
 										if (file.type === 'text/plain') {
 											const text = await file.text();

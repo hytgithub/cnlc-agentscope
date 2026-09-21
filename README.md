@@ -162,12 +162,14 @@ uv run cnlc-agent --well-id WELL_MOCK_001 --data-dir mock_data --output-dir outp
 
 ## AgentScope 官方 Web UI（Task 007）
 
-本仓库只提供 AgentScope 2.0.8 Agent Service 适配层，不包含或复制官方前端源码。
+本仓库使用 AgentScope 2.0.8 Agent Service，官方前端快照位于
+`frontend/agentscope-web`，上游来源见其中的 `UPSTREAM.md`。
 Agent Service 使用 Redis 保存官方 UI 的 Agent、Session、消息和凭证配置；测井解释任务仍由
 现有 `InterpretationTaskService` 按 `CNLC_PERSISTENCE` 使用内存或 PostgreSQL/Redis。
 
-先启动 Redis，并在仓库根目录配置本地环境。真实演示中 Demo Agent、W06 和 W07 都使用
-`qwen-plus`；API Key 只能放在本地 `.env` 或环境变量中：
+先启动 Redis，并在仓库根目录配置本地环境。模型统一选择 `qwen-plus`。
+上传请求由接入层直接启动业务 Tool，W06/W07 使用现有 ModelGateway；最终报告直接返回，
+不再让外层模型重新生成专业结论。模型配置放在本地 `.env` 或环境变量中：
 
 ```dotenv
 REDIS_URL=redis://localhost:6379/0
@@ -193,9 +195,8 @@ uv run python -m cnlc_agent.demo.agentscope_app
 Session、Chat 和 SSE 接口。另开终端启动 AgentScope 官方 Web UI：
 
 ```bash
-git clone -b main https://github.com/agentscope-ai/agentscope.git
-cd agentscope/examples/web_ui
-pnpm install
+cd frontend/agentscope-web
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 
@@ -205,13 +206,16 @@ pnpm dev
 2. 在 Credential 页面新增 DashScope 凭证；Key 只保存在本地 Agent Service 的 Redis 中。
 3. 在 Chat 页面创建 Agent 和 Session，并为 Session 选择 DashScope 的 `qwen-plus`。后端会把
    该会话装配为 `LoggingInterpretationDemoAgent`；如果选择其他模型，会明确拒绝执行。
-4. 输入 `对 WELL_MOCK_001 进行常规测井解释`。
+4. 点击输入框附件按钮，上传一份 `mock_data/WELL_MOCK_001.json`（或其他已有井资料
+   JSON），输入 `帮我解释一下这口井` 并发送。无需填写 well_id、task_id 或 instruction。
 
-页面将通过官方事件流显示用户消息、`run_well_interpretation` Tool Call、包含 W01–W10
-状态的 Tool Result，以及 Agent 汇总和完整 Markdown 报告。调用路径为：
+页面通过官方 SSE 显示“读取井资料 / 检查数据”、W01–W10 实时开始与完成状态、
+`run_well_interpretation` Tool Call/Result、“正在生成报告”和完整 Markdown 报告。
+运行中可使用原有停止按钮。调用路径为：
 
 ```text
-examples/web_ui → Agent Service → LoggingInterpretationDemoAgent
+官方 Web UI → Agent Service → LoggingInterpretationDemoAgent / UploadInterpretationReply
+→ 解析本次附件，读取或生成井标识
 → run_well_interpretation(well_id) → InterpretationTaskService
 → MainAgent → W01-W10 → Markdown Report
 ```
@@ -219,5 +223,16 @@ examples/web_ui → Agent Service → LoggingInterpretationDemoAgent
 离线验证不访问模型公网，也不需要启动 Redis：
 
 ```bash
-uv run pytest tests/integration/test_demo_agentscope_web.py -q
+uv run pytest tests/integration/test_demo_agentscope_web.py \
+  tests/integration/test_demo_web_upload.py tests/integration/test_demo_web_http.py -q
 ```
+
+当前上传格式为现有 `MockFixture` JSON，包含 `well`、`raw_data`、`requirements`、
+`outputs`、`validation`，最多一份、5 MiB；TXT 附件中包含同样 JSON 也可。
+`well.well_id` 可省略，服务端自动生成；专业结果必须保留 `is_mock=true`。
+上传内容在每次任务的独立临时目录中校验和执行，不覆盖仓库样例。
+暂不支持原始 LAS/GDSX/CSV，也不会用另一口示例井的预设结论替代上传资料。
+
+若只演示流程，设置 `CNLC_MODEL_PROVIDER=mock`；报告会明确标为 Demo / Mock。
+已验证范围、真实模型联调和 Sol 待办见
+[`008-demo-web-integration-handoff.md`](docs/tasks/008-demo-web-integration-handoff.md)。

@@ -1,8 +1,11 @@
 """The single AgentScope business tool exposed by the demo service."""
 
 import json
+import logging
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 from agentscope.message import TextBlock, ToolResultState
@@ -14,7 +17,7 @@ from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.domain.enums import StepId, StepStatus
-from cnlc_agent.domain.models import TaskRequest
+from cnlc_agent.domain.models import MockFixture, TaskRequest
 from cnlc_agent.domain.state import InterpretationState
 
 RUN_TOOL_NAME = "run_well_interpretation"
@@ -57,9 +60,13 @@ class InterpretationToolRunner:
     def __init__(self, service_context: ServiceContextFactory = _default_service_context) -> None:
         self._service_context = service_context
 
-    async def run(self, well_id: str) -> DemoToolResult:
+    async def run(
+        self, well_id: str, instruction: str = "执行单井测井解释骨架演示"
+    ) -> DemoToolResult:
         async with self._service_context() as service:
-            state, report_markdown = await service.run(TaskRequest(well_id=well_id))
+            state, report_markdown = await service.run(
+                TaskRequest(well_id=well_id, instruction=instruction)
+            )
         return DemoToolResult(
             status=state.status,
             task_id=state.task.task_id,
@@ -69,6 +76,23 @@ class InterpretationToolRunner:
             summary=_summary(state),
             report_markdown=report_markdown,
         )
+
+
+async def run_uploaded_well(fixture: MockFixture, instruction: str) -> DemoToolResult:
+    """Stage only this upload for the existing repository; never overwrite bundled fixtures."""
+    with TemporaryDirectory(prefix="cnlc-upload-") as directory:
+        root = Path(directory)
+        (root / f"{fixture.well.well_id}.json").write_text(
+            fixture.model_dump_json(), encoding="utf-8"
+        )
+        settings = AppSettings(mode="demo", mock_data_dir=root)
+        connections = ConnectionSettings()
+        if settings.model_provider != "mock" and connections.model_name != "qwen-plus":
+            raise ValueError("AgentScope Demo 的 MODEL_NAME 必须为 qwen-plus")
+        runner = InterpretationToolRunner(
+            lambda: application_runtime(settings, PersistenceSettings(), connections)
+        )
+        return await runner.run(fixture.well.well_id, instruction)
 
 
 def _step_statuses(state: InterpretationState) -> dict[StepId, StepStatus]:
@@ -134,6 +158,7 @@ class RunWellInterpretationTool(ToolBase):
     def __init__(self, runner: InterpretationToolRunner | None = None) -> None:
         super().__init__()
         self._runner = runner
+        self.upload: tuple[MockFixture, str] | None = None
 
     async def check_permissions(self, *_args: Any, **_kwargs: Any) -> PermissionDecision:
         return PermissionDecision(
@@ -142,16 +167,37 @@ class RunWellInterpretationTool(ToolBase):
         )
 
     async def call(self, *args: Any, **kwargs: Any) -> ToolChunk:
+        try:
+            return await self._call(*args, **kwargs)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Demo tool failed: %s", type(exc).__name__)
+            return ToolChunk(
+                content=[TextBlock(text="解释任务失败，请检查井资料或服务配置后重试。")],
+                state=ToolResultState.ERROR,
+                metadata={"error_code": "DEMO_INTERPRETATION_FAILED"},
+            )
+
+    async def _call(self, *args: Any, **kwargs: Any) -> ToolChunk:
         if args:
             raise TypeError("run_well_interpretation 只接受关键字参数")
         well_id = cast(str, kwargs["well_id"])
-        if self._runner is None:
+        if self.upload is not None:
+            fixture, instruction = self.upload
+            if fixture.well.well_id != well_id:
+                raise ValueError("上传井与任务井标识不一致")
+            result = await run_uploaded_well(fixture, instruction)
+            payload = result.model_dump(mode="json")
+        elif self._runner is None:
             payload = await run_well_interpretation(well_id)
         else:
             result = await self._runner.run(well_id)
             payload = result.model_dump(mode="json")
         return ToolChunk(
             content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))],
-            state=ToolResultState.SUCCESS,
+            state=(
+                ToolResultState.SUCCESS
+                if payload["status"] in {"SUCCESS", "WARNING"}
+                else ToolResultState.ERROR
+            ),
             metadata={"result": payload},
         )
