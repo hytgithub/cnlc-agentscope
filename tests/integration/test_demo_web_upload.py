@@ -93,6 +93,10 @@ async def test_upload_runs_all_steps_and_streams_unmodified_report(data_dir):
     assert result["well_id"].startswith("UPLOAD_")
     assert result["task_id"]
     assert result["completed_steps"] == [f"W{i:02}" for i in range(1, 11)]
+    assert [step["id"] for step in result["steps"]] == [f"W{i:02}" for i in range(1, 11)]
+    assert result["steps"][5]["source"] == "qwen-plus"
+    assert result["steps"][8]["source"] == "demo-skip"
+    assert result["steps"][5]["output_summary"]["result"]["fluid_type"] == "UPLOAD_FLUID"
     text = reply.get_text_content()
     assert result["report_markdown"] in text
     assert "上传的专属演示井" in text

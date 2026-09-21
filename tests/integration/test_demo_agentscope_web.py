@@ -51,6 +51,7 @@ async def test_tool_reuses_task_service_and_returns_stable_result(data_dir):
         "well_id",
         "completed_steps",
         "step_statuses",
+        "steps",
         "summary",
         "report_markdown",
     }

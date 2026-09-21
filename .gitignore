@@ -24,6 +24,8 @@ build/
 **/build/
 .cache/
 **/.cache/
+.vite/
+**/.vite/
 .next/
 **/.next/
 .turbo/

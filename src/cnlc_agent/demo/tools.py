@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
+from cnlc_agent.demo.presentation import DemoStep, present_steps
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.models import MockFixture, TaskRequest
 from cnlc_agent.domain.state import InterpretationState
@@ -38,6 +39,7 @@ class DemoToolResult(BaseModel):
     well_id: str
     completed_steps: list[StepId]
     step_statuses: dict[StepId, StepStatus]
+    steps: list[DemoStep]
     summary: str
     report_markdown: str
 
@@ -73,6 +75,7 @@ class InterpretationToolRunner:
             well_id=state.task.well_id,
             completed_steps=state.completed_steps,
             step_statuses=_step_statuses(state),
+            steps=present_steps(state),
             summary=_summary(state),
             report_markdown=report_markdown,
         )
