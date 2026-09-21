@@ -1,6 +1,6 @@
 # Task 04：公网真实模型接入
 
-状态：待实施。
+状态：已实施并通过离线验证。
 工作分支：codex/task-04-real-model。
 
 ## 目标
@@ -98,3 +98,80 @@ https://dashscope.aliyuncs.com/compatible-mode/v1
 完成后按 AGENTS.md 报告实现、文件、配置、测试、真实公网测试结果、未完成事项和 Architecture Issue。
 
 完成后不要自动开始 Task 05。
+
+## 实施记录（2026-09-21）
+
+### 实现内容
+
+- 新增 `OpenAICompatibleModelGateway`，通过异步 `httpx` 调用
+  `/chat/completions`，兼容 DashScope 北京地址以及其他 OpenAI-Compatible 服务。
+- `generate()` 将 `ModelRequest` 的用途和 JSON context 映射为最小通用请求，要求
+  `response_format=json_object`，只返回校验过的 JSON object。
+- 增加鉴权失败、限流、超时、5xx、请求失败、非法响应和未知传输错误的稳定
+  `ModelError` code；仅对限流、超时、网络错误和 5xx 做有限传输重试。
+- `bootstrap.py` 按 `CNLC_MODEL_PROVIDER` 选择 `mock` 或
+  `openai_compatible`/`real`，真实配置缺失时直接失败，不回退到 Mock。
+- 模型 HTTP Client 由 Gateway 持有和异步关闭；上层 Agent 仍只依赖
+  `ModelGateway` Protocol。
+- 使用 `SecretStr` 和通用错误信息，日志只记录 task/trace/retry/error code，不记录鉴权值或供应商响应正文。
+
+### 新增文件
+
+- `src/cnlc_agent/infrastructure/model_gateway.py`
+- `src/cnlc_agent/infrastructure/model.py`（兼容导出）
+- `tests/unit/test_model_gateway.py`
+- `tests/integration/test_real_model.py`（显式 opt-in）
+
+### 修改文件
+
+- `src/cnlc_agent/config/settings.py`
+- `src/cnlc_agent/application/bootstrap.py`
+- `src/cnlc_agent/application/runtime.py`
+- `src/cnlc_agent/application/service.py`
+- `src/cnlc_agent/infrastructure/__init__.py`
+- `.env.example`、`pyproject.toml`、`uv.lock`
+
+### 配置项
+
+```dotenv
+CNLC_MODEL_PROVIDER=mock
+CNLC_MODEL_TIMEOUT_SECONDS=30
+CNLC_MODEL_MAX_RETRIES=2
+CNLC_MODEL_RETRY_BACKOFF_SECONDS=0.25
+MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+MODEL_NAME=qwen-plus
+MODEL_API_KEY=
+# 也支持 DASHSCOPE_API_KEY
+```
+
+默认 provider 为 `mock`，不依赖公网。将 `CNLC_MODEL_PROVIDER` 设置为
+`openai_compatible`（或 `real`）后，`MODEL_BASE_URL`、`MODEL_NAME` 和
+`MODEL_API_KEY`/`DASHSCOPE_API_KEY` 缺一即报配置错误。
+
+### 测试结果
+
+- `uv run pytest -q`：**63 passed, 4 skipped**；其中 1 个公网模型测试因未配置显式 opt-in 环境跳过，3 个 Task 03 真实服务测试因环境变量缺失跳过。
+- `uv run pytest tests/unit/test_model_gateway.py -q`：**14 passed**。
+- `uv run ruff check .`：通过。
+- `uv run ruff format --check .`：通过。
+- `uv run mypy`：36 个源码文件通过。
+- `uv build`：通过，生成 sdist 和 wheel。
+
+真实公网测试：本机未设置 `CNLC_RUN_REAL_MODEL_TEST=1`、`MODEL_API_KEY` 或
+`DASHSCOPE_API_KEY`，因此按“显式 opt-in”规则跳过；未伪造公网通过结果。
+配置这些变量后可运行：
+
+```bash
+CNLC_RUN_REAL_MODEL_TEST=1 uv run pytest tests/integration/test_real_model.py -v
+```
+
+### 未完成 / TODO
+
+- 公网真实模型联调需由提供凭据的运行环境执行；凭据不进入仓库。
+- 真实模型调用目前只提供通用 JSON Gateway，专业 Prompt、正式井数据 Schema 和
+  专业算法不在本 Task 范围。
+- Task 05 的 AgentScope Runtime、Web、RAG 和专业业务扩展不在本 Task 实施。
+
+### Architecture Issue
+
+**No Architecture Issue found.** 本次只增加 ModelGateway Adapter 和配置选择，未新增 Agent、未修改 W01–W10、未替换数据库/Redis，也未把确定性测井算法交给模型。

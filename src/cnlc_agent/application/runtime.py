@@ -40,7 +40,11 @@ async def application_runtime(
 ) -> AsyncIterator[InterpretationTaskService]:
     persistence = persistence or PersistenceSettings()
     if persistence.persistence == "memory":
-        yield build_application(settings)
+        app = build_application(settings)
+        try:
+            yield app
+        finally:
+            await app.close()
         return
     connections = connections or ConnectionSettings()
     url = database_url(connections)
@@ -70,11 +74,15 @@ async def application_runtime(
             persistence.redis_prefix,
             persistence.redis_ttl_seconds,
         )
-        yield build_application(
+        app = build_application(
             settings,
             task_repository=repository,
             state_store=CheckpointStore(repository, cache),
         )
+        try:
+            yield app
+        finally:
+            await app.close()
     finally:
         try:
             await client.aclose()

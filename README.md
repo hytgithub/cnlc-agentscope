@@ -2,10 +2,9 @@
 
 测井解释智能体，技术设计见 `docs/03-system-architecture.md`。
 
-当前实现 **Task 01：可运行工程骨架**（架构文档第 76–77 节）。
-三个 Agent 目前为 Python 调用骨架；井数据、专业结果、模型响应均为显式 Mock。
-Task 03 已增加 PostgreSQL/Redis 持久化实现（用户本地真实服务测试已通过）。
-AgentScope 2.x Runtime、内部统一模型、OpenTelemetry 导出和 Web 将在后续任务接入。本轮演示成功不代表 V0.1 MVP 已验收。
+当前实现已完成 Task 01–03，并完成 Task 04 的通用 OpenAI-Compatible 模型 Gateway。
+默认 provider 仍为 Mock；真实 provider 使用配置的 DashScope 北京兼容地址、模型名和本地 API Key。
+AgentScope Runtime、Web、OpenTelemetry 导出和专业业务扩展仍属于后续任务，本轮不代表 V0.1 MVP 已验收。
 
 ## 快速运行
 
@@ -32,7 +31,7 @@ uv run cnlc-agent --data-dir mock_data --output-dir outputs --well-id WELL_MOCK_
 ```
 
 退出码：`0` 表示演示链路 SUCCESS/WARNING，`1` 表示 FAILED/BLOCKED/REVIEW_REQUIRED，
-`2` 表示配置、输入或输出错误。只有 Mock 模式可用；不支持的模式会明确报错。
+`2` 表示配置、输入或输出错误。模型默认为 Mock；真实模式配置缺失会明确报错，不会静默回退。
 
 ## 验证
 
@@ -84,3 +83,20 @@ uv run python -m cnlc_agent.schema validate mock-fixture mock_data/WELL_MOCK_001
 2026-09-21 用户提供本地真实服务测试结果：3 passed in 8.77s，补齐 Task 03 联调验证。
 此前执行环境的普通测试为 49 passed、3 skipped；两次结果不合并声称为一次全量测试。
 执行记录见 [`docs/tasks/003-persistence.md`](docs/tasks/003-persistence.md)。
+
+## Task 04：公网真实模型
+
+新增通用异步 `OpenAICompatibleModelGateway`，支持 DashScope 北京兼容接口：
+
+```dotenv
+CNLC_MODEL_PROVIDER=openai_compatible
+MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+MODEL_NAME=qwen-plus
+MODEL_API_KEY=仅在本地环境设置
+```
+
+也可使用 `DASHSCOPE_API_KEY`。Gateway 对响应做 JSON object 校验，并对鉴权、限流、
+超时、5xx、非法响应和网络错误做稳定分类；重试次数有限且不包含业务 Rollback。
+默认离线测试不访问公网。显式配置 `CNLC_RUN_REAL_MODEL_TEST=1` 和本地 API Key 后，
+运行 `uv run pytest tests/integration/test_real_model.py -v` 验证 qwen-plus 连通性。
+实现和边界见 [`docs/tasks/004-real-model.md`](docs/tasks/004-real-model.md)。

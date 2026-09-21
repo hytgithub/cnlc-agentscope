@@ -1,3 +1,5 @@
+from collections.abc import Awaitable, Callable
+
 from cnlc_agent.agents.main_agent import MainAgent
 from cnlc_agent.application.ports import TaskRepository, Telemetry
 from cnlc_agent.domain.enums import StepStatus
@@ -14,11 +16,13 @@ class InterpretationTaskService:
         repository: TaskRepository,
         reports: ReportAssembler,
         telemetry: Telemetry,
+        close_callbacks: list[Callable[[], Awaitable[None]]] | None = None,
     ) -> None:
         self.main_agent = main_agent
         self.repository = repository
         self.reports = reports
         self.telemetry = telemetry
+        self.close_callbacks = close_callbacks or []
 
     async def run(self, request: TaskRequest) -> tuple[InterpretationState, str]:
         state = InterpretationState(task=request)
@@ -74,3 +78,7 @@ class InterpretationTaskService:
             markdown = self.reports.to_markdown(state)
             await self.repository.save(state, markdown)
         return state, markdown
+
+    async def close(self) -> None:
+        for close in reversed(self.close_callbacks):
+            await close()
