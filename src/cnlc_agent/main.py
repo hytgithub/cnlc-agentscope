@@ -17,6 +17,7 @@ from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import ApplicationError
 from cnlc_agent.domain.models import TaskRequest
 from cnlc_agent.domain.state import InterpretationState
+from cnlc_agent.reports.assembler import ReportAssembler
 
 
 def main() -> int:
@@ -62,7 +63,7 @@ def main() -> int:
         )
         output = settings.output_dir / output_name
         output.mkdir(parents=True, exist_ok=False)
-        (output / "result.json").write_text(state.model_dump_json(indent=2), encoding="utf-8")
+        (output / "result.json").write_text(ReportAssembler().to_json(state), encoding="utf-8")
         (output / "report.md").write_text(markdown, encoding="utf-8")
     except (ApplicationError, OSError, SchemaError) as exc:
         code = exc.code if isinstance(exc, ApplicationError) else type(exc).__name__
