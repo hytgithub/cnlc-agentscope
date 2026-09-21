@@ -22,6 +22,7 @@ from cnlc_agent.reports.assembler import ReportAssembler
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="测井解释 Mock 业务运行与历史查询")
+    # parser.add_argument("--well-id", default="WELL_DI73_56H_LAYER64")
     parser.add_argument("--well-id", default="WELL_MOCK_001")
     parser.add_argument("--task-id", help="查询历史任务及报告，不重新执行")
     parser.add_argument("--data-dir", type=Path)
