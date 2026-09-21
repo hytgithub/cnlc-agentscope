@@ -54,6 +54,35 @@ async def test_repeat_runs_have_distinct_ids_and_same_results(data_dir):
     assert len(second.completed_steps) == 10
 
 
+async def test_demo_mode_runs_all_steps_with_missing_input_and_skips_validation(
+    data_dir, fixture_data, monkeypatch
+):
+    del fixture_data["raw_data"]["curves"]["GR"]
+    del fixture_data["raw_data"]["auxiliary"]["core"]
+    write_fixture(data_dir, fixture_data)
+    purposes = []
+    original_generate = MockModelGateway.generate
+
+    async def recording_generate(self, request):
+        purposes.append(request.purpose)
+        return await original_generate(self, request)
+
+    monkeypatch.setattr(MockModelGateway, "generate", recording_generate)
+    app = build_application(AppSettings(mode="demo", mock_data_dir=data_dir, _env_file=None))
+    state, _ = await app.run(TaskRequest(well_id="WELL_MOCK_001"))
+
+    assert state.mode == "demo"
+    assert state.status == StepStatus.SUCCESS
+    assert state.completed_steps == list(StepId)
+    assert [execution.step_id for execution in state.executions] == list(StepId)
+    assert len(state.executions) == 10
+    assert state.missing_data == []
+    assert state.review_required is False
+    assert state.validation_result is not None
+    assert state.validation_result.result["demo_skipped"] is True
+    assert purposes == ["fluid", "classification"]
+
+
 async def test_missing_required_data_blocks_without_fake_results(data_dir, fixture_data):
     del fixture_data["raw_data"]["curves"]["GR"]
     write_fixture(data_dir, fixture_data)

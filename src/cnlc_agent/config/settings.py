@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CNLC_", env_file=".env", extra="ignore")
 
-    mode: Literal["mock"] = "mock"
+    mode: Literal["mock", "demo"] = "mock"
     model_provider: Literal["mock", "openai_compatible", "openai-compatible", "real"] = "mock"
     mock_data_dir: Path = Path("mock_data")
     output_dir: Path = Path("outputs")

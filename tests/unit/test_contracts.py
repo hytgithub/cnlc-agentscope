@@ -37,6 +37,7 @@ def test_configuration_and_secret_repr(monkeypatch):
     assert AppSettings(_env_file=None).tool_timeout_seconds == 3.5
     with pytest.raises(ValidationError):
         AppSettings(mode="real", _env_file=None)
+    assert AppSettings(mode="demo", _env_file=None).mode == "demo"
     with pytest.raises(ValidationError):
         AppSettings(tool_timeout_seconds=0, _env_file=None)
     settings = ConnectionSettings(model_api_key="test-secret-value", _env_file=None)

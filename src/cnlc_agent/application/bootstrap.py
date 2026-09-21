@@ -53,7 +53,13 @@ def build_application(
     interpretation = InterpretationAgent(gateway, tools["calculate_sw"], caller, telemetry)
     validation = ValidationAgent(gateway, telemetry)
     workflow = InterpretationWorkflow(
-        build_steps(tools, caller, interpretation, validation),
+        build_steps(
+            tools,
+            caller,
+            interpretation,
+            validation,
+            demo_mode=settings.mode == "demo",
+        ),
         state_store if state_store is not None else InMemoryStateStore(),
         telemetry,
     )
@@ -62,5 +68,6 @@ def build_application(
         task_repository if task_repository is not None else InMemoryTaskRepository(),
         ReportAssembler(),
         telemetry,
+        mode=settings.mode,
         close_callbacks=close_callbacks,
     )

@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable
+from typing import Literal
 
 from cnlc_agent.agents.main_agent import MainAgent
 from cnlc_agent.application.ports import TaskRepository, Telemetry
@@ -16,16 +17,18 @@ class InterpretationTaskService:
         repository: TaskRepository,
         reports: ReportAssembler,
         telemetry: Telemetry,
+        mode: Literal["mock", "demo"] = "mock",
         close_callbacks: list[Callable[[], Awaitable[None]]] | None = None,
     ) -> None:
         self.main_agent = main_agent
         self.repository = repository
         self.reports = reports
         self.telemetry = telemetry
+        self.mode = mode
         self.close_callbacks = close_callbacks or []
 
     async def run(self, request: TaskRequest) -> tuple[InterpretationState, str]:
-        state = InterpretationState(task=request)
+        state = InterpretationState(task=request, mode=self.mode)
         with self.telemetry.span(
             "task.create",
             {

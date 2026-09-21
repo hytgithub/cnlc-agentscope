@@ -70,7 +70,7 @@ class StepExecution(Contract):
 
 class InterpretationState(StatePatch):
     schema_version: Literal["0.1-skeleton"] = "0.1-skeleton"
-    mode: Literal["mock"] = "mock"
+    mode: Literal["mock", "demo"] = "mock"
     task: TaskRequest
     workflow_execution_id: str = Field(default_factory=lambda: str(uuid4()))
     trace_id: str = Field(default_factory=lambda: uuid4().hex)

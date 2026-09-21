@@ -18,6 +18,16 @@ uv run cnlc-agent --well-id WELL_MOCK_001
 也可以使用 `uv run python -m cnlc_agent.main`。
 默认不需要 `.env`、密钥、数据库或外部网络连接。可复制 `.env.example` 到 `.env` 调整配置。
 
+明天的完整演示链路可显式启用 Demo Mode：
+
+```bash
+CNLC_MODE=demo CNLC_MODEL_PROVIDER=mock uv run cnlc-agent --well-id WELL_MOCK_001
+```
+
+Demo Mode 将演示资料视为完整，W03/W04/W05/W08 使用 fixture Mock Tool，W06/W07
+仍通过统一 ModelGateway，W09 返回结构化跳过验证结果并继续到 W10。将 provider 改为
+`openai_compatible` 并配置本地 DashScope 凭据后，W06/W07 会调用 `qwen-plus`。
+
 每次运行生成独立任务，输出目录为 `outputs/<task_id>/`：
 
 - `result.json`：结构化结果、状态变化、步骤记录、缺失信息和错误。

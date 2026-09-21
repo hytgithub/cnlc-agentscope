@@ -4,7 +4,7 @@ from cnlc_agent.agents.interpretation_agent import InterpretationAgent
 from cnlc_agent.agents.validation_agent import ValidationAgent
 from cnlc_agent.application.ports import ModelRequest
 from cnlc_agent.domain.enums import StepId, StepStatus, ValidationStatus
-from cnlc_agent.domain.models import MissingData, StageResult, WellData
+from cnlc_agent.domain.models import MissingData, StageResult, ValidationResult, WellData
 from cnlc_agent.domain.state import InterpretationState, StatePatch, StepOutcome
 from cnlc_agent.tools.contracts import Tool, ToolCaller, ToolInput
 from cnlc_agent.workflows.node import WorkflowNode
@@ -57,6 +57,8 @@ def build_steps(
     caller: ToolCaller,
     interpretation: InterpretationAgent,
     validation: ValidationAgent,
+    *,
+    demo_mode: bool = False,
 ) -> list[WorkflowNode]:
     async def load(state: InterpretationState) -> StepOutcome:
         output = await caller.call(tools["get_well_data"], tool_request(state, StepId.W01))
@@ -70,6 +72,10 @@ def build_steps(
 
     async def completeness(state: InterpretationState) -> StepOutcome:
         assert state.raw_data is not None and state.data_requirements is not None
+        if demo_mode:
+            return StepOutcome(
+                reason="Demo Mode：将演示井资料视为完整，继续执行 W03–W10",
+            )
         raw = state.raw_data
         missing: list[MissingData] = []
         if not raw.depths:
@@ -142,6 +148,16 @@ def build_steps(
         return outcome_for(result, StatePatch(interval_result=result))
 
     async def validate(state: InterpretationState) -> StepOutcome:
+        if demo_mode:
+            result = ValidationResult(
+                status=StepStatus.SUCCESS,
+                result={"demo_skipped": True, "summary": "Demo Mode 跳过真实综合验证"},
+                evidence=["Demo Mode：保留结构化验证占位结果"],
+                validation_status=ValidationStatus.CONSISTENT,
+                is_mock=True,
+                source="demo:w09-skipped-validation",
+            )
+            return outcome_for(result, StatePatch(validation_result=result))
         result = await validation.run(model_request(state, "validation"))
         outcome = outcome_for(result, StatePatch(validation_result=result))
         if outcome.status in {StepStatus.SUCCESS, StepStatus.WARNING}:

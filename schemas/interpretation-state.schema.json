@@ -652,8 +652,11 @@
       "type": "array"
     },
     "mode": {
-      "const": "mock",
       "default": "mock",
+      "enum": [
+        "mock",
+        "demo"
+      ],
       "title": "Mode",
       "type": "string"
     },
