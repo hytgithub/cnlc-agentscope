@@ -37,7 +37,7 @@ function resultPayload(pair: ToolCallWithResult): DemoToolResult | null {
 	}
 }
 
-function JsonBlock({ value }: { value: unknown }) {
+function renderJsonBlock(value: unknown): ReactNode {
 	return (
 		<pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-sm bg-muted p-2 text-xs">
 			{JSON.stringify(value ?? {}, null, 2)}
@@ -45,7 +45,7 @@ function JsonBlock({ value }: { value: unknown }) {
 	);
 }
 
-function StepCard({ step }: { step: DemoStep }) {
+function renderStepCard(step: DemoStep): ReactNode {
 	return (
 		<details className="rounded-sm border bg-background">
 			<summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 text-xs">
@@ -60,11 +60,11 @@ function StepCard({ step }: { step: DemoStep }) {
 			<div className="space-y-2 border-t px-2 py-2 text-xs">
 				<div>
 					<div className="mb-1 text-muted-foreground">输入摘要</div>
-					<JsonBlock value={step.input_summary} />
+					{renderJsonBlock(step.input_summary)}
 				</div>
 				<div>
 					<div className="mb-1 text-muted-foreground">输出摘要</div>
-					<JsonBlock value={step.output_summary} />
+					{renderJsonBlock(step.output_summary)}
 				</div>
 				{step.evidence && step.evidence.length > 0 && (
 					<div>
@@ -113,7 +113,9 @@ function renderBody(pair: ToolCallWithResult): ReactNode {
 			</div>
 			{payload.summary && <p className="text-muted-foreground">{payload.summary}</p>}
 			<div className="space-y-1.5">
-				{(payload.steps ?? []).map((step) => <StepCard key={step.id} step={step} />)}
+				{(payload.steps ?? []).map((step) => (
+					<div key={step.id}>{renderStepCard(step)}</div>
+				))}
 			</div>
 			{payload.report_markdown && (
 				<div className="space-y-1 border-t pt-3">
