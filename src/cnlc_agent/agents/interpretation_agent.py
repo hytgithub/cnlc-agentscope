@@ -1,3 +1,5 @@
+from pydantic import ValidationError as SchemaError
+
 from cnlc_agent.application.ports import ModelGateway, ModelRequest, Telemetry
 from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.models import JsonObject, StageResult
@@ -41,7 +43,18 @@ class InterpretationAgent:
                 request = request.model_copy(deep=True)
                 request.context["sw_result"] = output.data
             with self.telemetry.span("model", attributes):
-                result = StageResult.model_validate(await self.gateway.generate(request))
+                raw_result = await self.gateway.generate(request)
+                try:
+                    result = StageResult.model_validate(raw_result)
+                except SchemaError:
+                    if request.context.get("execution_mode") != "demo":
+                        raise
+                    result = StageResult(
+                        result=raw_result,
+                        evidence=["Demo Mode：模型返回 JSON object，已补齐阶段结果外壳"],
+                        is_mock=False,
+                        source="model:demo-normalized",
+                    )
             # Keep deterministic Tool evidence in the structured result, including in mock mode.
             if request.purpose == "fluid":
                 result.result["sw_result"] = request.context["sw_result"]

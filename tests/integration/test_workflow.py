@@ -83,6 +83,21 @@ async def test_demo_mode_runs_all_steps_with_missing_input_and_skips_validation(
     assert purposes == ["fluid", "classification"]
 
 
+async def test_demo_mode_wraps_valid_json_model_payload(data_dir, monkeypatch):
+    async def json_only_response(self, request):
+        return {"model_payload": request.purpose}
+
+    monkeypatch.setattr(MockModelGateway, "generate", json_only_response)
+    app = build_application(AppSettings(mode="demo", mock_data_dir=data_dir, _env_file=None))
+    state, _ = await app.run(TaskRequest(well_id="WELL_MOCK_001"))
+
+    assert state.status == StepStatus.SUCCESS
+    assert state.fluid_result is not None
+    assert state.fluid_result.source == "model:demo-normalized"
+    assert state.layer_classification is not None
+    assert state.layer_classification.result["model_payload"] == "classification"
+
+
 async def test_missing_required_data_blocks_without_fake_results(data_dir, fixture_data):
     del fixture_data["raw_data"]["curves"]["GR"]
     write_fixture(data_dir, fixture_data)

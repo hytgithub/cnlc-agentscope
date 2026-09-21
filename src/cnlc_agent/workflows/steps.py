@@ -31,12 +31,29 @@ def model_request(state: InterpretationState, purpose: str) -> ModelRequest:
         "layer_classification",
         "interval_result",
     }
+    context = state.model_dump(mode="json", include=fields)
+    context["response_contract"] = {
+        "status": "SUCCESS or WARNING",
+        "result": "JSON object containing the requested interpretation result",
+        "evidence": "array of strings",
+        "conflicts": "array of strings",
+        "missing_evidence": "array of strings",
+        "warnings": "array of strings",
+        "recommended_action": "string",
+        "is_mock": False,
+        "source": "model:qwen-plus",
+    }
+    context["response_instruction"] = (
+        "Return only one JSON object matching response_contract. Do not return markdown. "
+        "Use only the supplied context and do not invent missing measurements."
+    )
+    context["execution_mode"] = state.mode
     return ModelRequest(
         task_id=state.task.task_id,
         trace_id=state.trace_id,
         well_id=state.task.well_id,
         purpose=purpose,
-        context=state.model_dump(mode="json", include=fields),
+        context=context,
     )
 
 
