@@ -100,3 +100,44 @@ MODEL_API_KEY=仅在本地环境设置
 默认离线测试不访问公网。显式配置 `CNLC_RUN_REAL_MODEL_TEST=1` 和本地 API Key 后，
 运行 `uv run pytest tests/integration/test_real_model.py -v` 验证 qwen-plus 连通性。
 实现和边界见 [`docs/tasks/004-real-model.md`](docs/tasks/004-real-model.md)。
+
+## Demo Run：JSON + Markdown 单井报告（Task 006）
+
+在仓库根目录执行；以下显式选用离线 Mock 和内存存储，无需模型密钥或数据库：
+
+```bash
+uv sync --locked --dev
+CNLC_MODEL_PROVIDER=mock CNLC_PERSISTENCE=memory uv run cnlc-agent \
+  --well-id WELL_MOCK_001 \
+  --data-dir mock_data \
+  --output-dir outputs
+```
+
+保留现有 CLI 和按任务分目录的规范，可重复运行而不覆盖之前的报告。
+命令标准输出为 JSON，包含 `task_id`、`status`、`result`、`report` 路径：
+
+```text
+outputs/<task_id>/
+├── result.json
+└── report.md
+```
+
+JSON 保留 InterpretationState 契约，可再次解析；导出时隐藏凭据字段及原始错误消息，
+保留稳定错误代码。Markdown 展示井信息、采样与曲线、QC、岩性、物性、流体、
+油气水层分类、层段顶底深与厚度、综合验证和最终执行状态。
+每阶段展示 `source`、`is_mock` 和 Demo Skip 标记；仅展示 State 已有结果，不计算专业结论。
+`result.demo_skipped=true` 明确标为 Demo Skip；执行记录中的 `SKIPPED` 单独展示。
+未生成结果不冒充跳过或成功。真实模型基于 Mock 输入的输出也不是经过验证的真实解释结论。
+
+```bash
+uv run pytest tests/integration/test_demo_report_e2e.py -v
+```
+
+该测试覆盖成功、WARNING、JSON 契约、Markdown 关键结果，以及模拟模型鉴权失败时
+CLI、日志和报告不泄漏测试密钥或上游原始异常。全部离线，不消耗公网模型额度。
+
+**Integration Dependency：** 本分支基于 `demo/2026-09-22`，Task 005 尚未合入。
+当前验收为现有 Mock Workflow 的 W01–W10 E2E；不能据此声称 qwen-plus Demo 已通过。
+待 Task 005 合入集成分支后，核对其 Demo Skip 字段与上述报告约定，并使用本地设置的
+真实模型配置运行同一 CLI，确认 W06/W07、W09 Demo Skip、W10 及两份输出。
+Task 004 的真实模型连通性测试不能代替这次最终 E2E。

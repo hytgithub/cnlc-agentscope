@@ -1,75 +1,190 @@
+"""Render existing state without interpreting geology or changing workflow decisions."""
+
 import json
+import re
+from typing import Any
 
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.state import InterpretationState
 
+LABELS = {
+    "quality": "QC 质量",
+    "correction_applied": "是否校正",
+    "lithology": "岩性",
+    "vsh": "泥质含量",
+    "porosity": "孔隙度",
+    "permeability": "渗透率",
+    "reservoir": "储层",
+    "water_saturation": "含水饱和度",
+    "fluid_type": "流体类型",
+    "layer_type": "层类型",
+    "intervals": "层段",
+    "top_depth_m": "顶深（m）",
+    "bottom_depth_m": "底深（m）",
+    "gross_thickness_m": "总厚度（m）",
+    "effective_thickness_m": "有效厚度（m）",
+    "summary": "摘要",
+}
+
+
+def _safe(value: Any) -> Any:
+    """Redact credential fields and raw ErrorDetail messages in an export copy."""
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            if re.search(r"api.?key|password|secret|token|authorization|raw.?exception", key, re.I):
+                result[key] = "[REDACTED]"
+            elif key == "message" and "code" in value:
+                result[key] = "执行异常；请根据错误代码排查。"
+            else:
+                result[key] = _safe(item)
+        return result
+    if isinstance(value, list):
+        return [_safe(item) for item in value]
+    if isinstance(value, str):
+        return re.sub(r"\bsk-[\w.\-]+|(?i:Bearer)\s+\S+", "[REDACTED]", value)
+    return value
+
+
+def _cell(value: Any) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("|", "&#124;")
+        .replace("\n", " / ")
+        .replace("\r", "")
+    )
+
+
+def _rows(value: Any, prefix: str = "") -> list[str]:
+    if isinstance(value, dict):
+        if "value" in value and set(value) <= {"value", "unit"}:
+            return [f"| {_cell(prefix)} | {_cell(value['value'])} {_cell(value.get('unit', ''))} |"]
+        rows = []
+        for key, item in value.items():
+            label = LABELS.get(str(key), str(key))
+            rows.extend(_rows(item, f"{prefix} / {label}" if prefix else label))
+        return rows
+    if isinstance(value, list):
+        return [row for i, item in enumerate(value, 1) for row in _rows(item, f"{prefix} {i}")]
+    return [f"| {_cell(prefix)} | {_cell(value)} |"]
+
 
 class ReportAssembler:
     def to_json(self, state: InterpretationState) -> str:
-        return state.model_dump_json(indent=2)
+        # Keep the InterpretationState schema and never mutate the persisted state.
+        return json.dumps(_safe(state.model_dump(mode="json")), ensure_ascii=False, indent=2)
 
     def to_markdown(self, state: InterpretationState) -> str:
+        data = json.loads(self.to_json(state))
         complete = state.status in {StepStatus.SUCCESS, StepStatus.WARNING}
         lines = [
-            "# 单井测井解释骨架演示报告" if complete else "# 单井解释任务诊断摘要",
+            "# 单井测井解释演示报告" if complete else "# 单井解释任务诊断摘要",
             "",
-            "> Mock 演示：专业参数和结论为测试预设，不代表真实测井解释。",
+            "> Demo / Mock 演示：Mock 专业参数和结论为测试预设，不代表真实测井解释。",
+            "> 非 Mock 输出也可能基于 Mock 输入；不代表经过专业验证的真实结论。",
             "",
-            f"- 任务：{state.task.task_id}",
-            f"- 井：{state.task.well_id}",
+            "## 井基本信息",
+            "",
+            f"- 任务：{_cell(data['task']['task_id'])}",
+            f"- 井号：{_cell(data['task']['well_id'])}",
+            f"- 井名：{_cell(data['well']['name']) if data['well'] else '未加载'}",
             f"- 状态：{state.status.value}",
-            f"- 已完成步骤：{', '.join(state.completed_steps) or '无'}",
+            "",
+            "## 数据概况",
             "",
         ]
-        if state.well:
-            lines.extend(["## 井基本信息", "", f"井名：{state.well.name}", ""])
-        if state.raw_data:
-            lines.extend(
-                [
-                    "## 数据情况",
-                    "",
-                    f"深度采样点：{len(state.raw_data.depths)}；"
-                    f"曲线：{', '.join(state.raw_data.curves)}；"
-                    f"深度单位：{state.raw_data.depth_unit}（{state.raw_data.depth_reference}）。",
-                    "",
-                ]
+        raw = data["raw_data"]
+        if raw:
+            lines.append(
+                f"深度采样点：{len(raw['depths'])}；深度单位：{raw['depth_unit']}"
+                f"（{raw['depth_reference']}）。"
             )
-        sections = [
-            ("质量控制", state.qc_result),
-            ("岩性识别", state.lithology_result),
-            ("储层与物性", state.petrophysics_result),
-            ("流体识别", state.fluid_result),
-            ("油气水层分类", state.layer_classification),
-            ("层段与厚度", state.interval_result),
-            ("综合验证", state.validation_result),
-            ("最终检查", state.final_check),
-        ]
-        for title, result in sections:
-            if result is None:
-                continue
-            lines.extend(
-                [
-                    f"## {title}",
-                    "",
-                    "```json",
-                    json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2),
-                    "```",
-                    "",
-                ]
-            )
-        lines.extend(["## 缺失资料与提示", ""])
+            if raw["depths"]:
+                lines.append(f"深度范围：{raw['depths'][0]}–{raw['depths'][-1]} m。")
+            lines.extend(["", "| 曲线 | 单位 | 有效采样数 |", "|---|---|---|"])
+            for name, curve in raw["curves"].items():
+                count = sum(v is not None for v in curve["values"])
+                lines.append(f"| {_cell(name)} | {_cell(curve['unit'])} | {count} |")
+        else:
+            lines.append("数据未加载。")
         lines.extend(
-            f"- {item.importance}: {item.field}（影响 {item.affected_step}）"
-            for item in state.missing_data
+            [
+                "",
+                "## 步骤执行与 Demo Skip",
+                "",
+                "Demo Skip 仅依据显式 demo_skipped 标记；SKIPPED 表示执行记录跳过。",
+                "缺失结果不视为 Demo Skip。",
+                "",
+                "| 步骤 | 执行状态 |",
+                "|---|---|",
+            ]
         )
-        lines.extend(f"- {warning}" for warning in state.warnings)
-        lines.extend(f"- {error.code}: {error.message}" for error in state.errors)
-        if not (state.missing_data or state.warnings or state.errors):
+        for execution in data["executions"]:
+            lines.append(f"| {execution['step_id']} | {execution['status']} |")
+        sections = [
+            ("QC 质量控制", "qc_result"),
+            ("岩性识别", "lithology_result"),
+            ("储层与物性", "petrophysics_result"),
+            ("流体识别", "fluid_result"),
+            ("油气水层分类", "layer_classification"),
+            ("层段划分与厚度", "interval_result"),
+            ("综合验证状态", "validation_result"),
+            ("最终检查", "final_check"),
+        ]
+        for title, field in sections:
+            lines.extend(["", f"## {title}", ""])
+            result = data[field]
+            if result is None:
+                lines.append("未生成结果；不推断专业结论。")
+                continue
+            skipped = (
+                result.get("demo_skipped") is True or result["result"].get("demo_skipped") is True
+            )
+            lines.extend(
+                [
+                    f"- 状态：{result['status']}",
+                    f"- 来源：{_cell(result['source'])}；is_mock={str(result['is_mock']).lower()}"
+                    f"（{'Mock 预设' if result['is_mock'] else '非 Mock 输出'}）",
+                    f"- Demo Skip：{'是；本步骤未做真实业务验证' if skipped else '无显式标记'}",
+                ]
+            )
+            if "validation_status" in result:
+                lines.append(
+                    f"- 综合验证：{result['validation_status']}"
+                    + ("（Demo Skip，不代表真实验证通过）" if skipped else "")
+                )
+            lines.extend(["", "| 项目 | State 中的结果 |", "|---|---|"])
+            lines.extend(_rows(result["result"]) or ["| 结果 | 未提供 |"])
+            lines.append("")
+            for key, label in [
+                ("evidence", "证据"),
+                ("conflicts", "冲突"),
+                ("missing_evidence", "缺失证据"),
+                ("warnings", "提示"),
+            ]:
+                lines.extend(f"- {label}：{_cell(item)}" for item in result[key])
+            lines.extend(["", f"建议动作：{_cell(result['recommended_action'])}"])
+        lines.extend(["", "## 缺失资料与提示", ""])
+        lines.extend(
+            f"- {item['importance']}: {_cell(item['field'])}（影响 {item['affected_step']}）"
+            for item in data["missing_data"]
+        )
+        lines.extend(f"- {_cell(item)}" for item in data["warnings"])
+        lines.extend(f"- 错误代码：{_cell(item['code'])}（执行异常）" for item in data["errors"])
+        if not (data["missing_data"] or data["warnings"] or data["errors"]):
             lines.append("当前演示数据未触发缺失或执行错误。")
-        lines.extend(["", "## 执行结论", ""])
-        lines.append(
-            "Mock 骨架链路已完成；真实模型、专业算法与基础设施尚待接入。"
-            if complete
-            else "任务未完成，以上结果仅供定位问题；不能形成最终专业解释结论。"
+        lines.extend(
+            [
+                "",
+                "## 最终执行结果",
+                "",
+                f"最终状态：{state.status.value}；需要人工复核：{state.review_required}。",
+                "Demo 链路已完成；Mock 结果不能作为真实专业解释结论。"
+                if complete
+                else "任务未完成，以上结果仅供定位问题；不能形成最终专业解释结论。",
+            ]
         )
         return "\n".join(lines) + "\n"

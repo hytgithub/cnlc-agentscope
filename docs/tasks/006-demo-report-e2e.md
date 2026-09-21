@@ -54,3 +54,28 @@
 - Workflow 核心规则
 
 完成后提交并 push 到 codex/demo-2026-09-22-report。
+
+## 执行记录（2026-09-21）
+
+- 在既有 `codex/demo-2026-09-22-report` 分支实现，不修改 main。
+- ReportAssembler 输出可读 Markdown，保留来源、Mock、显式 Demo Skip、证据、
+  冲突、缺失资料及最终状态；只渲染已有 State，不新增业务判断。
+- CLI 保留 `outputs/<task_id>/result.json`、`report.md` 规范；JSON 经过报告层导出，
+  隐藏凭据字段及原始 ErrorDetail 消息，保留稳定错误代码，原始 State 不被修改。
+- 新增五个离线测试场景：完整 CLI SUCCESS、WARNING、导出脱敏与 State 不变、
+  显式 Demo Skip、CLI 模型鉴权失败（本地 HTTP 服务，不调用公网模型）。
+- 实际运行 WELL_MOCK_001：SUCCESS，W01–W10 完成，两份文件生成。
+- 验收：pytest 68 passed / 4 skipped；ruff check、format check、mypy、uv build 通过。
+  四个跳过项为需显式启用的真实模型和真实 PostgreSQL/Redis 测试。
+
+### Integration Dependency
+
+Task 005 未合入。当前通过的是 Mock Workflow E2E，不是 qwen-plus 最终 Demo E2E。
+待 Task 005 合入后，在集成分支核对 Demo Skip 字段（当前支持阶段结果内
+`result.demo_skipped=true` 和执行记录 `SKIPPED`），再通过相同 CLI 运行真实模型，
+确认 W06/W07 结果、W09 Demo Skip、W10 完成及 JSON/Markdown 输出。
+未为绕过依赖修改 Workflow、ModelGateway 或专业算法。
+
+### Architecture Issue
+
+No Architecture Issue found.
