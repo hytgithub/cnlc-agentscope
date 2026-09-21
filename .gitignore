@@ -14,3 +14,22 @@ build/
 !.env.example
 outputs/
 .DS_Store
+
+# Frontend dependencies, build outputs, caches, and local configuration.
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+build/
+**/build/
+.cache/
+**/.cache/
+.next/
+**/.next/
+.turbo/
+**/.turbo/
+*.log
+**/*.log
+.env
+.env.*
+!.env.example
