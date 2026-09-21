@@ -2,7 +2,7 @@
 
 - 日期：2026-09-20。
 - 起始版本：3e4057b2ceab40a21435c34643fd3a84ecb93f24（Task 02）。
-- 状态：实现完成，本地验证通过；真实服务联调待验收。
+- 状态：实现完成；本地检查通过，用户提供的真实服务联调结果通过（2026-09-21）。
 - 依据：架构第 30–36、58、69–70、73 节，MVP 第 12–13 节及 AGENTS.md。
 
 ## 本次实现与核心设计
@@ -57,8 +57,8 @@
 | Schema 与模型一致性 | 通过，未修改既有业务 Schema |
 | uv build | sdist 和 wheel 构建通过 |
 | git diff --check | 通过 |
-| PostgreSQL 迁移实际执行 | 未验证：没有服务 |
-| 真实完整持久化 / 进程重启查询 / Redis TTL | 未验证：3 项真实测试跳过 |
+| PostgreSQL 迁移实际执行 | 用户本地真实测试 fixture 通过 |
+| 真实完整持久化 / 进程重启查询 / Redis TTL | 用户本地 3 passed in 8.77s |
 
 普通测试包括原有正常 W01–W10、缺失数据、模型/工具失败、验证冲突；新增缓存失败后的
 持久化诊断、数据库失败阻止缓存写入、重复任务不覆盖、关闭连接、配置和错误脱敏等。
@@ -69,8 +69,8 @@
 
 ## 未完成与下一阶段依赖
 
-1. 在支持 Compose 的开发环境配置 .env，执行迁移及真实服务测试；命令见 05 文档。
-2. 通过后才标记 MVP 数据库/Redis 条目验收完成。
+1. 真实服务联调已由用户本地执行并回传通过结果，运行方法见 05 文档。
+2. 本阶段数据库/Redis 最小能力验收通过；不代表整个 MVP 验收完成。
 3. PostgreSQL 保存最后快照，不提供自动恢复；进程中断可能留下未完成任务。
 4. 不提供数据库/Redis 分布式事务；缓存故障可能留旧值，以数据库为准。
 5. 内部模型、AgentScope Runtime、Web、OpenTelemetry、Retry/Rollback 留给后续任务。
@@ -79,4 +79,21 @@
 ## Architecture Issue
 
 **No Architecture Issue found.** 技术选型、Agent 职责和业务顺序保持既有基线。
-真实服务验收受执行环境阻塞，属于验证限制，不作为已通过的验收项隐藏。
+首次环境限制已通过用户本地执行补齐验证。
+
+## 2026-09-21 用户本地验收补充
+
+证据来源：用户粘贴的 pytest 运行输出；非助手远程连接用户电脑执行。
+环境：darwin、Python 3.11.15、pytest 9.1.1、pytest-asyncio 1.4.0。
+命令：`uv run pytest tests/integration/test_real_persistence.py -v`。
+
+| 测试 | 结果 |
+|---|---|
+| test_real_workflow_restart_and_duplicate | PASSED |
+| test_real_cache_expiry_and_corruption | PASSED |
+| test_real_failed_workflow_report_is_durable | PASSED |
+
+合计 **3 passed in 8.77s**。覆盖实际迁移、正常任务、重复任务拒绝、跨进程历史查询、
+Redis 过期/损坏处理以及失败报告持久化。本次输出未包含 Git SHA 或服务版本，未推断这些信息。
+历史 49 passed / 3 skipped 保留为前一次独立验证记录，不表述为本次全量 52 passed。
+本次仅更新验收文档与 PR 状态，不修改实现代码，也不保存连接密码。
