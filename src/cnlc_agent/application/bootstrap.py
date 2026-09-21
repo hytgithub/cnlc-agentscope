@@ -3,6 +3,7 @@
 from cnlc_agent.agents.interpretation_agent import InterpretationAgent
 from cnlc_agent.agents.main_agent import MainAgent
 from cnlc_agent.agents.validation_agent import ValidationAgent
+from cnlc_agent.application.ports import InterpretationStateStore, TaskRepository
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings
 from cnlc_agent.infrastructure.mock import (
@@ -19,7 +20,12 @@ from cnlc_agent.workflows.interpretation_workflow import InterpretationWorkflow
 from cnlc_agent.workflows.steps import build_steps
 
 
-def build_application(settings: AppSettings) -> InterpretationTaskService:
+def build_application(
+    settings: AppSettings,
+    *,
+    task_repository: TaskRepository | None = None,
+    state_store: InterpretationStateStore | None = None,
+) -> InterpretationTaskService:
     repository = MockWellRepository(settings.mock_data_dir)
     telemetry = LoggingTelemetry()
     caller = ToolCaller(telemetry, settings.tool_timeout_seconds)
@@ -37,12 +43,12 @@ def build_application(settings: AppSettings) -> InterpretationTaskService:
     validation = ValidationAgent(gateway, telemetry)
     workflow = InterpretationWorkflow(
         build_steps(tools, caller, interpretation, validation),
-        InMemoryStateStore(),
+        state_store if state_store is not None else InMemoryStateStore(),
         telemetry,
     )
     return InterpretationTaskService(
         MainAgent(workflow, telemetry),
-        InMemoryTaskRepository(),
+        task_repository if task_repository is not None else InMemoryTaskRepository(),
         ReportAssembler(),
         telemetry,
     )
