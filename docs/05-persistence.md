@@ -103,13 +103,15 @@ uv run pytest tests/integration/test_real_persistence.py -v
 Redis TTL 和缓存损坏。地址缺失会显式 skip；配置了地址但服务不可用则失败。
 不能把 skip 当作真实服务验收通过。
 
-本次执行环境没有 Docker/PostgreSQL/Redis 服务，系统安装受权限限制，真实服务验证尚待运行。
+首次执行环境没有 Docker/PostgreSQL/Redis 服务，系统安装受权限限制。
+2026-09-21 用户在本地运行真实集成测试并提供输出：3 passed in 8.77s。
+环境为 macOS / Python 3.11.15 / pytest 9.1.1；已补齐本阶段真实服务验证。
 普通测试已覆盖适配器调用、真实客户端连接拒绝、故障分类、资源关闭和流程终止；
 迁移 SQL 离线生成通过不等于迁移已在数据库执行。
 
 ## 5. 待完成
 
-- 在可运行 Compose 的环境完成真实服务验收，再标记 MVP 的数据库/Redis 条目通过。
+- 本阶段真实服务测试已通过（用户提供的执行结果）；后续代码变更继续回归验证。
 - 后续独立任务接入内部模型与 AgentScope Runtime。
 - Retry/Rollback、崩溃恢复、任务锁、Web、OpenTelemetry 仍未实现。
 - Pending final well-data schema：正式业务字段和算法需项目方确认。
