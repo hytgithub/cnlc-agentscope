@@ -1,1 +1,1 @@
-"""Structured tool contracts and implementations."""
+"""结构化 Tool Contract 与具体实现。"""

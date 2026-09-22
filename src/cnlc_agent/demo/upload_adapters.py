@@ -1,4 +1,4 @@
-"""Deterministic adapters for explicitly synthetic uploaded demo data."""
+"""把显式标记的合成 Demo 数据确定性转换为项目 MockFixture。"""
 
 from typing import Any, cast
 
@@ -18,10 +18,9 @@ _CURVE_FIELDS = {
 
 
 def adapt_synthetic_context(data: dict[str, Any]) -> MockFixture | None:
-    """Map the known synthetic interpretation-context shape to MockFixture.
+    """把已知的合成解释上下文映射为 MockFixture。
 
-    The adapter only rearranges values already present in the upload. It does
-    not calculate petrophysical properties or add professional conclusions.
+    该适配器只重排上传文件中已有的值，不计算物性参数，也不新增专业结论。
     """
 
     if data.get("data_type") != "synthetic_single_well_interpretation_context":
@@ -41,6 +40,7 @@ def adapt_synthetic_context(data: dict[str, Any]) -> MockFixture | None:
     if len(set(depths)) != len(depths):
         return None
 
+    # 仅收集上传统计值中真实存在的曲线，不用默认值补造缺失曲线。
     curves: dict[str, dict[str, Any]] = {}
     for source_name, (target_name, unit) in _CURVE_FIELDS.items():
         values = [
@@ -128,6 +128,7 @@ def adapt_synthetic_context(data: dict[str, Any]) -> MockFixture | None:
     consistency = [
         str(_dict(item).get("consistency_with_log_interpretation", "")).lower() for item in tests
     ]
+    # 验证状态完全由上传文件的显式一致性标记决定，不推断试油结论。
     validation_status = (
         ValidationStatus.INSUFFICIENT_EVIDENCE
         if not consistency

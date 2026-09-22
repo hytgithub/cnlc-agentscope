@@ -1,1 +1,1 @@
-"""Three agent facades; framework-backed reasoning is a subsequent task."""
+"""三个核心 Agent 的业务门面；框架接入细节由应用装配层统一处理。"""

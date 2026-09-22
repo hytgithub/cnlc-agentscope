@@ -1,4 +1,4 @@
-"""Official AgentScope Agent Service wired to the CNLC demo Tool."""
+"""把测井解释 Demo Tool 接入官方 AgentScope Agent Service。"""
 
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -31,7 +31,7 @@ BACKEND_MODEL_OWNER_ID = "__cnlc_backend_model__"
 
 
 class BackendModelAccessPolicy(ResourceAccessPolicyBase):
-    """Share the server-owned model credential without exposing its secret."""
+    """向前端共享服务端模型凭证的只读引用，但不暴露密钥。"""
 
     def __init__(self, *, enabled: bool) -> None:
         self._enabled = enabled
@@ -42,6 +42,8 @@ class BackendModelAccessPolicy(ResourceAccessPolicyBase):
         kind: ResourceKind,
         storage: StorageBase,
     ) -> list[ResourceRef]:
+        """仅允许普通用户读取后端托管凭证，凭证所有者无需重复授权。"""
+
         del storage
         if (
             not self._enabled
@@ -64,13 +66,15 @@ async def demo_agent_tools(
     agent_id: str,
     session_id: str,
 ) -> list[ToolBase]:
-    """Return the one business Tool for every AgentScope chat session."""
+    """为每个 AgentScope 会话只注册一个高层测井解释业务 Tool。"""
 
     del user_id, agent_id, session_id
     return [build_interpretation_tool()]
 
 
 def _redis_storage(connections: ConnectionSettings) -> RedisStorage:
+    """解析 REDIS_URL 并创建 AgentScope 会话存储，不输出连接凭据。"""
+
     raw_url = (
         connections.redis_url.get_secret_value()
         if connections.redis_url is not None
@@ -108,7 +112,7 @@ def create_demo_app(
     connections: ConnectionSettings | None = None,
     workspace_dir: Path | None = None,
 ) -> FastAPI:
-    """Create the AgentScope FastAPI service without connecting at import time."""
+    """创建 AgentScope FastAPI 服务；真正的网络连接由应用生命周期管理。"""
 
     settings = AppSettings()
     connections = connections or ConnectionSettings()
@@ -117,6 +121,7 @@ def create_demo_app(
     api_key = connections.model_api_key
     model_name = connections.model_name
     base_url = connections.model_base_url
+    # 只有后端模型配置完整且名称受支持时，才向前端发布只读模型选项。
     backend_credential = (
         DashScopeCredential(
             id=BACKEND_MODEL_CREDENTIAL_ID,
@@ -128,6 +133,7 @@ def create_demo_app(
         else None
     )
 
+    # 聊天会话和消息落入 Redis；消息总线只负责当前进程中的实时事件分发。
     app = create_app(
         storage=storage,
         message_bus=InMemoryMessageBus(),
@@ -154,7 +160,7 @@ def create_demo_app(
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
-        """Expose the server-managed qwen-plus credential to each local UI user."""
+        """确保每次请求前后端托管凭证已存在，前端无需配置 API Key。"""
 
         if backend_credential is not None:
             await storage.upsert_credential(
@@ -170,7 +176,7 @@ app = create_demo_app()
 
 
 def main() -> None:
-    """Start the AgentScope service on the official example's default port."""
+    """在官方示例默认的 8000 端口启动 AgentScope 服务。"""
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
 

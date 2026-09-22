@@ -1,4 +1,4 @@
-"""Explicit, process-local demo adapters. These do not replace PostgreSQL or Redis."""
+"""显式的进程内 Demo 适配器，不可冒充 PostgreSQL 或 Redis 持久化。"""
 
 import asyncio
 import json
@@ -14,14 +14,20 @@ from cnlc_agent.domain.state import InterpretationState
 
 
 class FixtureRepository(Protocol):
+    """从演示资料源读取 MockFixture 的最小端口。"""
+
     async def load(self, well_id: str) -> MockFixture: ...
 
 
 class MockWellRepository:
+    """仅允许从配置目录读取按井号命名的 JSON Fixture。"""
+
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
 
     async def load(self, well_id: str) -> MockFixture:
+        """校验井号和路径边界后，异步读取并验证演示井资料。"""
+
         try:
             TaskRequest(well_id=well_id)
         except SchemaError as exc:
@@ -44,12 +50,14 @@ class MockWellRepository:
 
 
 class MockModelGateway:
-    """Replay fixture responses; no LLM, network call or interpretation calculation."""
+    """回放 Fixture 预设响应，不调用 LLM、网络或专业计算。"""
 
     def __init__(self, repository: FixtureRepository) -> None:
         self.repository = repository
 
     async def generate(self, request: ModelRequest) -> JsonObject:
+        """按 purpose 读取对应预设结果，保持与真实模型网关相同接口。"""
+
         fixture = await self.repository.load(request.well_id)
         if request.purpose == "validation":
             return fixture.validation.model_dump(mode="json")
@@ -60,7 +68,7 @@ class MockModelGateway:
 
 
 class InMemoryStateStore:
-    """Demo/test only. Snapshots prevent a caller from mutating stored state."""
+    """仅供 Demo/测试；通过深拷贝防止调用方污染已保存快照。"""
 
     def __init__(self) -> None:
         self._states: dict[str, InterpretationState] = {}
@@ -74,7 +82,7 @@ class InMemoryStateStore:
 
 
 class InMemoryTaskRepository:
-    """Demo/test only; no persistence after process exit."""
+    """仅供 Demo/测试；进程退出后任务状态和报告全部丢失。"""
 
     def __init__(self) -> None:
         self._states: dict[str, InterpretationState] = {}

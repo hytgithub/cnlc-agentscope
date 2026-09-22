@@ -1,4 +1,4 @@
-"""Decode the official Web UI's attachment blocks using the existing demo schema."""
+"""按现有 Demo Schema 解码官方 Web UI 的附件消息块。"""
 
 import base64
 import binascii
@@ -15,11 +15,12 @@ MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
 
 class UploadError(ValueError):
-    """A safe user-facing attachment error, never a parser traceback."""
+    """可安全展示给用户的附件错误，不携带解析器堆栈或原始内容。"""
 
 
 def parse_upload(messages: list[Msg]) -> tuple[MockFixture, str]:
-    """Accept one JSON fixture, without requiring any form parameters."""
+    """从当前轮消息中提取一份 JSON Fixture 和自然语言指令。"""
+
     attachments: list[bytes] = []
     instructions: list[str] = []
     for message in messages:
@@ -49,12 +50,13 @@ def parse_upload(messages: list[Msg]) -> tuple[MockFixture, str]:
         data = json.loads(content)
         if not isinstance(data, dict) or not isinstance(data.get("well"), dict):
             raise ValueError("missing well")
-        # Never derive paths from attachment names. A missing business identifier is generated.
+        # 附件名绝不用于构造本地路径；缺少业务井号时生成受控标识。
         if not data["well"].get("well_id"):
             data["well"]["well_id"] = f"UPLOAD_{uuid4().hex}"
         try:
             fixture = MockFixture.model_validate(data)
         except ValidationError:
+            # 标准 MockFixture 校验失败后，只尝试项目明确支持的合成上下文适配器。
             adapted = adapt_synthetic_context(data)
             if adapted is None:
                 raise

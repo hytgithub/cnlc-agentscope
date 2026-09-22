@@ -1,4 +1,4 @@
-"""Log-based trace adapter; OTLP exporting is a later task."""
+"""基于日志的 Trace 适配器；OTLP 导出留待后续任务接入。"""
 
 import json
 import logging
@@ -9,23 +9,27 @@ from time import perf_counter
 
 from cnlc_agent.domain.models import JsonObject, utc_now
 
-# Optional request-local observer; the workflow stays independent of Web/AgentScope.
+# 请求级观察器只负责转发进度，Workflow 因此无需依赖 Web 或 AgentScope。
 event_observer: ContextVar[Callable[[str, JsonObject], None] | None] = ContextVar(
     "cnlc_event_observer", default=None
 )
 
 
 class LoggingTelemetry:
+    """同时输出机器可读 Trace 和面向演示终端的中文进度。"""
+
     def __init__(self) -> None:
         self.trace_logger = logging.getLogger("cnlc_agent.trace")
         self.progress_logger = logging.getLogger("cnlc_agent.progress")
 
     def event(self, name: str, attributes: JsonObject) -> None:
+        """记录业务事件，并在当前请求存在观察器时同步推送进度。"""
+
         observer = event_observer.get()
         if observer is not None:
             observer(name, attributes)
         event = {"event": name, "timestamp": utc_now().isoformat(), **attributes}
-        # Keep the complete machine-readable trace for debugging without obscuring the demo console.
+        # 完整结构化事件使用 DEBUG，避免大量 JSON 淹没演示终端的阶段摘要。
         self.trace_logger.debug(json.dumps(event, ensure_ascii=False))
         message = self._progress_message(name, attributes)
         if message:
@@ -60,12 +64,14 @@ class LoggingTelemetry:
 
     @contextmanager
     def span(self, name: str, attributes: JsonObject) -> Iterator[None]:
+        """记录开始、异常类型和耗时，不泄漏第三方异常原文。"""
+
         start = perf_counter()
         self.event(f"{name}.start", attributes)
         try:
             yield
         except Exception as exc:
-            # Record the class only: exception messages can contain credentials.
+            # 只记录异常类型；第三方异常文本可能包含连接串或鉴权信息。
             self.event(f"{name}.error", {**attributes, "error_type": type(exc).__name__})
             raise
         finally:

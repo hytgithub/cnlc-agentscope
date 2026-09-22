@@ -12,14 +12,10 @@ export interface CredentialWithModels {
 }
 
 /**
- * Fetches all credentials and their available models, grouped by provider type.
- * Provider type is read from `credential.data.type`.
- * Credentials without a `type` field or whose model fetch fails are silently skipped.
+ * 获取全部凭据及其可用模型，并按模型提供方类型分组。
  *
- * One credential list plus one model list per provider — the most expensive
- * fan-out on the page, and every model picker in the app mounts it. Cached
- * under the shared default window and re-fetched on demand through
- * `refetch`, which is what the "credential just added" trigger calls.
+ * 后端专用凭据只暴露项目已配置的模型，避免用户在前端选择一个后端并未授权的模型。
+ * 查询结果由 React Query 共享缓存；新增凭据后可通过 `refetch` 主动刷新。
  */
 async function fetchGroups(): Promise<Record<string, CredentialWithModels[]>> {
 	const { credentials } = await credentialApi.list();
@@ -32,6 +28,7 @@ async function fetchGroups(): Promise<Record<string, CredentialWithModels[]>> {
 			if (!result[type]) result[type] = [];
 			try {
 				const { models } = await modelApi.list(type);
+				// 普通凭据保留完整模型列表，项目内置凭据仅保留后端固定模型。
 				const visibleModels =
 					credential.id === BACKEND_MODEL_CREDENTIAL_ID
 						? models.filter((model) => model.name === BACKEND_MODEL_NAME)
@@ -54,12 +51,10 @@ async function fetchGroups(): Promise<Record<string, CredentialWithModels[]>> {
 	return result;
 }
 
-/**
- * Cache key for the grouped model list. Exported so a credential change —
- * which moves what these groups contain — can invalidate it.
- */
+/** 分组模型列表的缓存键；凭据变化时由调用方用它使缓存失效。 */
 export const AVAILABLE_MODELS_KEY = ['available-models'];
 
+/** 返回当前可用模型分组及其加载、错误和刷新状态。 */
 export function useAvailableModels() {
 	const { data, isPending, error, refetch } = useQuery({
 		queryKey: AVAILABLE_MODELS_KEY,

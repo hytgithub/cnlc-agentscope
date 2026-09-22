@@ -1,8 +1,7 @@
-"""Async OpenAI-Compatible model gateway.
+"""异步 OpenAI-Compatible 模型网关。
 
-The adapter owns only transport concerns.  Agents and workflows depend on the
-small ``ModelGateway`` port and receive JSON objects; no provider SDK or
-credential crosses that boundary.
+该适配器只负责配置、传输、重试和响应解析。Agent 与 Workflow 仅依赖精简的
+``ModelGateway`` 端口并接收 JSON 对象，供应商 SDK 和鉴权凭据不会越过此边界。
 """
 
 from __future__ import annotations
@@ -30,12 +29,11 @@ _DEFAULT_SYSTEM_PROMPT = (
 
 
 class OpenAICompatibleModelGateway:
-    """Call an OpenAI-compatible ``/chat/completions`` endpoint asynchronously.
+    """异步调用 OpenAI-Compatible 的 ``/chat/completions`` 接口。
 
-    ``max_retries`` is the number of additional transport attempts after the
-    first request. Only timeout, transport, rate-limit and 5xx failures are
-    retried. Authentication and invalid-request failures are returned
-    immediately. Workflow retry/rollback remains outside this adapter.
+    ``max_retries`` 表示首次请求之外的附加传输尝试次数。只有超时、网络、限流和
+    5xx 错误允许重试；鉴权和请求参数错误立即返回。Workflow 的业务 Retry/Rollback
+    不属于本适配器职责。
     """
 
     def __init__(
@@ -64,6 +62,7 @@ class OpenAICompatibleModelGateway:
             raise ModelError("MODEL_CONFIG_INVALID", "模型重试退避时间不能为负数")
 
         normalized = base_url.rstrip("/")
+        # 同时兼容传入服务根地址和完整 chat/completions 地址，避免重复拼接路径。
         if normalized.endswith("/chat/completions"):
             endpoint = normalized
         else:
@@ -83,6 +82,8 @@ class OpenAICompatibleModelGateway:
         settings: AppSettings,
         connections: ConnectionSettings | None = None,
     ) -> OpenAICompatibleModelGateway:
+        """从统一配置创建网关，并在启动阶段尽早暴露缺失配置。"""
+
         connections = connections or ConnectionSettings()
         if connections.model_base_url is None:
             raise ModelError("MODEL_CONFIG_MISSING", "MODEL_BASE_URL 未配置")
@@ -100,6 +101,8 @@ class OpenAICompatibleModelGateway:
         )
 
     async def generate(self, request: ModelRequest) -> JsonObject:
+        """发送结构化请求；只对明确可恢复的传输类错误执行有限重试。"""
+
         payload = self._payload(request)
         attempts = self.max_retries + 1
         for attempt in range(attempts):
@@ -130,11 +133,13 @@ class OpenAICompatibleModelGateway:
                 self._log_retry(request, attempt + 1, error.code)
                 await self._backoff(attempt)
             except Exception:
-                # Never copy provider exception text into application errors.
+                # 不复制供应商异常原文，防止凭据、URL 或请求内容进入应用错误。
                 raise ModelError("MODEL_UNKNOWN_ERROR", "模型请求发生未知错误") from None
         raise AssertionError("model request loop must return or raise")
 
     def _payload(self, request: ModelRequest) -> dict[str, Any]:
+        """生成零温度、强制 JSON object 的最小 Chat Completions 请求。"""
+
         try:
             context = json.dumps(request.context, ensure_ascii=False, separators=(",", ":"))
         except (TypeError, ValueError):
@@ -157,6 +162,8 @@ class OpenAICompatibleModelGateway:
         }
 
     async def _post(self, payload: Mapping[str, Any]) -> httpx.Response:
+        """执行单次 HTTP 请求并把状态码归类为稳定的 ModelError。"""
+
         try:
             response = await self.client.post(
                 self.endpoint,
@@ -190,6 +197,8 @@ class OpenAICompatibleModelGateway:
 
     @staticmethod
     def _parse_response(response: httpx.Response) -> JsonObject:
+        """解析供应商响应，并兼容模型偶尔包裹的 Markdown 代码围栏。"""
+
         try:
             envelope = response.json()
         except (ValueError, json.JSONDecodeError):
@@ -218,11 +227,15 @@ class OpenAICompatibleModelGateway:
         return result
 
     async def _backoff(self, attempt: int) -> None:
+        """执行有上限的指数退避，避免无限等待或请求风暴。"""
+
         if self.retry_backoff_seconds:
             await asyncio.sleep(min(self.retry_backoff_seconds * (2**attempt), 5.0))
 
     @staticmethod
     def _log_retry(request: ModelRequest, retry_number: int, code: str) -> None:
+        """只记录任务标识和稳定错误码，不记录请求上下文或凭据。"""
+
         logger.warning(
             "model_retry task_id=%s trace_id=%s retry=%d error=%s",
             request.task_id,
@@ -232,9 +245,11 @@ class OpenAICompatibleModelGateway:
         )
 
     async def aclose(self) -> None:
+        """仅关闭本实例自行创建的 HTTP 客户端。"""
+
         if self._owns_client:
             await self.client.aclose()
 
 
-# Short alias for callers that prefer the architecture's ModelGateway wording.
+# 兼容偏好架构命名 ``ModelGateway`` 的调用方。
 OpenAICompatibleGateway = OpenAICompatibleModelGateway

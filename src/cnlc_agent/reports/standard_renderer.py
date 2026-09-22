@@ -1,4 +1,4 @@
-"""Formal, text-only well logging evaluation report."""
+"""正式、纯文本的测井评价报告模板。"""
 
 from collections import Counter
 
@@ -7,7 +7,11 @@ from cnlc_agent.reports.models import InterpretedLayer, NormalizedInterpretation
 
 
 class StandardReportRenderer:
+    """按正式报告章节生成详细版 Markdown。"""
+
     def render(self, result: NormalizedInterpretationResult) -> str:
+        """把只读归一化结果渲染为标准报告，不新增专业结论。"""
+
         well = result.well
         title = well.name or well.well_id
         lines = [

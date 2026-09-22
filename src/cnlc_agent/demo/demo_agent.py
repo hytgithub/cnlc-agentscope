@@ -1,4 +1,4 @@
-"""AgentScope conversation shell for the existing interpretation service."""
+"""现有测井解释应用服务的 AgentScope 对话外壳。"""
 
 from agentscope.agent import Agent, ContextConfig, ModelConfig, ReActConfig
 from agentscope.middleware import MiddlewareBase
@@ -22,7 +22,7 @@ Tool 返回后，用中文先给出最终状态和执行摘要，再完整展示
 
 
 class LoggingInterpretationDemoAgent(Agent):
-    """AgentScope Agent that exposes only the high-level interpretation Tool."""
+    """只暴露高层解释 Tool 的 AgentScope Agent，禁止绕过 Workflow 自行解释。"""
 
     def __init__(
         self,
@@ -38,9 +38,11 @@ class LoggingInterpretationDemoAgent(Agent):
         react_config: ReActConfig | None = None,
         **kwargs: object,
     ) -> None:
+        # 忽略前端自定义名称和提示词，保证 Demo 始终使用项目约束的系统提示。
         del name, system_prompt, kwargs
         if model.model != "qwen-plus":
             raise ValueError("AgentScope Demo Agent 只允许使用 qwen-plus")
+        # 从 AgentScope 注入的工具集中筛出唯一业务入口，避免模型调用无关工具。
         tools = [
             tool
             for group in (toolkit.tool_groups if toolkit is not None else [])

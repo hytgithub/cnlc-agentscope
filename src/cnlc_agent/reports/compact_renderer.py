@@ -1,4 +1,4 @@
-"""Concise business-oriented interpretation report."""
+"""面向业务阅读的精简版测井解释报告。"""
 
 from collections import Counter
 
@@ -7,7 +7,11 @@ from cnlc_agent.reports.models import InterpretedLayer, NormalizedInterpretation
 
 
 class CompactReportRenderer:
+    """用八个固定章节呈现核心事实，省略标准版的封面和细化说明。"""
+
     def render(self, result: NormalizedInterpretationResult) -> str:
+        """把只读归一化结果渲染为 Markdown，不回写任何业务状态。"""
+
         well = result.well
         title = well.name or well.well_id
         lines = [f"# {markdown_cell(title)}测井解释报告", ""]

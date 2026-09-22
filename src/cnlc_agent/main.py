@@ -1,4 +1,4 @@
-"""Mock business runner with explicit memory or PostgreSQL/Redis persistence."""
+"""命令行业务入口，可显式选择内存或 PostgreSQL/Redis 持久化。"""
 
 import argparse
 import asyncio
@@ -21,8 +21,9 @@ from cnlc_agent.reports.assembler import ReportAssembler
 
 
 def main() -> int:
+    """解析命令行参数，执行新任务或查询历史任务，并导出结果文件。"""
+
     parser = argparse.ArgumentParser(description="测井解释 Mock 业务运行与历史查询")
-    # parser.add_argument("--well-id", default="WELL_DI73_56H_LAYER64")
     parser.add_argument("--well-id", default="WELL_MOCK_001")
     parser.add_argument("--task-id", help="查询历史任务及报告，不重新执行")
     parser.add_argument("--data-dir", type=Path)
@@ -37,7 +38,7 @@ def main() -> int:
         settings = AppSettings(**overrides)
         request = TaskRequest(well_id=args.well_id)
     except SchemaError as exc:
-        # Field locations are useful; raw configuration values may be secrets.
+        # 只输出字段路径；原始配置值可能包含连接串、密钥或井资料。
         fields = [".".join(str(part) for part in item["loc"]) for item in exc.errors()]
         print(f"配置或输入无效：{', '.join(fields)}", file=sys.stderr)
         return 2
@@ -45,6 +46,8 @@ def main() -> int:
     try:
 
         async def execute() -> tuple[InterpretationState, str]:
+            """在统一资源上下文中执行新任务或读取已持久化历史。"""
+
             async with application_runtime(settings) as app:
                 if args.task_id:
                     stored = await app.repository.get(args.task_id)
@@ -57,6 +60,7 @@ def main() -> int:
                 return await app.run(request)
 
         state, markdown = asyncio.run(execute())
+        # 非安全任务标识使用散列目录名，避免路径穿越和非法文件名。
         output_name = (
             state.task.task_id
             if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", state.task.task_id)

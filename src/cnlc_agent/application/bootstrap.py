@@ -1,4 +1,4 @@
-"""The composition root is the only place selecting mock implementations."""
+"""应用组合根：集中选择真实或 Mock 实现，避免业务层自行判断基础设施。"""
 
 from collections.abc import Awaitable, Callable
 
@@ -29,6 +29,9 @@ def build_application(
     task_repository: TaskRepository | None = None,
     state_store: InterpretationStateStore | None = None,
 ) -> InterpretationTaskService:
+    """按配置装配任务服务及其 Agent、Workflow、Tool 和基础设施依赖。"""
+
+    # 所有 Mock Tool 仍遵循正式 Tool Contract，未来可按名称替换为真实实现。
     repository = MockWellRepository(settings.mock_data_dir)
     telemetry = LoggingTelemetry()
     caller = ToolCaller(telemetry, settings.tool_timeout_seconds)
@@ -48,10 +51,11 @@ def build_application(
     elif settings.model_provider in {"openai_compatible", "openai-compatible", "real"}:
         gateway = OpenAICompatibleModelGateway.from_settings(settings, ConnectionSettings())
         close_callbacks.append(gateway.aclose)
-    else:  # defensive guard for programmatic settings subclasses
+    else:  # 防御式保护：防止程序化构造配置时绕过 Literal 校验。
         raise ValueError(f"unsupported model provider: {settings.model_provider}")
     interpretation = InterpretationAgent(gateway, tools["calculate_sw"], caller, telemetry)
     validation = ValidationAgent(gateway, telemetry)
+    # Workflow 只依赖端口；未注入持久化实现时显式使用进程内 Demo 存储。
     workflow = InterpretationWorkflow(
         build_steps(
             tools,

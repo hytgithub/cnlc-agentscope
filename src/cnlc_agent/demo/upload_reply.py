@@ -1,4 +1,4 @@
-"""A bounded Demo reply using official AgentScope Tool and streaming event protocols."""
+"""使用官方 AgentScope Tool 与事件协议生成边界清晰的 Demo 流式回复。"""
 
 import asyncio
 import json
@@ -40,7 +40,7 @@ _REPORT_SECTION_PATTERN = re.compile(r"(?=^#{1,3} )", re.MULTILINE)
 
 
 def _progress(name: str, attributes: JsonObject) -> str | None:
-    """Only forward bounded status fields, never raw model errors or trace payloads."""
+    """只转发受控状态字段，不把模型错误原文或完整 Trace 发到前端。"""
     step = attributes.get("step_id")
     if step not in {f"W{i:02}" for i in range(1, 11)}:
         step = None
@@ -55,13 +55,13 @@ def _progress(name: str, attributes: JsonObject) -> str | None:
 
 
 def _report_chunks(markdown: str) -> list[str]:
-    """Split a deterministic report on Markdown headings without changing its text."""
+    """按 Markdown 标题切分确定性报告，只改善流式体验而不改写文本。"""
     chunks = [chunk for chunk in _REPORT_SECTION_PATTERN.split(markdown) if chunk]
     return chunks or [markdown]
 
 
 class UploadInterpretationReply(MiddlewareBase):
-    """Map one current-turn upload to one business Tool call, without an extra LLM rewrite."""
+    """把本轮上传映射为一次业务 Tool 调用，不再交给外层 LLM 改写报告。"""
 
     def __init__(self, tool: RunWellInterpretationTool) -> None:
         self.tool = tool
@@ -72,6 +72,8 @@ class UploadInterpretationReply(MiddlewareBase):
         input_kwargs: dict[str, Any],
         next_handler: Callable[..., AsyncGenerator[Any, None]],
     ) -> AsyncGenerator[AgentEvent | Msg, None]:
+        """构造并持久化完整 AssistantMsg，同时逐事件推送给前端。"""
+
         del next_handler
         inputs = input_kwargs.get("inputs")
         messages = (
@@ -83,13 +85,15 @@ class UploadInterpretationReply(MiddlewareBase):
         async for event in self._events(agent, messages, reply_id, block_id):
             reply.append_event(event)
             yield event
-        # Binary files remain in official service message storage, outside model context.
+        # 二进制附件留在官方消息存储中，不进入模型上下文，避免上下文膨胀和数据泄漏。
         agent.state.context.append(reply)
         yield reply
 
     async def _events(
         self, agent: Agent, messages: list[Msg], reply_id: str, block_id: str
     ) -> AsyncGenerator[AgentEvent, None]:
+        """按 Reply、Thinking、Tool、Report 的顺序产生官方流式事件。"""
+
         session_id = agent.state.session_id
         yield ReplyStartEvent(session_id=session_id, reply_id=reply_id, name=agent.name)
         try:
@@ -119,14 +123,19 @@ class UploadInterpretationReply(MiddlewareBase):
         yield ToolResultStartEvent(
             reply_id=reply_id, tool_call_id=call.id, tool_call_name=call.name
         )
+        # Tool 与进度观察器并发运行，通过队列统一串行化为 SSE 事件。
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
 
         def observe(name: str, attributes: JsonObject) -> None:
+            """把当前请求的 Workflow 事件转换为有限的思考区进度。"""
+
             text = _progress(name, attributes)
             if text:
                 queue.put_nowait(("progress", text))
 
         async def execute() -> None:
+            """在请求级 ContextVar 中安装观察器并执行 Tool。"""
+
             token = event_observer.set(observe)
             try:
                 async for chunk in agent.toolkit.call_tool(call, agent.state):
@@ -161,6 +170,7 @@ class UploadInterpretationReply(MiddlewareBase):
         except asyncio.CancelledError:
             interrupted = True
         finally:
+            # 无论成功、失败还是取消，都必须清理后台任务和本轮上传引用。
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
@@ -181,6 +191,7 @@ class UploadInterpretationReply(MiddlewareBase):
         yield ThinkingBlockEndEvent(reply_id=reply_id, block_id=block_id)
         report_id = uuid4().hex
         payload = result.metadata.get("result", {}) if result else {}
+        # 报告来自业务 Tool 的确定性结果；缺失时只返回稳定诊断文案。
         report = payload.get("report_markdown") or (
             "解释已中断。" if interrupted else "解释任务失败，请检查井资料或服务配置后重试。"
         )

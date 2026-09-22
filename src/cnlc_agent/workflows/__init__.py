@@ -1,1 +1,1 @@
-"""Fixed business workflow; independent of framework pipeline internals."""
+"""固定业务 Workflow，与 AgentScope Pipeline 内部实现保持解耦。"""

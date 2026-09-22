@@ -1,4 +1,4 @@
-"""Resource lifecycle and explicit persistence selection; model/data remain Mock."""
+"""统一管理资源生命周期，并显式选择内存或 PostgreSQL/Redis 持久化。"""
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,6 +18,8 @@ from cnlc_agent.infrastructure.redis_store import RedisInterpretationStateStore
 
 
 def database_url(connections: ConnectionSettings) -> str:
+    """读取并校验异步 PostgreSQL 地址，不在错误中暴露连接凭据。"""
+
     if connections.database_url is None:
         raise InfrastructureError("DATABASE_CONFIG_REQUIRED", "请配置 DATABASE_URL")
     value = connections.database_url.get_secret_value()
@@ -38,8 +40,11 @@ async def application_runtime(
     persistence: PersistenceSettings | None = None,
     connections: ConnectionSettings | None = None,
 ) -> AsyncIterator[InterpretationTaskService]:
+    """创建任务服务并保证数据库、Redis 和模型客户端按逆序释放。"""
+
     persistence = persistence or PersistenceSettings()
     if persistence.persistence == "memory":
+        # 离线演示完全使用进程内存，退出后任务状态不可恢复。
         app = build_application(settings)
         try:
             yield app
@@ -60,6 +65,7 @@ async def application_runtime(
         )
     except (ValueError, TypeError):
         raise InfrastructureError("INVALID_REDIS_CONFIG", "Redis 地址配置无效") from None
+    # 数据库参数隐藏可避免 SQLAlchemy 异常把口令写入日志。
     engine = create_async_engine(
         url,
         pool_pre_ping=True,
@@ -84,6 +90,7 @@ async def application_runtime(
         finally:
             await app.close()
     finally:
+        # 即使 Redis 关闭失败，也必须继续释放数据库连接池。
         try:
             await client.aclose()
         finally:

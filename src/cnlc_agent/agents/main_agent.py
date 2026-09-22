@@ -5,7 +5,7 @@ from cnlc_agent.workflows.interpretation_workflow import InterpretationWorkflow
 
 
 class MainAgent:
-    """Task-level skeleton: starts the fixed workflow and returns its state."""
+    """任务级编排入口：启动固定 Workflow，并返回统一解释状态。"""
 
     def __init__(self, workflow: InterpretationWorkflow, telemetry: Telemetry) -> None:
         self.workflow = workflow
@@ -14,6 +14,8 @@ class MainAgent:
     async def run(
         self, request: TaskRequest, *, state: InterpretationState | None = None
     ) -> InterpretationState:
+        """使用已有状态或创建新状态，执行一次完整 W01-W10 流程。"""
+
         state = state if state is not None else InterpretationState(task=request)
         with self.telemetry.span(
             "agent",

@@ -1,4 +1,4 @@
-"""Workflow-owned state; independent of AgentScope, SQLAlchemy and Redis."""
+"""由 Workflow 独占修改的核心状态，与 AgentScope、SQLAlchemy 和 Redis 解耦。"""
 
 from datetime import datetime
 from typing import Literal
@@ -23,7 +23,7 @@ from cnlc_agent.domain.models import (
 
 
 class StatePatch(Contract):
-    """Only these fields may be supplied by a workflow node."""
+    """Workflow 节点只能通过这些字段返回状态变更，不能原地修改全局状态。"""
 
     well: Well | None = None
     raw_data: RawData | None = None
@@ -40,6 +40,8 @@ class StatePatch(Contract):
 
 
 class StepOutcome(Contract):
+    """单个节点执行后的终态、状态补丁及诊断信息。"""
+
     status: StepStatus = StepStatus.SUCCESS
     patch: StatePatch = Field(default_factory=StatePatch)
     missing_data: list[MissingData] = Field(default_factory=list)
@@ -49,6 +51,8 @@ class StepOutcome(Contract):
 
 
 class StateChange(Contract):
+    """一次可审计状态变更，记录修改者、原因及前后差异。"""
+
     actor: str
     step_id: StepId
     timestamp: datetime = Field(default_factory=utc_now)
@@ -58,6 +62,8 @@ class StateChange(Contract):
 
 
 class StepExecution(Contract):
+    """节点单次执行记录，为后续 Retry/Rollback 保留独立标识。"""
+
     step_execution_id: str = Field(default_factory=lambda: str(uuid4()))
     step_id: StepId
     status: StepStatus = StepStatus.RUNNING
@@ -69,6 +75,8 @@ class StepExecution(Contract):
 
 
 class InterpretationState(StatePatch):
+    """单井解释任务唯一可信状态，汇总 W01-W10 的全部阶段结果。"""
+
     schema_version: Literal["0.1-skeleton"] = "0.1-skeleton"
     mode: Literal["mock", "demo"] = "mock"
     task: TaskRequest

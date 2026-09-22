@@ -148,9 +148,8 @@ export function useMessages(
 
 	const msgsRef = useRef<Msg[]>([]);
 	const currentReplyRef = useRef<Msg | null>(null);
-	// Guards the gap between POST /chat/ and the first REPLY_START event.
-	// React state updates are asynchronous, so relying on ``phase`` alone
-	// allows a rapid second click to start another run for the same session.
+	// 覆盖 POST /chat/ 到首个 REPLY_START 事件之间的空窗期。React 状态更新是异步的，
+	// 只依赖 phase 会让快速连点在同一会话中启动第二个运行实例。
 	const runActiveRef = useRef(false);
 	const abortRef = useRef<AbortController | null>(null);
 	const rafRef = useRef<number | null>(null);
@@ -385,9 +384,8 @@ export function useMessages(
 		async (content: ContentBlock[]) => {
 			if (!agentId || !sessionId || runActiveRef.current) return;
 
-			// Lock synchronously before the optimistic render or network request.
-			// This closes the duplicate-submit window before React can publish the
-			// updated phase to TextInput.
+			// 在乐观渲染和网络请求之前同步加锁，先于 React 向输入框发布新 phase，
+			// 从而彻底关闭重复提交窗口。
 			runActiveRef.current = true;
 			setPhase('streaming');
 			setError(null);

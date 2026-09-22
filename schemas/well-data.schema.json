@@ -2,7 +2,7 @@
   "$defs": {
     "DataRequirements": {
       "additionalProperties": false,
-      "description": "A provisional input contract, not a professional interpretation standard.",
+      "description": "临时输入资料契约，不代表正式专业解释标准。",
       "properties": {
         "recommended_sources": {
           "items": {
@@ -29,6 +29,7 @@
     "JsonValue": {},
     "LogCurve": {
       "additionalProperties": false,
+      "description": "一条测井曲线及其单位和逐深度采样值。",
       "properties": {
         "unit": {
           "minLength": 1,
@@ -59,6 +60,7 @@
     },
     "RawData": {
       "additionalProperties": false,
+      "description": "统一深度轴上的原始测井曲线和辅助资料。",
       "properties": {
         "auxiliary": {
           "additionalProperties": {
@@ -110,6 +112,7 @@
     },
     "Well": {
       "additionalProperties": false,
+      "description": "井基础信息；未冻结字段放入 extensions，避免提前扩张 Schema。",
       "properties": {
         "extensions": {
           "additionalProperties": {
@@ -138,6 +141,7 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "井信息、原始数据和资料要求的统一输入对象。",
   "properties": {
     "raw_data": {
       "$ref": "#/$defs/RawData"

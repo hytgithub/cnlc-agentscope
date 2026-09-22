@@ -8,6 +8,8 @@ from cnlc_agent.reports.models import ReportStyle
 
 
 class AppSettings(BaseSettings):
+    """应用行为配置，统一读取带 ``CNLC_`` 前缀的环境变量。"""
+
     model_config = SettingsConfigDict(env_prefix="CNLC_", env_file=".env", extra="ignore")
 
     mode: Literal["mock", "demo"] = "mock"
@@ -23,7 +25,7 @@ class AppSettings(BaseSettings):
 
 
 class ConnectionSettings(BaseSettings):
-    """Connection secrets; persistence uses DB/Redis, other adapters remain deferred."""
+    """数据库、Redis 和模型服务连接配置；敏感值使用 SecretStr 包装。"""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -45,6 +47,8 @@ class ConnectionSettings(BaseSettings):
 
 
 class PersistenceSettings(BaseSettings):
+    """任务持久化模式、Redis 命名空间和基础设施超时配置。"""
+
     model_config = SettingsConfigDict(env_prefix="CNLC_", env_file=".env", extra="ignore")
 
     persistence: Literal["memory", "postgres-redis"] = "memory"

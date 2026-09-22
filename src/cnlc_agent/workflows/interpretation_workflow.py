@@ -1,7 +1,6 @@
-"""Sequential skeleton with auditable state changes and explicit terminal branches.
+"""顺序执行的解释流程骨架，包含可审计状态变更和明确终止分支。
 
-Automatic retry/rollback is intentionally deferred until its policy is designed.
-Serious validation conflicts stop for review in this task.
+自动 Retry/Rollback 在规则确认前暂不实现；严重验证冲突会停止并进入人工复核。
 """
 
 from pydantic import JsonValue
@@ -75,6 +74,8 @@ STEP_OBSERVABILITY = {
 
 
 def step_observability(step_id: StepId) -> JsonObject:
+    """返回步骤名称、处理说明和数据范围等稳定展示元数据。"""
+
     step_name, step_description, processing_data = STEP_OBSERVABILITY[step_id]
     return {
         "step_name": step_name,
@@ -113,6 +114,8 @@ STEP_INPUT_FIELDS = {
 
 
 def summarize_for_observability(value: object) -> JsonValue:
+    """限制数组和曲线采样量，避免日志、SSE 和 Trace 携带完整井数据。"""
+
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")
     if isinstance(value, dict):
@@ -141,6 +144,8 @@ def summarize_for_observability(value: object) -> JsonValue:
 
 
 def step_input_data(state: InterpretationState, step_id: StepId) -> JsonObject:
+    """提取当前步骤真正依赖的输入字段，并生成有界可观测数据。"""
+
     if step_id == StepId.W01:
         return {
             "well_id": state.task.well_id,
@@ -154,6 +159,8 @@ def step_input_data(state: InterpretationState, step_id: StepId) -> JsonObject:
 
 
 def step_output_data(outcome: StepOutcome) -> JsonObject:
+    """把节点输出压缩为状态、变更字段和诊断信息。"""
+
     patch = outcome.patch.model_dump(mode="json", exclude_unset=True)
     output: JsonObject = {
         "status": outcome.status.value,
@@ -169,6 +176,8 @@ def step_output_data(outcome: StepOutcome) -> JsonObject:
 
 
 def compact_result(result: StageResult | None) -> str:
+    """将阶段结果压缩为适合日志和步骤卡片展示的一行摘要。"""
+
     if result is None:
         return "无"
     if hasattr(result, "result"):
@@ -187,6 +196,8 @@ def compact_result(result: StageResult | None) -> str:
 
 
 def raw_data_summary(raw_data: RawData | None) -> str:
+    """只描述曲线名和辅助资料类型，不输出逐点曲线值。"""
+
     if raw_data is None:
         return "无井段数据"
     curves = ", ".join(raw_data.curves)
@@ -200,6 +211,8 @@ def raw_data_summary(raw_data: RawData | None) -> str:
 
 
 def step_input_summary(state: InterpretationState, step_id: StepId) -> str:
+    """生成面向人的步骤输入摘要。"""
+
     if step_id == StepId.W01:
         return f"well_id={state.task.well_id}"
     parts = []
@@ -219,6 +232,8 @@ def step_input_summary(state: InterpretationState, step_id: StepId) -> str:
 
 
 def format_measurement(value: object) -> str | None:
+    """格式化结构化测量值；fraction 在展示时转换为百分比。"""
+
     if not isinstance(value, dict) or "value" not in value:
         return None
     number = value["value"]
@@ -229,6 +244,8 @@ def format_measurement(value: object) -> str | None:
 
 
 def final_interpretation_summary(state: InterpretationState) -> str:
+    """仅汇总 State 中已有最终事实，不补算参数或新增专业判断。"""
+
     classification = state.layer_classification.result if state.layer_classification else {}
     lithology = state.lithology_result.result if state.lithology_result else {}
     petrophysics = state.petrophysics_result.result if state.petrophysics_result else {}
@@ -297,6 +314,8 @@ def final_interpretation_summary(state: InterpretationState) -> str:
 
 
 def step_output_summary(outcome: StepOutcome, state: InterpretationState, step_id: StepId) -> str:
+    """生成面向人的节点输出摘要，W10 额外附加最终事实汇总。"""
+
     patch = outcome.patch
     parts = []
     for field in patch.model_fields_set:
@@ -320,6 +339,8 @@ def step_output_summary(outcome: StepOutcome, state: InterpretationState, step_i
 
 
 class InterpretationWorkflow:
+    """按固定 W01-W10 顺序执行节点并集中提交 InterpretationState。"""
+
     def __init__(
         self,
         nodes: list[WorkflowNode],
@@ -333,11 +354,14 @@ class InterpretationWorkflow:
         self.telemetry = telemetry
 
     async def run(self, state: InterpretationState) -> InterpretationState:
+        """从 PENDING 状态执行一次完整流程，遇到非完成终态立即停止。"""
+
         if state.status != StepStatus.PENDING:
             raise WorkflowError("TASK_ALREADY_STARTED", "骨架暂不支持恢复已有任务，请创建新任务")
         attributes: JsonObject = {"task_id": state.task.task_id, "trace_id": state.trace_id}
         with self.telemetry.span("workflow", attributes):
             for node in self.nodes:
+                # 在执行节点前先记录 RUNNING 快照，确保崩溃时仍能定位当前步骤。
                 state.current_step = node.step_id
                 state.status = StepStatus.RUNNING
                 input_data = step_input_data(state, node.step_id)
@@ -365,7 +389,7 @@ class InterpretationWorkflow:
                                 reason="节点前置结果缺失",
                             )
                         else:
-                            # Nodes receive snapshots: all writes must return through StatePatch.
+                            # 节点接收深拷贝快照，所有写入必须通过 StatePatch 返回。
                             outcome = await node.execute(state.model_copy(deep=True))
                         if outcome.status not in COMPLETED | {
                             StepStatus.FAILED,
@@ -387,7 +411,7 @@ class InterpretationWorkflow:
                             ],
                         )
                     except Exception as exc:
-                        # Never claim success for unexpected errors. Do not expose raw payloads.
+                        # 非预期异常绝不能标记成功，也不向状态或前端暴露原始数据。
                         self.telemetry.event(
                             "workflow.unexpected_error",
                             {
@@ -412,6 +436,7 @@ class InterpretationWorkflow:
                                 )
                             ],
                         )
+                    # 先序列化补丁再重建完整 State，使 Pydantic 对合并后的状态重新校验。
                     patch = outcome.patch.model_dump(mode="json", exclude_unset=True)
                     before = state.model_dump(mode="json", include=set(patch))
                     before["status"] = state.status.value
@@ -457,8 +482,10 @@ class InterpretationWorkflow:
                     )
                     await self.store.save(state)
                 if outcome.status not in COMPLETED:
+                    # FAILED、BLOCKED、REVIEW_REQUIRED 均为显式终止分支，禁止继续后续步骤。
                     break
             if len(state.completed_steps) == len(StepId):
+                # 所有步骤完成后，任一步骤告警都会提升最终任务状态为 WARNING。
                 state.status = (
                     StepStatus.WARNING
                     if state.warnings

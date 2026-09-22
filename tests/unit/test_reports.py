@@ -99,8 +99,7 @@ async def test_report_localizes_known_model_warning(data_dir):
     assert english_warning not in normalized.limitations
     assert (
         "本次流体识别主要依据历史层段统计及既有解释成果；含水饱和度为历史解释值，"
-        "未根据原始测井曲线独立复算，流体类型结论也缺少独立验证资料"
-        in normalized.limitations
+        "未根据原始测井曲线独立复算，流体类型结论也缺少独立验证资料" in normalized.limitations
     )
 
 

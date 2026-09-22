@@ -1,4 +1,4 @@
-"""Render existing state without interpreting geology or changing workflow decisions."""
+"""把既有状态渲染为结果文件，不新增地质解释或修改 Workflow 决策。"""
 
 import json
 import re
@@ -31,7 +31,7 @@ LABELS = {
 
 
 def _safe(value: Any) -> Any:
-    """Redact credential fields and raw ErrorDetail messages in an export copy."""
+    """在导出副本中脱敏凭据字段和原始错误消息，不修改持久化状态。"""
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
@@ -78,17 +78,24 @@ def _rows(value: Any, prefix: str = "") -> list[str]:
 
 
 class ReportAssembler:
+    """根据任务终态选择正式报告或失败诊断报告。"""
+
     def __init__(self, style: ReportStyle = ReportStyle.STANDARD) -> None:
         self.generator = ReportGenerator(style)
 
     def to_json(self, state: InterpretationState) -> str:
-        # Keep the InterpretationState schema and never mutate the persisted state.
+        """导出脱敏 JSON，同时保持 InterpretationState 原有 Schema。"""
+
+        # 只处理 model_dump 产生的副本，绝不原地修改持久化状态。
         return json.dumps(_safe(state.model_dump(mode="json")), ensure_ascii=False, indent=2)
 
     def to_markdown(self, state: InterpretationState) -> str:
+        """成功/告警任务生成解释报告，其余终态生成定位问题用诊断摘要。"""
+
         complete = state.status in {StepStatus.SUCCESS, StepStatus.WARNING}
         if complete:
             return self.generator.generate(state)
+        # 诊断报告同样基于脱敏后的数据，避免错误详情泄漏敏感配置。
         data = json.loads(self.to_json(state))
         lines = [
             "# 单井解释任务诊断摘要",

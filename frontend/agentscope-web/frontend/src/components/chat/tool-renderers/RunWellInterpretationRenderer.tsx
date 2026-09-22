@@ -7,6 +7,7 @@ import { Markdown } from '@/components/markdown';
 import { Badge } from '@/components/ui/badge';
 
 interface DemoStep {
+	/** Workflow 单步的结构化展示数据，与后端 W01-W10 步骤结果一一对应。 */
 	id: string;
 	name: string;
 	status: string;
@@ -18,6 +19,7 @@ interface DemoStep {
 }
 
 interface DemoToolResult {
+	/** run_well_interpretation 工具返回的前端展示载荷。 */
 	status?: string;
 	task_id?: string;
 	well_id?: string;
@@ -27,6 +29,7 @@ interface DemoToolResult {
 }
 
 function resultPayload(pair: ToolCallWithResult): DemoToolResult | null {
+	// 工具结果可能为空、非文本或非 JSON；渲染器只消费可识别的结构化结果。
 	const text = getResultText(pair.result);
 	if (!text) return null;
 	try {
@@ -46,6 +49,7 @@ function renderJsonBlock(value: unknown): ReactNode {
 }
 
 function renderStepCard(step: DemoStep): ReactNode {
+	// 每个步骤默认折叠，用户可按需查看输入、输出、证据和告警详情。
 	return (
 		<details className="rounded-sm border bg-background">
 			<summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 text-xs">
@@ -90,6 +94,7 @@ function renderStepCard(step: DemoStep): ReactNode {
 function renderHeader(pair: ToolCallWithResult): ReactNode {
 	const input = parseInput(pair.call.input) as { well_id?: unknown };
 	const payload = resultPayload(pair);
+	// 优先使用后端规范化后的井号，工具尚未返回时再回退到调用参数。
 	const wellId = typeof payload?.well_id === 'string'
 		? payload.well_id
 		: typeof input.well_id === 'string' ? input.well_id : '上传井资料';
@@ -103,7 +108,7 @@ function renderHeader(pair: ToolCallWithResult): ReactNode {
 
 function renderBody(pair: ToolCallWithResult): ReactNode {
 	const payload = resultPayload(pair);
-		if (!payload) return null;
+	if (!payload) return null;
 	return (
 		<div className="space-y-3 rounded-sm border bg-background p-2 text-xs">
 			<div className="flex flex-wrap items-center gap-2">

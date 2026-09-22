@@ -1,3 +1,3 @@
-"""CNLC well interpretation application."""
+"""常规测井解释智能体应用。"""
 
 __version__ = "0.1.0"

@@ -1,4 +1,4 @@
-"""Fixture-based tools share the formal contract; there are no geological formulas here."""
+"""基于 Fixture 的 Tool 仍遵循正式契约；此处不包含任何地质计算公式。"""
 
 from cnlc_agent.application.ports import WellRepository
 from cnlc_agent.domain.enums import StepStatus
@@ -8,12 +8,16 @@ from cnlc_agent.tools.contracts import ToolInput, ToolOutput
 
 
 class GetWellDataTool:
+    """W01 井资料加载 Tool 的 Mock 实现。"""
+
     name = "get_well_data"
 
     def __init__(self, repository: WellRepository) -> None:
         self.repository = repository
 
     async def execute(self, request: ToolInput) -> ToolOutput:
+        """读取 Fixture，并只返回 W01 需要的井资料字段。"""
+
         fixture = await self.repository.load(request.well_id)
         return ToolOutput(
             status=StepStatus.SUCCESS,
@@ -27,7 +31,7 @@ class GetWellDataTool:
 
 
 class MockResultTool:
-    """One instance = one named capability and one fixture result key."""
+    """一个实例对应一个命名能力和一个 Fixture 结果键。"""
 
     def __init__(self, name: str, result_key: str, repository: FixtureRepository) -> None:
         self.name = name
@@ -35,6 +39,8 @@ class MockResultTool:
         self.repository = repository
 
     async def execute(self, request: ToolInput) -> ToolOutput:
+        """回放指定阶段的预设结果，不执行任何专业计算。"""
+
         fixture = await self.repository.load(request.well_id)
         result = fixture.outputs.get(self.result_key)
         if result is None:

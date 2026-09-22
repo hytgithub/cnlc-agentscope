@@ -11,6 +11,8 @@ from cnlc_agent.reports.assembler import ReportAssembler
 
 
 class InterpretationTaskService:
+    """单井解释应用服务，负责任务生命周期、异常落库与报告生成。"""
+
     def __init__(
         self,
         main_agent: MainAgent,
@@ -28,6 +30,8 @@ class InterpretationTaskService:
         self.close_callbacks = close_callbacks or []
 
     async def run(self, request: TaskRequest) -> tuple[InterpretationState, str]:
+        """创建任务、执行主流程，并持久化最终状态和 Markdown 报告。"""
+
         state = InterpretationState(task=request, mode=self.mode)
         with self.telemetry.span(
             "task.create",
@@ -40,6 +44,7 @@ class InterpretationTaskService:
         try:
             state = await self.main_agent.run(request, state=state)
         except InfrastructureError as exc:
+            # 持久化故障不能伪装成业务成功；尽量从长期存储恢复最近快照并形成诊断报告。
             self.telemetry.event(
                 "persistence.error",
                 {
@@ -68,6 +73,7 @@ class InterpretationTaskService:
                     )
                 )
             if state.executions and state.executions[-1].status == StepStatus.RUNNING:
+                # 同步修正最后一条执行记录，避免任务失败但步骤仍显示 RUNNING。
                 state.executions[-1].status = StepStatus.FAILED
                 state.executions[-1].ended_at = state.updated_at
                 state.executions[-1].errors.append(error)
@@ -83,5 +89,7 @@ class InterpretationTaskService:
         return state, markdown
 
     async def close(self) -> None:
+        """按注册顺序的逆序关闭模型客户端等应用资源。"""
+
         for close in reversed(self.close_callbacks):
             await close()

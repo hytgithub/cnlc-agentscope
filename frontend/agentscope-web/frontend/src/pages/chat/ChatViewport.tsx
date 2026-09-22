@@ -526,12 +526,10 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	}, [groups, selectedModel?.type, selectedModel?.model]);
 
 	/**
-	 * Pick the first model the available-models endpoint surfaces, used
-	 * as a sensible default when the current session has no model
-	 * configured yet.
+	 * 从可用模型中定位后端统一配置的项目模型。
 	 *
-	 * @returns The first available `ChatModelConfig`, or `null` when
-	 *   no credentials / models are configured.
+	 * 前端不让用户自行选择测井解释模型；若专用凭据或固定模型尚未就绪，则返回 `null`
+	 * 并禁用消息发送，防止请求落到错误的模型配置。
 	 */
 	const getBackendModel = (): ChatModelConfig | null => {
 		for (const [type, items] of Object.entries(groups)) {
@@ -576,16 +574,9 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		setPermissionContext((state?.permission_context as PermissionContext) ?? null);
 	}, [view]);
 
-	// Sync selectedModel + selectedFallbackModel from the session
-	// record. If the session has no model configured yet, auto-pick
-	// the first available one and persist it back so subsequent
-	// reasoning has a model to call.
-	//
-	// Important: skip while `view` is still loading. Otherwise the
-	// in-flight window between "agentId changed" and "useSessions
-	// returned the new list" looks like "session has no model" and
-	// we would racily auto-select + persist the first available
-	// model, clobbering whatever the user had configured.
+	// 会话始终同步为后端专用模型，用户无需在前端重复配置。
+	// 必须等待模型列表加载完成，否则切换 agent/session 的短暂空窗会被误判为模型缺失，
+	// 进而把不完整配置写回服务端。
 	useEffect(() => {
 		if (!view || availableModelsLoading) return;
 		const sessionModel = view.session.config.chat_model_config;
@@ -874,9 +865,10 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 											/>
 										) : null
 									}
-									// Well data is parsed by the backend adapter, not the model.
+									// 井资料由后端适配器解析，不受模型原生多模态输入类型限制。
 									allowedInputTypes={['.json', '.txt']}
 									fileProcessor={async (file) => {
+										// 浏览器先限制体积，后端仍会执行同样的安全校验。
 										if (file.size > 5 * 1024 * 1024) {
 											throw new Error('井资料文件不能超过 5 MiB');
 										}

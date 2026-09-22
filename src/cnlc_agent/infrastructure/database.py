@@ -1,4 +1,4 @@
-"""Async PostgreSQL repository; one atomic row holds snapshot and report."""
+"""异步 PostgreSQL 仓库；单行原子保存任务快照与最终报告。"""
 
 from datetime import datetime
 
@@ -15,10 +15,14 @@ from cnlc_agent.domain.state import InterpretationState
 
 
 class Base(DeclarativeBase):
+    """SQLAlchemy 声明式模型基类。"""
+
     pass
 
 
 class TaskRow(Base):
+    """解释任务最小持久化表，Schema 稳定前暂不拆分专业结果子表。"""
+
     __tablename__ = "interpretation_task"
 
     task_id: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -31,10 +35,14 @@ class TaskRow(Base):
 
 
 class PostgreSQLTaskRepository:
+    """TaskRepository 的 PostgreSQL 实现。"""
+
     def __init__(self, engine: AsyncEngine) -> None:
         self.sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def create(self, state: InterpretationState) -> None:
+        """创建 PENDING 任务；主键冲突明确转换为 TASK_EXISTS。"""
+
         try:
             async with self.sessions.begin() as session:
                 session.add(
@@ -54,6 +62,8 @@ class PostgreSQLTaskRepository:
             raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库任务创建失败") from None
 
     async def save(self, state: InterpretationState, markdown: str) -> None:
+        """在同一数据库事务中更新状态快照和 Markdown 报告。"""
+
         try:
             async with self.sessions.begin() as session:
                 saved = await session.scalar(
@@ -73,6 +83,8 @@ class PostgreSQLTaskRepository:
             raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库状态保存失败") from None
 
     async def get(self, task_id: str) -> InterpretationState | None:
+        """按任务标识读取并重新校验完整 InterpretationState。"""
+
         try:
             async with self.sessions() as session:
                 payload = await session.scalar(
@@ -85,6 +97,8 @@ class PostgreSQLTaskRepository:
             raise InfrastructureError("DATABASE_READ_FAILED", "数据库状态读取失败") from None
 
     async def get_report(self, task_id: str) -> str | None:
+        """读取最终或诊断 Markdown；空字符串表示报告尚未生成。"""
+
         try:
             async with self.sessions() as session:
                 result = await session.scalar(

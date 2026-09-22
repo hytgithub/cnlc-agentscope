@@ -1,4 +1,4 @@
-"""W01–W10 handlers. Professional outputs come through injected tools/agents."""
+"""W01-W10 节点处理器；专业结果只能来自注入的 Tool 或 Agent。"""
 
 from cnlc_agent.agents.interpretation_agent import InterpretationAgent
 from cnlc_agent.agents.validation_agent import ValidationAgent
@@ -11,6 +11,8 @@ from cnlc_agent.workflows.node import WorkflowNode
 
 
 def tool_request(state: InterpretationState, step: StepId) -> ToolInput:
+    """从统一状态构造可追踪的 ToolInput。"""
+
     return ToolInput(
         task_id=state.task.task_id,
         trace_id=state.trace_id,
@@ -20,7 +22,9 @@ def tool_request(state: InterpretationState, step: StepId) -> ToolInput:
 
 
 def model_request(state: InterpretationState, purpose: str) -> ModelRequest:
-    # Deliberately exclude execution history, task instructions and unrelated state.
+    """仅选择当前专业判断所需字段，构造严格 JSON 输出请求。"""
+
+    # 主动排除执行历史、用户指令和无关状态，降低提示注入与上下文污染风险。
     fields = {
         "well",
         "qc_result",
@@ -61,6 +65,8 @@ def model_request(state: InterpretationState, purpose: str) -> ModelRequest:
 
 
 def outcome_for(result: StageResult, patch: StatePatch) -> StepOutcome:
+    """把阶段结果转换为节点输出；有告警的 SUCCESS 自动提升为 WARNING。"""
+
     status = result.status
     if status == StepStatus.SUCCESS and result.warnings:
         status = StepStatus.WARNING
@@ -80,7 +86,11 @@ def build_steps(
     *,
     demo_mode: bool = False,
 ) -> list[WorkflowNode]:
+    """按架构规定构造固定 W01-W10 节点列表。"""
+
     async def load(state: InterpretationState) -> StepOutcome:
+        """W01：通过正式 Tool Contract 加载井资料。"""
+
         output = await caller.call(tools["get_well_data"], tool_request(state, StepId.W01))
         data = WellData.model_validate(output.data)
         return StepOutcome(
@@ -91,8 +101,11 @@ def build_steps(
         )
 
     async def completeness(state: InterpretationState) -> StepOutcome:
+        """W02：检查必需曲线和推荐辅助资料。"""
+
         assert state.raw_data is not None and state.data_requirements is not None
         if demo_mode:
+            # Demo Fixture 已在上传入口完成 Schema 校验，此处保持主链路可演示。
             return StepOutcome(
                 reason="Demo Mode：将演示井资料视为完整，继续执行 W03–W10",
             )
@@ -140,34 +153,48 @@ def build_steps(
         )
 
     async def qc(state: InterpretationState) -> StepOutcome:
+        """W03：执行曲线质量检查并形成 processed_data。"""
+
         output = await caller.call(tools["check_curve_quality"], tool_request(state, StepId.W03))
         result = StageResult.model_validate(output.data)
         return outcome_for(result, StatePatch(qc_result=result, processed_data=state.raw_data))
 
     async def lithology(state: InterpretationState) -> StepOutcome:
+        """W04：调用岩性识别 Tool。"""
+
         output = await caller.call(tools["identify_lithology"], tool_request(state, StepId.W04))
         result = StageResult.model_validate(output.data)
         return outcome_for(result, StatePatch(lithology_result=result))
 
     async def petrophysics(state: InterpretationState) -> StepOutcome:
+        """W05：调用储层物性评价 Tool。"""
+
         output = await caller.call(tools["evaluate_petrophysics"], tool_request(state, StepId.W05))
         result = StageResult.model_validate(output.data)
         return outcome_for(result, StatePatch(petrophysics_result=result))
 
     async def fluid(state: InterpretationState) -> StepOutcome:
+        """W06：由 InterpretationAgent 综合物性和含水饱和度结果。"""
+
         result = await interpretation.run(model_request(state, "fluid"))
         return outcome_for(result, StatePatch(fluid_result=result))
 
     async def classification(state: InterpretationState) -> StepOutcome:
+        """W07：由 InterpretationAgent 形成油气水层分类。"""
+
         result = await interpretation.run(model_request(state, "classification"))
         return outcome_for(result, StatePatch(layer_classification=result))
 
     async def intervals(state: InterpretationState) -> StepOutcome:
+        """W08：整理层段边界与厚度。"""
+
         output = await caller.call(tools["merge_intervals"], tool_request(state, StepId.W08))
         result = StageResult.model_validate(output.data)
         return outcome_for(result, StatePatch(interval_result=result))
 
     async def validate(state: InterpretationState) -> StepOutcome:
+        """W09：执行多源验证；Demo 模式保留显式跳过标记。"""
+
         if demo_mode:
             result = ValidationResult(
                 status=StepStatus.SUCCESS,
@@ -193,7 +220,9 @@ def build_steps(
         return outcome
 
     async def final_check(state: InterpretationState) -> StepOutcome:
-        # Structural consistency only, not professional interpretation validation.
+        """W10：检查流程结构完整性，不代替专业解释验证。"""
+
+        # 这里只验证步骤、错误和必需资料是否完整，不重新判断油气水层结论。
         valid = (
             state.completed_steps == list(StepId)[:-1]
             and not state.errors

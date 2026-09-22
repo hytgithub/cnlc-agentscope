@@ -116,9 +116,7 @@ async def test_upload_runs_all_steps_and_streams_unmodified_report(data_dir):
     w06_start = next(
         i
         for i, e in enumerate(events)
-        if isinstance(e, ThinkingBlockDeltaEvent)
-        and "W06" in e.delta
-        and "正在处理" in e.delta
+        if isinstance(e, ThinkingBlockDeltaEvent) and "W06" in e.delta and "正在处理" in e.delta
     )
     w06_end = next(
         i

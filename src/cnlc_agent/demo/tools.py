@@ -1,4 +1,4 @@
-"""The single AgentScope business tool exposed by the demo service."""
+"""Demo 服务向 AgentScope 暴露的唯一高层业务 Tool。"""
 
 import json
 import logging
@@ -30,7 +30,7 @@ ServiceContextFactory = Callable[
 
 
 class DemoToolResult(BaseModel):
-    """Compact, stable result rendered by AgentScope as a Tool Result."""
+    """供 AgentScope 渲染的精简稳定 Tool Result。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -45,6 +45,8 @@ class DemoToolResult(BaseModel):
 
 
 def _default_service_context() -> AbstractAsyncContextManager[InterpretationTaskService]:
+    """按当前环境配置创建一次有明确资源生命周期的业务服务。"""
+
     settings = AppSettings(mode="demo")
     connections = ConnectionSettings()
     if settings.model_provider != "mock" and connections.model_name != "qwen-plus":
@@ -57,7 +59,7 @@ def _default_service_context() -> AbstractAsyncContextManager[InterpretationTask
 
 
 class InterpretationToolRunner:
-    """Adapts the existing application service without duplicating workflow logic."""
+    """复用现有应用服务，不在 AgentScope Tool 中复制 Workflow 逻辑。"""
 
     def __init__(self, service_context: ServiceContextFactory = _default_service_context) -> None:
         self._service_context = service_context
@@ -65,6 +67,8 @@ class InterpretationToolRunner:
     async def run(
         self, well_id: str, instruction: str = "执行单井测井解释骨架演示"
     ) -> DemoToolResult:
+        """运行单井解释，并把完整 State 投影为受控的 DemoToolResult。"""
+
         async with self._service_context() as service:
             state, report_markdown = await service.run(
                 TaskRequest(well_id=well_id, instruction=instruction)
@@ -82,7 +86,9 @@ class InterpretationToolRunner:
 
 
 async def run_uploaded_well(fixture: MockFixture, instruction: str) -> DemoToolResult:
-    """Stage only this upload for the existing repository; never overwrite bundled fixtures."""
+    """在临时目录暂存本次上传，绝不覆盖仓库内置 Fixture。"""
+
+    # 临时目录在调用结束后自动删除，附件文件名不参与任何路径拼接。
     with TemporaryDirectory(prefix="cnlc-upload-") as directory:
         root = Path(directory)
         (root / f"{fixture.well.well_id}.json").write_text(
@@ -130,13 +136,13 @@ async def run_well_interpretation(well_id: str) -> dict[str, object]:
 def build_interpretation_tool(
     runner: InterpretationToolRunner | None = None,
 ) -> ToolBase:
-    """Build the one business Tool registered in the AgentScope service."""
+    """构造 AgentScope 服务注册的唯一业务 Tool。"""
 
     return RunWellInterpretationTool(runner)
 
 
 class RunWellInterpretationTool(ToolBase):
-    """AgentScope Tool wrapper around :func:`run_well_interpretation`."""
+    """``run_well_interpretation`` 的 AgentScope Tool 包装器。"""
 
     name = RUN_TOOL_NAME
     description = (
@@ -164,12 +170,16 @@ class RunWellInterpretationTool(ToolBase):
         self.upload: tuple[MockFixture, str] | None = None
 
     async def check_permissions(self, *_args: Any, **_kwargs: Any) -> PermissionDecision:
+        """用户主动提交解释请求后，允许执行本地单井解释流程。"""
+
         return PermissionDecision(
             behavior=PermissionBehavior.ALLOW,
             message="用户请求执行单井解释时允许调用现有 InterpretationTaskService。",
         )
 
     async def call(self, *args: Any, **kwargs: Any) -> ToolChunk:
+        """把内部异常收敛为稳定 Tool 错误，避免向浏览器暴露堆栈和敏感配置。"""
+
         try:
             return await self._call(*args, **kwargs)
         except Exception as exc:
@@ -181,10 +191,13 @@ class RunWellInterpretationTool(ToolBase):
             )
 
     async def _call(self, *args: Any, **kwargs: Any) -> ToolChunk:
+        """选择上传 Fixture、默认 Runner 或测试注入 Runner，并统一结果外壳。"""
+
         if args:
             raise TypeError("run_well_interpretation 只接受关键字参数")
         well_id = cast(str, kwargs["well_id"])
         if self.upload is not None:
+            # upload 只在当前回复期间设置，井号必须与 Tool 参数一致。
             fixture, instruction = self.upload
             if fixture.well.well_id != well_id:
                 raise ValueError("上传井与任务井标识不一致")

@@ -1,4 +1,4 @@
-"""Typed, renderer-neutral projection of one interpretation state."""
+"""单次解释状态的强类型、与具体渲染模板无关的事实投影。"""
 
 from enum import StrEnum
 
@@ -6,24 +6,28 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ReportStyle(StrEnum):
-    """Supported final report presentations."""
+    """当前支持的最终报告表现形式。"""
 
     STANDARD = "standard"
     COMPACT = "compact"
 
 
 class ReportModel(BaseModel):
-    """Immutable report DTO base so renderers cannot alter interpretation facts."""
+    """不可变报告 DTO 基类，防止渲染器修改解释事实。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class Measurement(ReportModel):
+    """带可选单位的单个测量值。"""
+
     value: float | str | None = None
     unit: str | None = None
 
 
 class WellSummary(ReportModel):
+    """报告使用的井基础信息摘要。"""
+
     well_id: str
     name: str | None = None
     well_category: str | None = None
@@ -41,6 +45,8 @@ class WellSummary(ReportModel):
 
 
 class AcquisitionCurve(ReportModel):
+    """一条参与报告的测井曲线及采样质量摘要。"""
+
     name: str
     unit: str | None = None
     interval: str | None = None
@@ -50,6 +56,8 @@ class AcquisitionCurve(ReportModel):
 
 
 class InterpretedLayer(ReportModel):
+    """一个解释层段的归一化事实，不包含模板专用文案。"""
+
     layer_id: str | None = None
     formation: str | None = None
     top_depth_m: float | None = None
@@ -77,6 +85,8 @@ class InterpretedLayer(ReportModel):
 
 
 class ValidationSummary(ReportModel):
+    """多源验证结果的报告摘要。"""
+
     status: str | None = None
     summary: str | None = None
     evidence: tuple[str, ...] = ()
@@ -86,7 +96,7 @@ class ValidationSummary(ReportModel):
 
 
 class NormalizedInterpretationResult(ReportModel):
-    """One factual projection shared by every report renderer."""
+    """所有报告模板共享的唯一事实投影。"""
 
     status: str
     generated_date: str

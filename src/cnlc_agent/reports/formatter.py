@@ -1,4 +1,4 @@
-"""Central display formatting for every Markdown report renderer."""
+"""所有 Markdown 报告渲染器共享的显示格式化规则。"""
 
 import math
 from collections.abc import Iterable
@@ -10,7 +10,7 @@ _MISSING_STRINGS = {"", "none", "null", "nan"}
 
 
 def is_missing(value: object) -> bool:
-    """Treat absent/non-finite values as missing while preserving numeric zero."""
+    """把空值和非有限数视为缺失，同时保留有业务意义的数值零。"""
 
     if value is None:
         return True
@@ -20,18 +20,24 @@ def is_missing(value: object) -> bool:
 
 
 def text(value: object) -> str:
+    """把普通值转换为展示文本，缺失值统一显示“未提供”。"""
+
     if is_missing(value):
         return MISSING
     return str(value).strip()
 
 
 def number(value: object, decimals: int = 2) -> str:
+    """格式化有限数值；布尔值不作为数字输出。"""
+
     if is_missing(value) or isinstance(value, bool) or not isinstance(value, int | float):
         return MISSING
     return f"{float(value):.{decimals}f}"
 
 
 def measurement(value: Measurement, decimals: int = 2) -> str:
+    """按单位格式化测量值，其中 fraction 统一转换为百分比。"""
+
     if is_missing(value.value):
         return MISSING
     if isinstance(value.value, bool):
@@ -50,6 +56,8 @@ def measurement(value: Measurement, decimals: int = 2) -> str:
 
 
 def markdown_cell(value: object) -> str:
+    """转义 Markdown 表格单元格中的 HTML、竖线和换行。"""
+
     return (
         text(value)
         .replace("&", "&amp;")
@@ -62,5 +70,7 @@ def markdown_cell(value: object) -> str:
 
 
 def join_present(values: Iterable[object], separator: str = "、") -> str:
+    """忽略缺失项后连接展示值；没有有效项时返回统一缺失文案。"""
+
     rendered = [text(value) for value in values if not is_missing(value)]
     return separator.join(rendered) if rendered else MISSING

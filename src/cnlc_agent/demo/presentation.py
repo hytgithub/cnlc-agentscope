@@ -1,4 +1,4 @@
-"""Project interpretation state into a bounded Demo Tool Result DTO."""
+"""把完整解释状态投影为字段受控、适合 Web 展示的 Demo DTO。"""
 
 from typing import cast
 
@@ -29,7 +29,7 @@ STEP_RESULT_FIELDS: dict[StepId, str | None] = {
 
 
 class DemoStep(BaseModel):
-    """Safe, small projection of one workflow step for the Web UI."""
+    """单个 Workflow 步骤的安全精简视图，避免前端接触完整 State。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -50,6 +50,8 @@ def _step_statuses(state: InterpretationState) -> dict[StepId, StepStatus]:
 
 
 def _source(step_id: StepId, result: object) -> str:
+    """根据执行边界标记结果来源，供前端区分 Tool、模型和 Demo Skip。"""
+
     if step_id == StepId.W09 and result is not None:
         result_data = getattr(result, "result", {})
         if isinstance(result_data, dict) and result_data.get("demo_skipped") is True:
@@ -66,6 +68,8 @@ def _output_summary(
     step_id: StepId,
     result: StageResult | None,
 ) -> JsonObject:
+    """提取有限的输出摘要，禁止把完整原始数据和内部状态发送到前端。"""
+
     if result is not None:
         result_data = getattr(result, "result", {})
         if isinstance(result_data, dict):
@@ -99,7 +103,7 @@ def _output_summary(
 
 
 def present_steps(state: InterpretationState) -> list[DemoStep]:
-    """Build ordered W01-W10 projections without exposing the full State."""
+    """按 W01-W10 顺序构造展示对象，不暴露完整 InterpretationState。"""
 
     statuses = _step_statuses(state)
     executions = {execution.step_id: execution for execution in state.executions}

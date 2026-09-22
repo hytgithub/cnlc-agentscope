@@ -157,6 +157,7 @@ function uploadDocumentXhr(
  */
 export const knowledgeBaseApi = {
 	list: (params: ListKnowledgeBasesParams = {}) =>
+		// 测井 Demo 不依赖知识库；未配置知识库服务时不向用户弹出无关错误。
 		client.get<ListKnowledgeBasesResponse>('/knowledge_bases/', toQuery({ ...params }), {
 			silent: true,
 		}),
@@ -182,6 +183,7 @@ export const knowledgeBaseApi = {
 
 	/** Fetch the JSON Schema describing the KB middleware's tunable params. */
 	middlewareParametersSchema: () =>
+		// 与列表查询保持静默，避免可选能力不可用时干扰主聊天流程。
 		client.get<KbMiddlewareParametersSchemaResponse>(
 			'/knowledge_bases/middleware/parameters_schema',
 			undefined,

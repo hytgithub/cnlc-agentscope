@@ -26,6 +26,7 @@ const renderers: Record<string, ToolRenderer> = {
 	Glob: GlobRenderer,
 	Grep: GrepRenderer,
 	TaskCreate: TaskCreateRenderer,
+	// 测井解释工具使用项目专用渲染器展示 W01-W10 与最终报告。
 	run_well_interpretation: RunWellInterpretationRenderer,
 };
 

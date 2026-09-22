@@ -1,4 +1,4 @@
-"""Build one factual report projection from the workflow-owned state."""
+"""从 Workflow 管理的状态构造唯一、忠于事实的报告投影。"""
 
 import math
 from collections.abc import Iterable, Mapping
@@ -47,7 +47,7 @@ _REPORT_TEXT_REPLACEMENTS = {
 def normalize_interpretation_result(
     state: InterpretationState,
 ) -> NormalizedInterpretationResult:
-    """Project existing state facts without adding interpretation decisions."""
+    """投影现有状态事实，不增加任何新的专业解释决策。"""
 
     raw = state.raw_data
     extensions = _mapping(state.well.extensions if state.well else {})
@@ -75,6 +75,7 @@ def normalize_interpretation_result(
         other_notes=_alias_string(extensions, "description", "other_notes", "remarks"),
     )
 
+    # 后续模板只读取归一化 DTO，不能再自行解释原始 State 的嵌套结构。
     curves = _curves(raw, logging_interval)
     auxiliary = _mapping(raw.auxiliary if raw else {})
     quality_summary, quality_evidence = _quality(state, raw)
@@ -230,6 +231,7 @@ def _layers(state: InterpretationState, raw: RawData | None) -> tuple[Interprete
     interval_rows = _sequence_of_mappings(interval_result.get("intervals"))
     layers: list[InterpretedLayer] = []
     for index, interval in enumerate(interval_rows):
+        # 优先按 zone_id 对齐各阶段结果；没有标识时才回退到同序号位置。
         zone_id = _alias_string(interval, "zone_id", "interval_id")
         lithology = _stage_payload(state.lithology_result, "lithology", zone_id, index)
         petrophysics = _stage_payload(state.petrophysics_result, "petrophysics", zone_id, index)
@@ -240,6 +242,7 @@ def _layers(state: InterpretationState, raw: RawData | None) -> tuple[Interprete
         top = _alias_float(interval, "top_depth_m", "top_m", "start_depth_m")
         bottom = _alias_float(interval, "bottom_depth_m", "bottom_m", "end_depth_m")
         gross = _alias_float(interval, "gross_thickness_m", "thickness_m")
+        # 总厚度可由明确层界相减得到；其他专业参数绝不在报告层补算。
         if gross is None and top is not None and bottom is not None:
             gross = bottom - top
         layer_no = interval.get("layer_no")
@@ -354,6 +357,8 @@ def _curve_measurement(
     top_depth: float | None,
     interval_count: int,
 ) -> Measurement:
+    """按层顶深度或明确的一一对应关系读取曲线值，不做插值推断。"""
+
     if raw is None:
         return Measurement()
     curve = next((raw.curves[name] for name in aliases if name in raw.curves), None)
@@ -374,6 +379,7 @@ def _curve_measurement(
     if value is None and interval_count == len(curve.values) and interval_index < len(curve.values):
         value = curve.values[interval_index]
     if value is None and interval_count == 1:
+        # 单层统计型 Fixture 可使用已有有效采样的均值；该值仍来自上传数据。
         valid = [item for item in curve.values if item is not None and math.isfinite(item)]
         value = sum(valid) / len(valid) if valid else None
     return Measurement(value=value, unit=curve.unit)
@@ -490,9 +496,7 @@ def _limitations(
     ):
         if stage is not None:
             items.extend(_report_text(value) for value in stage.warnings)
-            items.extend(
-                f"缺少验证证据：{_report_text(value)}" for value in stage.missing_evidence
-            )
+            items.extend(f"缺少验证证据：{_report_text(value)}" for value in stage.missing_evidence)
     extensions = _mapping(raw.extensions if raw else {})
     for key in ("missing_raw_curves", "missing_input_curves"):
         missing_curves = _sequence(extensions.get(key))
