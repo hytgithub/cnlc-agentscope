@@ -52,16 +52,14 @@ def test_demo_cli_exports_complete_state(tmp_path, fixture_data, warning):
     assert [step.value for step in state.completed_steps] == [f"W{i:02}" for i in range(1, 11)]
     markdown = Path(summary["report"]).read_text()
     for heading in [
-        "井基本信息",
-        "数据概况",
-        "QC",
-        "岩性识别",
-        "储层与物性",
-        "流体识别",
-        "油气水层分类",
-        "层段划分与厚度",
-        "综合验证状态",
-        "最终执行结果",
+        "钻井与地质概况",
+        "测井采集资料质量评价",
+        "快速处理与解释",
+        "主要目的层处理解释成果",
+        "测试建议",
+        "岩石物理分析",
+        "综合评价",
+        "存在问题及建议",
     ]:
         assert heading in markdown
     assert state.fluid_result.result["fluid_type"] in markdown
@@ -70,7 +68,8 @@ def test_demo_cli_exports_complete_state(tmp_path, fixture_data, warning):
     for key in ["top_depth_m", "bottom_depth_m", "gross_thickness_m", "effective_thickness_m"]:
         assert str(interval[key]) in markdown
     assert "Demo" in markdown and "Mock" in markdown and '"is_mock": true' in exported
-    assert "不代表真实测井解释" in markdown
+    assert "不代表经过独立专业复算" in markdown
+    assert "W01" not in markdown and "W10" not in markdown
     assert "Traceback" not in result.stdout + result.stderr + exported + markdown
 
 

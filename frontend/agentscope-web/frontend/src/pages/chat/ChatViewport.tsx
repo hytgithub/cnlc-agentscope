@@ -171,7 +171,7 @@ function closePanelInLayout(layout: PanelKey[][], key: PanelKey): PanelKey[][] {
 export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatViewportProps) {
 	const { t } = useTranslation();
 	const { sessions, refetch: refetchSessions } = useSessions(agentId);
-	const { groups } = useAvailableModels();
+	const { groups, loading: availableModelsLoading } = useAvailableModels();
 
 	const [selectedModel, setSelectedModel] = useState<ChatModelConfig | null>(null);
 	const [selectedFallbackModel, setSelectedFallbackModel] = useState<ChatModelConfig | null>(
@@ -533,22 +533,21 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	 * @returns The first available `ChatModelConfig`, or `null` when
 	 *   no credentials / models are configured.
 	 */
-	const getFirstAvailableModel = (): ChatModelConfig | null => {
-		const firstType = Object.keys(groups)[0];
-		if (!firstType) return null;
-		const items = groups[firstType];
-		if (!items || items.length === 0) return null;
-		const firstItem = items[0];
-		const firstModel = (firstItem.models as { name?: string; id?: string }[])[0];
-		if (!firstModel) return null;
-		const modelName = firstModel.name ?? firstModel.id ?? null;
-		if (!modelName) return null;
-		return {
-			type: firstType,
-			credential_id: firstItem.credential.id,
-			model: modelName,
-			parameters: {},
-		};
+	const getBackendModel = (): ChatModelConfig | null => {
+		for (const [type, items] of Object.entries(groups)) {
+			const backend = items.find(
+				(item) => item.credential.id === 'cnlc-backend-model',
+			);
+			if (backend?.models.some((model) => model.name === 'qwen-plus')) {
+				return {
+					type,
+					credential_id: backend.credential.id,
+					model: 'qwen-plus',
+					parameters: {},
+				};
+			}
+		}
+		return null;
 	};
 
 	// Seed tasks + permission from the session snapshot ONCE per
@@ -588,38 +587,37 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 	// we would racily auto-select + persist the first available
 	// model, clobbering whatever the user had configured.
 	useEffect(() => {
-		if (!view) return;
+		if (!view || availableModelsLoading) return;
 		const sessionModel = view.session.config.chat_model_config;
+		const backendModel = getBackendModel();
 
-		if (sessionModel) {
-			setSelectedModel(sessionModel);
-		} else {
-			const firstModel = getFirstAvailableModel();
-			if (firstModel) {
-				setSelectedModel(firstModel);
-				if (sessionId && agentId) {
-					// `silent` because the user did not ask for this write —
-					// surfacing a toast for a revoked credential or a network
-					// blip they never triggered is pure noise.
-					sessionApi
-						.update(
-							sessionId,
-							agentId,
-							{ chat_model_config: firstModel },
-							{ silent: true },
-						)
-						.then(() => refetchSessions())
-						.catch(() => {});
-				}
-			} else {
-				setSelectedModel(null);
+		if (backendModel) {
+			setSelectedModel(backendModel);
+			if (
+				(!sessionModel ||
+					sessionModel.credential_id !== backendModel.credential_id ||
+					sessionModel.model !== backendModel.model) &&
+				sessionId &&
+				agentId
+			) {
+				sessionApi
+					.update(
+						sessionId,
+						agentId,
+						{ chat_model_config: backendModel },
+						{ silent: true },
+					)
+					.then(() => refetchSessions())
+					.catch(() => {});
 			}
+		} else {
+			setSelectedModel(null);
 		}
 
 		setSelectedFallbackModel(view.session.config.fallback_chat_model_config ?? null);
 		setSelectedTTSModel(view.session.config.tts_model_config ?? null);
 		setSelectedKnowledgeConfig(view.session.config.knowledge_config ?? null);
-	}, [view, groups, sessionId, agentId]);
+	}, [view, groups, availableModelsLoading, sessionId, agentId]);
 
 	// Sync selectedPermissionMode when the session changes. Same
 	// loading-window guard as above — don't reset the displayed mode

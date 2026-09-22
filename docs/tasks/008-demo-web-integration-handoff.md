@@ -105,8 +105,8 @@ pnpm dev
 ```
 
 4. 打开 `http://localhost:5173`，Server URL 为 `http://localhost:8000`。沿用官方 UI
-   一次性创建 Credential（DashScope）、Agent 和 Session，模型选择 qwen-plus。
-   UI Credential 保存在本地 AgentScope Redis；W06/W07 读取 `.env` 模型配置。
+   创建 Agent 和 Session；无需在 UI 创建 Credential。AgentScope 会只读共享后端根据 `.env`
+   托管的模型凭证，并自动选择 qwen-plus；W06/W07 同样读取 `.env` 模型配置。
    两处均需有效配置，Web 业务上传不新增任何井号/任务号表单。
 5. 附件选择 `mock_data/WELL_MOCK_001.json` 或 `WELL_DI73_56H_LAYER64.json` /
    `WELL_DI73_56H_LAYER65.json`，输入“帮我解释一下这口井”后发送。

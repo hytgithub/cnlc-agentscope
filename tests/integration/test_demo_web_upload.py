@@ -11,6 +11,7 @@ from agentscope.app._router._schema._chat import ChatRequest
 from agentscope.event import (
     ReplyEndEvent,
     TextBlockDeltaEvent,
+    ThinkingBlockDeltaEvent,
     ToolCallStartEvent,
     ToolResultEndEvent,
 )
@@ -98,26 +99,99 @@ async def test_upload_runs_all_steps_and_streams_unmodified_report(data_dir):
     assert result["steps"][8]["source"] == "demo-skip"
     assert result["steps"][5]["output_summary"]["result"]["fluid_type"] == "UPLOAD_FLUID"
     text = reply.get_text_content()
+    progress_block = reply.get_content_blocks("thinking")[0]
+    progress = progress_block.thinking
     assert result["report_markdown"] in text
     assert "上传的专属演示井" in text
     assert "UPLOAD_FLUID" in text
     assert all(word in text for word in ["Demo", "Mock", "流体", "油气水层", "层段"])
-    assert "Demo Skip" in text
+    assert "正在处理" not in text
+    assert "正在生成报告" not in text
+    assert progress_block.finished_at is not None
+    report_deltas = [event for event in events if isinstance(event, TextBlockDeltaEvent)]
+    assert len(report_deltas) > 1
+    assert "".join(event.delta for event in report_deltas) == result["report_markdown"]
     for step in result["completed_steps"]:
-        assert f"{step}：SUCCESS" in text
+        assert f"{step}：SUCCESS" in progress
     w06_start = next(
         i
         for i, e in enumerate(events)
-        if isinstance(e, TextBlockDeltaEvent) and "W06" in e.delta and "正在处理" in e.delta
+        if isinstance(e, ThinkingBlockDeltaEvent)
+        and "W06" in e.delta
+        and "正在处理" in e.delta
     )
     w06_end = next(
         i
         for i, e in enumerate(events)
-        if isinstance(e, TextBlockDeltaEvent) and "W06：SUCCESS" in e.delta
+        if isinstance(e, ThinkingBlockDeltaEvent) and "W06：SUCCESS" in e.delta
     )
     assert w06_start < w06_end < events.index(result_event)
     assert isinstance(events[-1], ReplyEndEvent)
     assert event_observer.get() is None
+
+
+async def test_synthetic_interpretation_context_is_adapted_and_runs():
+    data = {
+        "schema_version": "1.0",
+        "data_type": "synthetic_single_well_interpretation_context",
+        "well": {"well_id": "WELL_001", "well_name": "合成井 001"},
+        "log_data": {
+            "target_zone_statistics": [
+                {
+                    "zone_id": "ZONE_01",
+                    "top_m": 2400.0,
+                    "bottom_m": 2410.0,
+                    "statistics": {
+                        "GR_API": {"mean": 45.0},
+                        "RHOB_g_cm3": {"mean": 2.4},
+                        "NPHI_v_v": {"mean": 0.18},
+                        "DT_us_ft": {"mean": 75.0},
+                        "RT_ohm_m": {"mean": 20.0},
+                    },
+                },
+                {
+                    "zone_id": "ZONE_02",
+                    "top_m": 2420.0,
+                    "bottom_m": 2430.0,
+                    "statistics": {
+                        "GR_API": {"mean": 55.0},
+                        "RHOB_g_cm3": {"mean": 2.45},
+                        "NPHI_v_v": {"mean": 0.2},
+                        "DT_us_ft": {"mean": 78.0},
+                        "RT_ohm_m": {"mean": 12.0},
+                    },
+                },
+            ]
+        },
+        "interpretation_results": [
+            {
+                "zone_id": "ZONE_01",
+                "top_m": 2400.0,
+                "bottom_m": 2410.0,
+                "gross_thickness_m": 10.0,
+                "net_thickness_m": 8.0,
+                "lithology": {"primary": "fine_sandstone"},
+                "petrophysics": {"water_saturation_fraction": 0.35},
+                "classification": {"fluid_type": "oil"},
+            }
+        ],
+        "data_quality": {"overall_level": "synthetic"},
+        "well_test_and_production": [{"consistency_with_log_interpretation": "consistent"}],
+    }
+
+    fixture, _ = parse_upload([uploaded_message(json.dumps(data).encode())])
+    assert fixture.well.well_id == "WELL_001"
+    assert fixture.well.name == "合成井 001"
+    assert fixture.is_mock is True
+    assert fixture.raw_data.depths == [2400.0, 2420.0]
+    assert set(fixture.raw_data.curves) == {"GR", "DEN", "CNL", "AC", "RT"}
+    assert all(result.is_mock for result in fixture.outputs.values())
+
+    events, reply = await collect_reply(uploaded_message(json.dumps(data).encode()))
+    result = next(e for e in events if isinstance(e, ToolResultEndEvent)).metadata["result"]
+    assert result["status"] == "SUCCESS"
+    assert result["well_id"] == "WELL_001"
+    assert "合成井 001" in reply.get_text_content()
 
 
 async def test_concurrent_uploads_with_same_well_id_are_isolated(data_dir):
@@ -199,7 +273,7 @@ async def test_progress_arrives_while_model_is_waiting_and_interrupt_cleans_up(
             uploaded_message((data_dir / "WELL_MOCK_001.json").read_bytes())
         ):
             events.append(event)
-            if isinstance(event, TextBlockDeltaEvent) and "W06" in event.delta:
+            if isinstance(event, ThinkingBlockDeltaEvent) and "W06" in event.delta:
                 progress_seen.set()
 
     task = asyncio.create_task(consume())

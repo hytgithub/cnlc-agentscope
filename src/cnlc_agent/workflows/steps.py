@@ -45,7 +45,10 @@ def model_request(state: InterpretationState, purpose: str) -> ModelRequest:
     }
     context["response_instruction"] = (
         "Return only one JSON object matching response_contract. Do not return markdown. "
-        "Use only the supplied context and do not invent missing measurements."
+        "Use only the supplied context and do not invent missing measurements. "
+        "Write all human-readable result, evidence, conflict, missing-evidence, warning, "
+        "and recommended-action text in Simplified Chinese; preserve identifiers, units, "
+        "field names, and source values as supplied."
     )
     context["execution_mode"] = state.mode
     return ModelRequest(

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
 from typing import Any
@@ -15,6 +16,9 @@ from agentscope.event import (
     TextBlockDeltaEvent,
     TextBlockEndEvent,
     TextBlockStartEvent,
+    ThinkingBlockDeltaEvent,
+    ThinkingBlockEndEvent,
+    ThinkingBlockStartEvent,
     ToolCallDeltaEvent,
     ToolCallEndEvent,
     ToolCallStartEvent,
@@ -32,6 +36,8 @@ from cnlc_agent.demo.uploads import UploadError, parse_upload
 from cnlc_agent.domain.models import JsonObject
 from cnlc_agent.infrastructure.telemetry import event_observer
 
+_REPORT_SECTION_PATTERN = re.compile(r"(?=^#{1,3} )", re.MULTILINE)
+
 
 def _progress(name: str, attributes: JsonObject) -> str | None:
     """Only forward bounded status fields, never raw model errors or trace payloads."""
@@ -46,6 +52,12 @@ def _progress(name: str, attributes: JsonObject) -> str | None:
     if name == "report.start":
         return "\n正在生成报告……\n"
     return None
+
+
+def _report_chunks(markdown: str) -> list[str]:
+    """Split a deterministic report on Markdown headings without changing its text."""
+    chunks = [chunk for chunk in _REPORT_SECTION_PATTERN.split(markdown) if chunk]
+    return chunks or [markdown]
 
 
 class UploadInterpretationReply(MiddlewareBase):
@@ -80,15 +92,16 @@ class UploadInterpretationReply(MiddlewareBase):
     ) -> AsyncGenerator[AgentEvent, None]:
         session_id = agent.state.session_id
         yield ReplyStartEvent(session_id=session_id, reply_id=reply_id, name=agent.name)
-        yield TextBlockStartEvent(reply_id=reply_id, block_id=block_id)
         try:
             fixture, instruction = parse_upload(messages)
         except UploadError as exc:
+            yield TextBlockStartEvent(reply_id=reply_id, block_id=block_id)
             yield TextBlockDeltaEvent(reply_id=reply_id, block_id=block_id, delta=str(exc))
             yield TextBlockEndEvent(reply_id=reply_id, block_id=block_id)
             yield ReplyEndEvent(session_id=session_id, reply_id=reply_id)
             return
-        yield TextBlockDeltaEvent(
+        yield ThinkingBlockStartEvent(reply_id=reply_id, block_id=block_id)
+        yield ThinkingBlockDeltaEvent(
             reply_id=reply_id,
             block_id=block_id,
             delta="正在读取井资料……\n\n正在检查数据……\n\n"
@@ -132,7 +145,11 @@ class UploadInterpretationReply(MiddlewareBase):
                     await task
                     break
                 if kind == "progress":
-                    yield TextBlockDeltaEvent(reply_id=reply_id, block_id=block_id, delta=value)
+                    yield ThinkingBlockDeltaEvent(
+                        reply_id=reply_id,
+                        block_id=block_id,
+                        delta=value,
+                    )
                 elif isinstance(value, ToolResponse):
                     result = value
                 else:
@@ -161,14 +178,15 @@ class UploadInterpretationReply(MiddlewareBase):
             ),
             metadata=result.metadata if result else {},
         )
-        yield TextBlockEndEvent(reply_id=reply_id, block_id=block_id)
+        yield ThinkingBlockEndEvent(reply_id=reply_id, block_id=block_id)
         report_id = uuid4().hex
         payload = result.metadata.get("result", {}) if result else {}
         report = payload.get("report_markdown") or (
             "解释已中断。" if interrupted else "解释任务失败，请检查井资料或服务配置后重试。"
         )
         yield TextBlockStartEvent(reply_id=reply_id, block_id=report_id)
-        yield TextBlockDeltaEvent(reply_id=reply_id, block_id=report_id, delta=report)
+        for chunk in _report_chunks(report):
+            yield TextBlockDeltaEvent(reply_id=reply_id, block_id=report_id, delta=chunk)
         yield TextBlockEndEvent(reply_id=reply_id, block_id=report_id)
         yield ReplyEndEvent(
             session_id=session_id,

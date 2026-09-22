@@ -8,6 +8,7 @@ from uuid import uuid4
 from agentscope.message import Base64Source, DataBlock, Msg, TextBlock
 from pydantic import ValidationError
 
+from cnlc_agent.demo.upload_adapters import adapt_synthetic_context
 from cnlc_agent.domain.models import MockFixture
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
@@ -51,11 +52,17 @@ def parse_upload(messages: list[Msg]) -> tuple[MockFixture, str]:
         # Never derive paths from attachment names. A missing business identifier is generated.
         if not data["well"].get("well_id"):
             data["well"]["well_id"] = f"UPLOAD_{uuid4().hex}"
-        fixture = MockFixture.model_validate(data)
+        try:
+            fixture = MockFixture.model_validate(data)
+        except ValidationError:
+            adapted = adapt_synthetic_context(data)
+            if adapted is None:
+                raise
+            fixture = adapted
     except (ValueError, UnicodeError, ValidationError, RecursionError):
         raise UploadError(
-            "井资料格式无效：当前 Demo 支持 mock_data 示例格式的 JSON，需包含 well、"
-            "raw_data、requirements、outputs、validation，且专业结果标记 is_mock=true。"
+            "井资料格式无效：当前 Demo 支持 mock_data 示例格式，或明确标记为 "
+            "synthetic_single_well_interpretation_context 的合成单井解释上下文 JSON。"
             "暂不支持原始 LAS/GDSX/CSV。"
         ) from None
     if not fixture.raw_data.depths or not fixture.raw_data.curves:

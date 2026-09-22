@@ -3,6 +3,9 @@ import { useQuery } from '@tanstack/react-query';
 import { credentialApi, modelApi } from '@/api';
 import type { CredentialView, ModelCard } from '@/api';
 
+const BACKEND_MODEL_CREDENTIAL_ID = 'cnlc-backend-model';
+const BACKEND_MODEL_NAME = 'qwen-plus';
+
 export interface CredentialWithModels {
 	credential: CredentialView;
 	models: ModelCard[];
@@ -29,12 +32,16 @@ async function fetchGroups(): Promise<Record<string, CredentialWithModels[]>> {
 			if (!result[type]) result[type] = [];
 			try {
 				const { models } = await modelApi.list(type);
+				const visibleModels =
+					credential.id === BACKEND_MODEL_CREDENTIAL_ID
+						? models.filter((model) => model.name === BACKEND_MODEL_NAME)
+						: models;
 				// Reverse-alphabetical, which is how the providers' naming
 				// schemes rank themselves — gpt-5 before gpt-4, qwen3 before
 				// qwen2 — so the strongest models sit at the top of the picker.
 				result[type].push({
 					credential,
-					models: [...models].sort((a, b) =>
+					models: [...visibleModels].sort((a, b) =>
 						b.name.localeCompare(a.name, undefined, { numeric: true }),
 					),
 				});

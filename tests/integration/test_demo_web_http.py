@@ -135,7 +135,11 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                 result = next(e for e in events if e["type"] == EventType.TOOL_RESULT_END)
                 assert result["metadata"]["result"]["status"] == "SUCCESS"
                 report = result["metadata"]["result"]["report_markdown"]
-                assert any(e.get("delta") == report for e in events)
+                report_chunks = [
+                    e["delta"] for e in events if e["type"] == EventType.TEXT_BLOCK_DELTA
+                ]
+                assert len(report_chunks) > 1
+                assert "".join(report_chunks) == report
                 assert all(
                     any(f"W{i:02}：SUCCESS" in e.get("delta", "") for e in events)
                     for i in range(1, 11)

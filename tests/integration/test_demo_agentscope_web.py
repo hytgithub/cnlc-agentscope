@@ -5,15 +5,22 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import httpx
+from agentscope.app.storage import RedisStorage
 from agentscope.message import TextBlock, ToolCallBlock
 from agentscope.model import ChatModelBase
 from agentscope.tool import Toolkit, ToolResponse
+from fakeredis.aioredis import FakeRedis
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
-from cnlc_agent.demo.agentscope_app import create_demo_app, demo_agent_tools
+from cnlc_agent.demo.agentscope_app import (
+    BACKEND_MODEL_CREDENTIAL_ID,
+    create_demo_app,
+    demo_agent_tools,
+)
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
 from cnlc_agent.demo.tools import (
     RUN_TOOL_NAME,
@@ -43,8 +50,8 @@ async def test_tool_reuses_task_service_and_returns_stable_result(data_dir):
     assert result.completed_steps == list(StepId)
     assert result.step_statuses == {step_id: StepStatus.SUCCESS for step_id in StepId}
     assert result.summary
-    assert "# 单井测井解释演示报告" in result.report_markdown
-    assert "W10" in result.report_markdown
+    assert "# 虚构演示井 001测井评价报告" in result.report_markdown
+    assert "W10" not in result.report_markdown
     assert set(result.model_dump()) == {
         "status",
         "task_id",
@@ -115,3 +122,42 @@ async def test_agent_service_adapter_constructs_offline(tmp_path):
     assert response.json()["status"] == "ok"
     assert secret not in json.dumps(app.openapi())
     assert secret not in response.text
+
+
+async def test_backend_model_is_shared_without_exposing_api_key(tmp_path, monkeypatch):
+    redis = FakeRedis(decode_responses=True)
+    monkeypatch.setattr(
+        "cnlc_agent.demo.agentscope_app._redis_storage",
+        lambda _: RedisStorage(connection_pool=redis.connection_pool),
+    )
+    api_key = "sk-backend-only-test"
+    app = create_demo_app(
+        connections=ConnectionSettings(
+            redis_url=SecretStr("redis://localhost:6379/0"),
+            model_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            model_name="qwen-plus",
+            model_api_key=SecretStr(api_key),
+            _env_file=None,
+        ),
+        workspace_dir=tmp_path / "workspaces",
+    )
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"X-User-ID": "admin"},
+        ) as client:
+            response = await client.get("/credential/")
+
+    assert response.status_code == 200
+    credential = next(
+        item for item in response.json()["credentials"] if item["id"] == BACKEND_MODEL_CREDENTIAL_ID
+    )
+    assert credential["editable"] is False
+    assert credential["data"] == {
+        "type": "dashscope_credential",
+        "name": "CNLC Backend Model",
+    }
+    assert api_key not in response.text
+    await redis.aclose()

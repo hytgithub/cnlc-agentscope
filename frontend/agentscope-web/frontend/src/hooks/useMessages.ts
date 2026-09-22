@@ -92,9 +92,10 @@ const INTERRUPT_TIMEOUT_MS = 10_000;
  * via ``POST /chat/`` (fire-and-forget); the resulting events arrive
  * through the already-open SSE connection.
  *
- * ``phase`` is driven by event content, not HTTP lifecycle: it moves
- * to ``streaming`` on ``ReplyStartEvent`` and back to ``idle`` on
- * ``ReplyEndEvent``. Calling ``interrupt()`` moves it to
+ * ``phase`` moves to ``streaming`` synchronously when a message is
+ * submitted (and also when a ``ReplyStartEvent`` announces a run
+ * started elsewhere), then back to ``idle`` on ``ReplyEndEvent``.
+ * Calling ``interrupt()`` moves it to
  * ``interrupting`` until the terminating ``ReplyEndEvent`` arrives (or
  * a 10s safety timeout fires).
  *
@@ -147,6 +148,10 @@ export function useMessages(
 
 	const msgsRef = useRef<Msg[]>([]);
 	const currentReplyRef = useRef<Msg | null>(null);
+	// Guards the gap between POST /chat/ and the first REPLY_START event.
+	// React state updates are asynchronous, so relying on ``phase`` alone
+	// allows a rapid second click to start another run for the same session.
+	const runActiveRef = useRef(false);
 	const abortRef = useRef<AbortController | null>(null);
 	const rafRef = useRef<number | null>(null);
 	// Timer that reverts ``interrupting`` back to ``idle`` if the
@@ -205,6 +210,7 @@ export function useMessages(
 			}
 			if (event.type === EventType.REPLY_START) {
 				const e = event as ReplyStartEvent;
+				runActiveRef.current = true;
 				// A continuation (the run resuming after a confirmation or an
 				// external execution result) re-emits REPLY_START with the
 				// *same* reply_id. Re-point at the existing reply instead of
@@ -242,6 +248,7 @@ export function useMessages(
 				}
 				if (event.type === EventType.REPLY_END) {
 					clearInterruptTimer();
+					runActiveRef.current = false;
 					setPhase('idle');
 					currentReplyRef.current = null;
 				}
@@ -280,6 +287,7 @@ export function useMessages(
 		setLoadedKey(null);
 		msgsRef.current = [];
 		currentReplyRef.current = null;
+		runActiveRef.current = false;
 		setMsgs([]);
 		setError(null);
 		clearInterruptTimer();
@@ -312,6 +320,7 @@ export function useMessages(
 					// way to abort.
 					const tail = messages[messages.length - 1];
 					if (is_running || hasPendingToolCall(tail)) {
+						runActiveRef.current = true;
 						setPhase('streaming');
 						if (hasPendingToolCall(tail)) {
 							// Prime the ref so continuation events (which
@@ -374,7 +383,14 @@ export function useMessages(
 	 */
 	const send = useCallback(
 		async (content: ContentBlock[]) => {
-			if (!agentId || !sessionId) return;
+			if (!agentId || !sessionId || runActiveRef.current) return;
+
+			// Lock synchronously before the optimistic render or network request.
+			// This closes the duplicate-submit window before React can publish the
+			// updated phase to TextInput.
+			runActiveRef.current = true;
+			setPhase('streaming');
+			setError(null);
 
 			const userMsg = UserMsg({ name: 'user', content });
 			msgsRef.current = [...msgsRef.current, userMsg];
@@ -387,6 +403,8 @@ export function useMessages(
 					input: userMsg,
 				});
 			} catch (e) {
+				runActiveRef.current = false;
+				setPhase('idle');
 				setError(e as Error);
 			}
 		},
@@ -470,12 +488,14 @@ export function useMessages(
 		clearInterruptTimer();
 		interruptTimerRef.current = setTimeout(() => {
 			interruptTimerRef.current = null;
+			runActiveRef.current = false;
 			setPhase((prev) => (prev === 'interrupting' ? 'idle' : prev));
 		}, INTERRUPT_TIMEOUT_MS);
 		try {
 			await sessionApi.interrupt(sessionId, agentId);
 		} catch (e) {
 			clearInterruptTimer();
+			runActiveRef.current = false;
 			setPhase((prev) => (prev === 'interrupting' ? 'idle' : prev));
 			setError(e as Error);
 		}

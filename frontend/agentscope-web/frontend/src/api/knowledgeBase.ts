@@ -157,7 +157,9 @@ function uploadDocumentXhr(
  */
 export const knowledgeBaseApi = {
 	list: (params: ListKnowledgeBasesParams = {}) =>
-		client.get<ListKnowledgeBasesResponse>('/knowledge_bases/', toQuery({ ...params })),
+		client.get<ListKnowledgeBasesResponse>('/knowledge_bases/', toQuery({ ...params }), {
+			silent: true,
+		}),
 
 	/**
 	 * Fetch every visible knowledge base across all pages — for views
@@ -182,6 +184,8 @@ export const knowledgeBaseApi = {
 	middlewareParametersSchema: () =>
 		client.get<KbMiddlewareParametersSchemaResponse>(
 			'/knowledge_bases/middleware/parameters_schema',
+			undefined,
+			{ silent: true },
 		),
 
 	/** List the union of media types + extensions every parser accepts. */

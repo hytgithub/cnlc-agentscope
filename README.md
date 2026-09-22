@@ -32,7 +32,7 @@ Demo Mode 将演示资料视为完整，W03/W04/W05/W08 使用 fixture Mock Tool
 每次运行生成独立任务，输出目录为 `outputs/<task_id>/`：
 
 - `result.json`：结构化结果、状态变化、步骤记录、缺失信息和错误。
-- `report.md`：由同一份 State 渲染的骨架演示报告；失败任务输出诊断摘要。
+- `report.md`：由同一份 State 规范化后渲染的业务报告；失败任务输出诊断摘要。
 - 标准错误输出：包含 task_id、trace_id 的 JSON 格式运行事件。
 
 指定数据目录或输出目录：
@@ -134,11 +134,18 @@ outputs/<task_id>/
 ```
 
 JSON 保留 InterpretationState 契约，可再次解析；导出时隐藏凭据字段及原始错误消息，
-保留稳定错误代码。Markdown 展示井信息、采样与曲线、QC、岩性、物性、流体、
-油气水层分类、层段顶底深与厚度、综合验证和最终执行状态。
-每阶段展示 `source`、`is_mock` 和 Demo Skip 标记；仅展示 State 已有结果，不计算专业结论。
-`result.demo_skipped=true` 明确标为 Demo Skip；执行记录中的 `SKIPPED` 单独展示。
-未生成结果不冒充跳过或成功。真实模型基于 Mock 输入的输出也不是经过验证的真实解释结论。
+保留稳定错误代码。最终 Markdown 不再拼接 W01–W10，而是先将同一份 State 投影为
+结构化报告结果，再按配置选择模板。默认 `standard` 接近正式《测井评价报告》，
+`compact` 为业务精简版：
+
+```dotenv
+CNLC_REPORT_STYLE=standard
+# CNLC_REPORT_STYLE=compact
+```
+
+两种模板只组织已有井信息、曲线、QC、岩性、物性、流体、层段、验证、建议与局限，
+不会重新解释或补造专业数据；缺失值统一显示“未提供”。执行过程中的 W01–W10 Trace、
+Demo Skip 和结构化 JSON 保持不变。失败任务继续输出诊断摘要。
 
 ```bash
 uv run pytest tests/integration/test_demo_report_e2e.py -v
@@ -164,7 +171,7 @@ uv run cnlc-agent --well-id WELL_MOCK_001 --data-dir mock_data --output-dir outp
 
 本仓库使用 AgentScope 2.0.8 Agent Service，官方前端快照位于
 `frontend/agentscope-web`，上游来源见其中的 `UPSTREAM.md`。
-Agent Service 使用 Redis 保存官方 UI 的 Agent、Session、消息和凭证配置；测井解释任务仍由
+Agent Service 使用 Redis 保存官方 UI 的 Agent、Session、消息和服务端托管模型凭证；测井解释任务仍由
 现有 `InterpretationTaskService` 按 `CNLC_PERSISTENCE` 使用内存或 PostgreSQL/Redis。
 
 先启动 Redis，并在仓库根目录配置本地环境。模型统一选择 `qwen-plus`。
@@ -203,8 +210,10 @@ pnpm dev
 首次打开官方 Web UI 时：
 
 1. Server URL 填写 `http://localhost:8000`，Username 可填写本地演示用户名。
-2. 在 Credential 页面新增 DashScope 凭证；Key 只保存在本地 Agent Service 的 Redis 中。
-3. 在 Chat 页面创建 Agent 和 Session，并为 Session 选择 DashScope 的 `qwen-plus`。后端会把
+2. 前端无需新增 Credential。服务端会根据 `.env` 中的 `MODEL_*` 配置，为当前用户只读共享
+   `CNLC Backend Model`；浏览器只能读取凭证名称和类型，不能读取或修改 API Key。
+3. 在 Chat 页面创建 Agent 和 Session。前端会自动选择后端托管的 `qwen-plus`，并纠正旧会话中
+   不受支持的模型配置。后端会把
    该会话装配为 `LoggingInterpretationDemoAgent`；如果选择其他模型，会明确拒绝执行。
 4. 点击输入框附件按钮，上传一份 `mock_data/WELL_MOCK_001.json`（或其他已有井资料
    JSON），输入 `帮我解释一下这口井` 并发送。无需填写 well_id、task_id 或 instruction。
@@ -227,8 +236,11 @@ uv run pytest tests/integration/test_demo_agentscope_web.py \
   tests/integration/test_demo_web_upload.py tests/integration/test_demo_web_http.py -q
 ```
 
-当前上传格式为现有 `MockFixture` JSON，包含 `well`、`raw_data`、`requirements`、
-`outputs`、`validation`，最多一份、5 MiB；TXT 附件中包含同样 JSON 也可。
+当前上传格式支持现有 `MockFixture` JSON（包含 `well`、`raw_data`、`requirements`、
+`outputs`、`validation`），以及明确标记
+`data_type=synthetic_single_well_interpretation_context` 的合成单井解释上下文 JSON；
+最多一份、5 MiB，TXT 附件中包含同样 JSON 也可。合成上下文通过确定性适配器映射，
+只搬运上传文件已有的分层统计和解释结果，不补造专业计算结论。
 `well.well_id` 可省略，服务端自动生成；专业结果必须保留 `is_mock=true`。
 上传内容在每次任务的独立临时目录中校验和执行，不覆盖仓库样例。
 暂不支持原始 LAS/GDSX/CSV，也不会用另一口示例井的预设结论替代上传资料。
