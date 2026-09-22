@@ -4,6 +4,8 @@ from typing import Literal
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from cnlc_agent.reports.models import ReportStyle
+
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CNLC_", env_file=".env", extra="ignore")
@@ -12,6 +14,7 @@ class AppSettings(BaseSettings):
     model_provider: Literal["mock", "openai_compatible", "openai-compatible", "real"] = "mock"
     mock_data_dir: Path = Path("mock_data")
     output_dir: Path = Path("outputs")
+    report_style: ReportStyle = ReportStyle.STANDARD
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     tool_timeout_seconds: float = Field(default=10, gt=0)
     model_timeout_seconds: float = Field(default=30, gt=0)

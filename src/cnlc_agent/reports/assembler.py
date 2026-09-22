@@ -6,6 +6,9 @@ from typing import Any
 
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.state import InterpretationState
+from cnlc_agent.reports.formatter import MISSING, is_missing
+from cnlc_agent.reports.generator import ReportGenerator
+from cnlc_agent.reports.models import ReportStyle
 
 LABELS = {
     "quality": "QC 质量",
@@ -47,6 +50,8 @@ def _safe(value: Any) -> Any:
 
 
 def _cell(value: Any) -> str:
+    if is_missing(value):
+        return MISSING
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
     return (
         text.replace("&", "&amp;")
@@ -73,15 +78,20 @@ def _rows(value: Any, prefix: str = "") -> list[str]:
 
 
 class ReportAssembler:
+    def __init__(self, style: ReportStyle = ReportStyle.STANDARD) -> None:
+        self.generator = ReportGenerator(style)
+
     def to_json(self, state: InterpretationState) -> str:
         # Keep the InterpretationState schema and never mutate the persisted state.
         return json.dumps(_safe(state.model_dump(mode="json")), ensure_ascii=False, indent=2)
 
     def to_markdown(self, state: InterpretationState) -> str:
-        data = json.loads(self.to_json(state))
         complete = state.status in {StepStatus.SUCCESS, StepStatus.WARNING}
+        if complete:
+            return self.generator.generate(state)
+        data = json.loads(self.to_json(state))
         lines = [
-            "# 单井测井解释演示报告" if complete else "# 单井解释任务诊断摘要",
+            "# 单井解释任务诊断摘要",
             "",
             "> Demo / Mock 演示：Mock 专业参数和结论为测试预设，不代表真实测井解释。",
             "> 非 Mock 输出也可能基于 Mock 输入；不代表经过专业验证的真实结论。",
@@ -182,9 +192,7 @@ class ReportAssembler:
                 "## 最终执行结果",
                 "",
                 f"最终状态：{state.status.value}；需要人工复核：{state.review_required}。",
-                "Demo 链路已完成；Mock 结果不能作为真实专业解释结论。"
-                if complete
-                else "任务未完成，以上结果仅供定位问题；不能形成最终专业解释结论。",
+                "任务未完成，以上结果仅供定位问题；不能形成最终专业解释结论。",
             ]
         )
         return "\n".join(lines) + "\n"

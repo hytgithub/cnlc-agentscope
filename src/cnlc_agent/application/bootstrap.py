@@ -66,7 +66,7 @@ def build_application(
     return InterpretationTaskService(
         MainAgent(workflow, telemetry),
         task_repository if task_repository is not None else InMemoryTaskRepository(),
-        ReportAssembler(),
+        ReportAssembler(settings.report_style),
         telemetry,
         mode=settings.mode,
         close_callbacks=close_callbacks,
