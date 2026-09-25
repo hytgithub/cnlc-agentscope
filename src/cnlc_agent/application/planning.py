@@ -5,9 +5,9 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from cnlc_agent.domain.enums import StepId, StepStatus
+from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.errors import DataError, WorkflowError
-from cnlc_agent.domain.execution import Execution
+from cnlc_agent.domain.execution import Execution, ExecutionStatus
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import Contract
 from cnlc_agent.domain.override import InterpretationOverride
@@ -67,6 +67,7 @@ class ExecutionPlan(Contract):
     """可审查的只读规划结果；执行边界重新校验后创建独立 Execution。"""
 
     task_id: str = Field(min_length=1)
+    expected_current_execution_id: str | None = None
     source_execution_id: str | None = None
     # 在实际执行边界核对来源绑定，避免读取到与计划不一致的输入版本。
     source_input_version_id: str | None = None
@@ -147,7 +148,7 @@ class DependencyResolver:
         ]
         reliable_source = (
             source_execution is not None
-            and source_execution.status in {StepStatus.SUCCESS, StepStatus.WARNING}
+            and source_execution.status in {ExecutionStatus.SUCCESS, ExecutionStatus.WARNING}
             and bool(source_execution.markdown)
             and source_input is not None
             and source_input.task_id == task_id
@@ -209,6 +210,9 @@ class DependencyResolver:
         )
         return ExecutionPlan(
             task_id=task_id,
+            expected_current_execution_id=(
+                current_execution.execution_id if current_execution is not None else None
+            ),
             source_execution_id=source.execution_id if source is not None else None,
             source_input_version_id=source.input_version_id if source is not None else None,
             selected_input_version_id=(

@@ -42,11 +42,14 @@ async def test_memory_session_upload_modify_status_previous_and_isolation(data_d
     result = await start.call(well_id=fixture.well.well_id)
     start.upload = None
     first = result.metadata["result"]
+    assert first["execution_status"] == "QUEUED"
+    await session.wait_for_completion(first["task_id"], first["execution_id"])
     assert all(not root.exists() for root in roots)
     changed = await tools["modify_well_interpretation"].call(
         task_id=first["task_id"], por=0.16, perm=0.16
     )
     second = changed.metadata["result"]
+    await session.wait_for_completion(first["task_id"], second["execution_id"])
     assert changed.state == "success"
     assert second["reused_steps"] == ["W01", "W02", "W03"]
     status = await tools["get_interpretation_status"].call(task_id=first["task_id"])
@@ -54,27 +57,34 @@ async def test_memory_session_upload_modify_status_previous_and_isolation(data_d
     previous = await tools["get_interpretation_report"].call(
         task_id=first["task_id"], selector="PREVIOUS"
     )
-    assert previous.metadata["result"]["report_markdown"] == first["report_markdown"]
+    assert previous.metadata["result"]["report_markdown"] == (
+        await session.repository.get_execution_report(first["execution_id"])
+    )
     assert all(not root.exists() for root in roots)
     other = {tool.name: tool for tool in build_task_tools(configured_runner(data_dir))}
     missing = await other["get_interpretation_status"].call(task_id=first["task_id"])
     assert missing.metadata["error_code"] == "TASK_NOT_FOUND"
     assert other["run_well_interpretation"].upload is None
+    await session.dispatcher.shutdown()
 
 
 async def test_tools_reject_unknown_and_no_effective_change(data_dir):
-    tools = {tool.name: tool for tool in build_task_tools(configured_runner(data_dir))}
+    session = configured_runner(data_dir)
+    tools = {tool.name: tool for tool in build_task_tools(session)}
     started = await tools["run_well_interpretation"].call(well_id="WELL_MOCK_001")
     first = started.metadata["result"]
+    await session.wait_for_completion(first["task_id"], first["execution_id"])
     modify = tools["modify_well_interpretation"]
     for parameter in ("sw", "rw", "archie_m", "archie_n", "unknown_parameter", "start_step"):
         result = await modify.call(task_id=first["task_id"], **{parameter: 0.16})
         assert result.metadata["error_code"] == "INVALID_COMMAND"
     assert (await modify.call(task_id=first["task_id"])).metadata["error_code"] == "EMPTY_OVERRIDE"
-    await modify.call(task_id=first["task_id"], por=0.16)
+    changed = await modify.call(task_id=first["task_id"], por=0.16)
+    await session.wait_for_completion(first["task_id"], changed.metadata["result"]["execution_id"])
     result = await modify.call(task_id=first["task_id"], por=0.16)
     assert result.metadata["error_code"] == "NO_EFFECTIVE_CHANGE"
     assert "Traceback" not in json.dumps(result.model_dump())
+    await session.dispatcher.shutdown()
 
 
 async def test_session_factory_keeps_same_session_and_separates_identity(monkeypatch):

@@ -133,17 +133,20 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                 assert response.status_code == 200, response.text
                 await asyncio.wait_for(finished.wait(), 10)
                 result = next(e for e in events if e["type"] == EventType.TOOL_RESULT_END)
-                assert result["metadata"]["result"]["status"] == "SUCCESS"
-                report = result["metadata"]["result"]["report_markdown"]
+                first = result["metadata"]["result"]
+                assert first["execution_status"] == "QUEUED"
+                runner = app.state.cnlc_task_tools.runners[
+                    ("upload-test", agent_id, session_id)
+                ]
+                completed = await runner.wait_for_completion(
+                    first["task_id"], first["execution_id"]
+                )
+                assert completed.execution_status == "SUCCESS"
+                report = await runner.repository.get_execution_report(first["execution_id"])
                 report_chunks = [
                     e["delta"] for e in events if e["type"] == EventType.TEXT_BLOCK_DELTA
                 ]
-                assert len(report_chunks) > 1
-                assert "".join(report_chunks) == report
-                assert all(
-                    any(f"W{i:02}：SUCCESS" in e.get("delta", "") for e in events)
-                    for i in range(1, 11)
-                )
+                assert "解释任务已提交" in "".join(report_chunks)
                 assert "sk-offline-test-only" not in json.dumps(events)
                 # The service persists the same projected Assistant message after REPLY_END.
                 async with asyncio.timeout(5):
@@ -154,8 +157,7 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                         if any(m.role == "assistant" for m in messages):
                             break
                         await asyncio.sleep(0.01)
-                assert any(report in (m.get_text_content() or "") for m in messages)
-                first = result["metadata"]["result"]
+                assert any("解释任务已提交" in (m.get_text_content() or "") for m in messages)
                 # 每轮官方服务重新创建 Agent/Tools，内存仓库仍由同一会话 runner 持有。
                 for text, command in [
                     ("把孔隙度、渗透率改成0.16", "MODIFY"),
@@ -182,6 +184,8 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                     assert payload["task_id"] == first["task_id"]
                     if command == "MODIFY":
                         assert payload["reused_steps"] == ["W01", "W02", "W03"]
+                        assert payload["execution_status"] == "QUEUED"
+                        await runner.wait_for_completion(first["task_id"], payload["execution_id"])
                     if command == "GET_REPORT":
                         assert payload["execution_id"] == first["execution_id"]
                         assert payload["report_markdown"] == report

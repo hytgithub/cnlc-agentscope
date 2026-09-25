@@ -9,9 +9,16 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from cnlc_agent.domain.enums import StepStatus
+from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.errors import InfrastructureError
-from cnlc_agent.domain.execution import Execution, ExecutionTrigger, InterpretationTask
+from cnlc_agent.domain.execution import (
+    TERMINAL_EXECUTION_STATUSES,
+    Execution,
+    ExecutionStatus,
+    ExecutionTrigger,
+    InterpretationTask,
+    PlanningReason,
+)
 from cnlc_agent.domain.inputs import (
     InputSource,
     InterpretationInputVersion,
@@ -93,6 +100,16 @@ class ExecutionRow(Base):
         nullable=True,
     )
     override_snapshot: Mapped[JsonObject] = mapped_column(JSONB, nullable=False, default=dict)
+    start_step: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    source_execution_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    planning_reason: Mapped[str] = mapped_column(String(32), nullable=False, default="INITIAL")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -155,12 +172,20 @@ def _as_execution(row: ExecutionRow) -> Execution:
         execution_id=row.execution_id,
         task_id=row.task_id,
         sequence=row.sequence,
-        status=StepStatus(row.status),
+        status=ExecutionStatus(row.status),
         state_snapshot=InterpretationState.model_validate(row.state_snapshot),
         markdown=row.markdown,
         trigger_type=row.trigger_type,  # type: ignore[arg-type]
         input_version_id=row.input_version_id,
         override_snapshot=InterpretationOverride.model_validate(row.override_snapshot),
+        start_step=StepId(row.start_step) if row.start_step is not None else None,
+        source_execution_id=row.source_execution_id,
+        planning_reason=row.planning_reason,  # type: ignore[arg-type]
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+        lease_owner=row.lease_owner,
+        lease_expires_at=row.lease_expires_at,
+        error_code=row.error_code,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -431,6 +456,10 @@ class PostgreSQLTaskRepository:
         sequence: int | None = None,
         input_version_id: str | None = None,
         override_snapshot: InterpretationOverride | None = None,
+        start_step: StepId | None = StepId.W01,
+        source_execution_id: str | None = None,
+        planning_reason: PlanningReason = "INITIAL",
+        expected_current_execution_id: str | None = None,
     ) -> Execution:
         """任务行加锁后分配序号；插入成功才更新当前指针。"""
 
@@ -443,6 +472,13 @@ class PostgreSQLTaskRepository:
                     raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
                 if task.well_id != state.task.well_id:
                     raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+                if (
+                    expected_current_execution_id is not None
+                    and task.current_execution_id != expected_current_execution_id
+                ):
+                    raise InfrastructureError(
+                        "STALE_EXECUTION_PLAN", "任务当前版本已变化，请重新规划"
+                    )
                 if input_version_id is not None:
                     input_row = await session.get(InputVersionRow, input_version_id)
                     if input_row is None:
@@ -453,6 +489,14 @@ class PostgreSQLTaskRepository:
                         )
                 if await session.get(ExecutionRow, state.workflow_execution_id) is not None:
                     raise InfrastructureError("EXECUTION_EXISTS", "执行标识已存在")
+                current = (
+                    await session.get(ExecutionRow, task.current_execution_id)
+                    if task.current_execution_id is not None else None
+                )
+                if current is not None and current.status in {
+                    ExecutionStatus.QUEUED.value, ExecutionStatus.RUNNING.value
+                }:
+                    raise InfrastructureError("TASK_EXECUTION_ACTIVE", "当前任务已有执行正在处理")
                 last_sequence = await session.scalar(
                     select(func.max(ExecutionRow.sequence)).where(
                         ExecutionRow.task_id == state.task.task_id
@@ -477,7 +521,7 @@ class PostgreSQLTaskRepository:
                     execution_id=state.workflow_execution_id,
                     task_id=state.task.task_id,
                     sequence=next_sequence,
-                    status=state.status.value,
+                    status=ExecutionStatus.QUEUED.value,
                     state_snapshot=state.model_dump(mode="json"),
                     markdown="",
                     trigger_type=trigger_type,
@@ -485,6 +529,9 @@ class PostgreSQLTaskRepository:
                     override_snapshot=(override_snapshot or InterpretationOverride()).model_dump(
                         mode="json"
                     ),
+                    start_step=start_step.value if start_step is not None else None,
+                    source_execution_id=source_execution_id,
+                    planning_reason=planning_reason,
                     created_at=now,
                     updated_at=now,
                 )
@@ -527,6 +574,140 @@ class PostgreSQLTaskRepository:
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError("DATABASE_READ_FAILED", "数据库执行列表读取失败") from None
 
+    async def claim_execution(
+        self, execution_id: str, worker_id: str, lease_expires_at: datetime
+    ) -> bool:
+        """行锁保证多个 Worker 只有一个能把 QUEUED 转为 RUNNING。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                row = await session.scalar(
+                    select(ExecutionRow)
+                    .where(ExecutionRow.execution_id == execution_id)
+                    .with_for_update()
+                )
+                if row is None:
+                    raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+                if row.status != ExecutionStatus.QUEUED.value:
+                    return False
+                now = utc_now()
+                row.status = ExecutionStatus.RUNNING.value
+                row.started_at = now
+                row.lease_owner = worker_id
+                row.lease_expires_at = lease_expires_at
+                row.updated_at = now
+                task = await session.get(TaskRow, row.task_id)
+                if task is not None and task.current_execution_id == execution_id:
+                    task.status = ExecutionStatus.RUNNING.value
+                    task.updated_at = now
+                return True
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库执行认领失败") from None
+
+    async def renew_execution_lease(
+        self, execution_id: str, worker_id: str, lease_expires_at: datetime
+    ) -> bool:
+        """续约同时核对 owner、运行态和原 lease 尚未过期。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                row = await session.scalar(
+                    select(ExecutionRow)
+                    .where(ExecutionRow.execution_id == execution_id)
+                    .with_for_update()
+                )
+                now = utc_now()
+                if (
+                    row is None
+                    or row.status != ExecutionStatus.RUNNING.value
+                    or row.lease_owner != worker_id
+                    or row.lease_expires_at is None
+                    or row.lease_expires_at <= now
+                ):
+                    return False
+                row.lease_expires_at = lease_expires_at
+                row.updated_at = now
+                return True
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库 lease 续约失败") from None
+
+    async def finish_execution(
+        self,
+        execution_id: str,
+        worker_id: str,
+        status: ExecutionStatus,
+        error_code: str | None = None,
+    ) -> Execution:
+        """终态、成功指针和 lease 清理在同一事务内提交。"""
+
+        if status not in TERMINAL_EXECUTION_STATUSES:
+            raise InfrastructureError("INVALID_EXECUTION_STATUS", "执行只能写入终态")
+        try:
+            async with self.sessions.begin() as session:
+                row = await session.scalar(
+                    select(ExecutionRow)
+                    .where(ExecutionRow.execution_id == execution_id)
+                    .with_for_update()
+                )
+                if row is None:
+                    raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+                if row.status != ExecutionStatus.RUNNING.value:
+                    raise InfrastructureError("EXECUTION_NOT_RUNNING", "执行不在运行态")
+                if row.lease_owner != worker_id:
+                    raise InfrastructureError(
+                        "EXECUTION_LEASE_MISMATCH", "执行 lease 不属于当前 Worker"
+                    )
+                if status in {ExecutionStatus.SUCCESS, ExecutionStatus.WARNING} and (
+                    row.lease_expires_at is None or row.lease_expires_at <= utc_now()
+                ):
+                    raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
+                task = await session.scalar(
+                    select(TaskRow).where(TaskRow.task_id == row.task_id).with_for_update()
+                )
+                assert task is not None
+                now = utc_now()
+                row.status = status.value
+                row.finished_at = now
+                row.lease_owner = None
+                row.lease_expires_at = None
+                row.error_code = error_code
+                row.updated_at = now
+                task.status = status.value
+                task.updated_at = now
+                if status in {ExecutionStatus.SUCCESS, ExecutionStatus.WARNING} and row.markdown:
+                    task.latest_successful_execution_id = execution_id
+                result = _as_execution(row)
+            return result
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库执行终结失败") from None
+
+    async def recover_expired_executions(self, now: datetime) -> list[str]:
+        """锁定所有过期 RUNNING 并失败，不自动再次调用 Workflow。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                rows = (await session.scalars(
+                    select(ExecutionRow).where(
+                        ExecutionRow.status == ExecutionStatus.RUNNING.value,
+                        ExecutionRow.lease_expires_at.is_not(None),
+                        ExecutionRow.lease_expires_at <= now,
+                    ).with_for_update(skip_locked=True)
+                )).all()
+                for row in rows:
+                    row.status = ExecutionStatus.FAILED.value
+                    row.finished_at = now
+                    row.lease_owner = None
+                    row.lease_expires_at = None
+                    row.error_code = "WORKER_LEASE_EXPIRED"
+                    row.updated_at = now
+                    task = await session.get(TaskRow, row.task_id)
+                    if task is not None and task.current_execution_id == row.execution_id:
+                        task.status = ExecutionStatus.FAILED.value
+                        task.updated_at = now
+                return [row.execution_id for row in rows]
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库过期执行恢复失败") from None
+
     async def save_execution_state(self, state: InterpretationState) -> None:
         """更新当前执行的检查点；后续执行不得污染历史版本。"""
 
@@ -542,10 +723,15 @@ class PostgreSQLTaskRepository:
                     raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不可写入当前快照")
                 if task.well_id != state.task.well_id:
                     raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+                if row.status != ExecutionStatus.RUNNING.value:
+                    raise InfrastructureError("EXECUTION_NOT_RUNNING", "执行不在运行态")
+                if (
+                    row.lease_expires_at is None or row.lease_expires_at <= utc_now()
+                ):
+                    raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
                 payload = state.model_dump(mode="json")
                 now = utc_now()
                 row.state_snapshot = payload
-                row.status = state.status.value
                 row.updated_at = now
                 task.snapshot = payload
                 task.status = row.status
@@ -571,8 +757,6 @@ class PostgreSQLTaskRepository:
                 row.updated_at = now
                 task.markdown = markdown
                 task.updated_at = now
-                if markdown and row.status in {StepStatus.SUCCESS.value, StepStatus.WARNING.value}:
-                    task.latest_successful_execution_id = execution_id
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库报告保存失败") from None
 
@@ -629,12 +813,14 @@ class PostgreSQLTaskRepository:
                         execution_id=state.workflow_execution_id,
                         task_id=state.task.task_id,
                         sequence=1,
-                        status=state.status.value,
+                        status=ExecutionStatus.QUEUED.value,
                         state_snapshot=payload,
                         markdown="",
                         trigger_type="INITIAL",
                         input_version_id=None,
                         override_snapshot={},
+                        start_step=StepId.W01.value,
+                        planning_reason="INITIAL",
                         created_at=state.created_at,
                         updated_at=state.updated_at,
                     )
@@ -663,18 +849,21 @@ class PostgreSQLTaskRepository:
                     raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不可写入当前快照")
                 if task.well_id != state.task.well_id:
                     raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+                if row.error_code == "WORKER_LEASE_EXPIRED":
+                    raise InfrastructureError("EXECUTION_NOT_RUNNING", "过期执行不可再写入")
+                if row.status == ExecutionStatus.RUNNING.value and (
+                    row.lease_expires_at is None or row.lease_expires_at <= utc_now()
+                ):
+                    raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
                 now = utc_now()
                 payload = state.model_dump(mode="json")
                 row.state_snapshot = payload
-                row.status = state.status.value
                 row.markdown = markdown
                 row.updated_at = now
                 task.snapshot = payload
                 task.status = row.status
                 task.markdown = markdown
                 task.updated_at = now
-                if markdown and row.status in {StepStatus.SUCCESS.value, StepStatus.WARNING.value}:
-                    task.latest_successful_execution_id = row.execution_id
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库状态与报告保存失败") from None
 

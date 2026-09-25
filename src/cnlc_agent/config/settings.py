@@ -55,3 +55,5 @@ class PersistenceSettings(BaseSettings):
     redis_prefix: str = Field(default="cnlc:v1", min_length=1)
     redis_ttl_seconds: int = Field(default=86400, gt=0)
     infrastructure_timeout_seconds: float = Field(default=5, gt=0)
+    execution_lease_seconds: float = Field(default=90, gt=3, le=3600)
+    execution_poll_seconds: float = Field(default=15, gt=0, le=60)

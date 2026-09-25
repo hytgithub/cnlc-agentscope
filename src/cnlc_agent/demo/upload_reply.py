@@ -194,10 +194,22 @@ class UploadInterpretationReply(MiddlewareBase):
         yield ThinkingBlockEndEvent(reply_id=reply_id, block_id=block_id)
         report_id = uuid4().hex
         payload = result.metadata.get("result", {}) if result else {}
-        # 报告来自业务 Tool 的确定性结果；缺失时只返回稳定诊断文案。
-        report = payload.get("report_markdown") or (
-            "解释已中断。" if interrupted else "解释任务失败，请检查井资料或服务配置后重试。"
-        )
+        # 后台提交只展示可信标识和持久状态；报告由后续查询 Tool 读取。
+        report = payload.get("report_markdown")
+        if not report and payload.get("execution_id"):
+            report = (
+                f"解释任务已提交。\n\n"
+                f"- task_id: `{payload['task_id']}`\n"
+                f"- execution_id: `{payload['execution_id']}`\n"
+                f"- execution_status: `{payload.get('execution_status', 'QUEUED')}`\n\n"
+                "可继续询问“现在处理到哪里了？”或在完成后查询报告。"
+            )
+        if not report:
+            report = (
+                "解释已中断。"
+                if interrupted
+                else "解释任务失败，请检查井资料或服务配置后重试。"
+            )
         yield TextBlockStartEvent(reply_id=reply_id, block_id=report_id)
         for chunk in _report_chunks(report):
             yield TextBlockDeltaEvent(reply_id=reply_id, block_id=report_id, delta=chunk)

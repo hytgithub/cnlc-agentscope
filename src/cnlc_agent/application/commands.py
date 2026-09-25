@@ -1,6 +1,7 @@
 """任务级命令及受控查询投影；专业执行依赖仍由现有任务服务决定。"""
 
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Literal
 
 from pydantic import Field
@@ -8,7 +9,12 @@ from pydantic import Field
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import DataError
-from cnlc_agent.domain.execution import Execution
+from cnlc_agent.domain.execution import (
+    TERMINAL_EXECUTION_STATUSES,
+    Execution,
+    ExecutionStatus,
+    PlanningReason,
+)
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import Contract, JsonObject, TaskRequest
 from cnlc_agent.domain.override import InterpretationOverride
@@ -46,12 +52,19 @@ class TaskCommandResult(Contract):
     execution_id: str
     current_execution_id: str | None
     execution_sequence: int
-    status: StepStatus
+    execution_status: ExecutionStatus
+    workflow_status: StepStatus
     current_step: StepId | None
     completed_steps: list[StepId]
     reused_steps: list[StepId]
     effective_override: InterpretationOverride
     input_version_id: str | None
+    start_step: StepId | None
+    source_execution_id: str | None
+    planning_reason: PlanningReason
+    started_at: datetime | None
+    finished_at: datetime | None
+    error_code: str | None
     report_ready: bool
     tool_run_summary: JsonObject
     summary: str
@@ -85,6 +98,18 @@ class TaskCommands:
         )
         return await self.project(command.task_id, state.workflow_execution_id, "MODIFY", True)
 
+    async def prepare_modify(
+        self, command: ModifyInterpretationCommand,
+    ) -> TaskCommandResult:
+        """生成计划并只创建 QUEUED Execution，供后台调度器执行。"""
+
+        if not command.changes.has_changes():
+            raise DataError("EMPTY_OVERRIDE", "请明确要修改的参数名称和值")
+        request = await self.request(command.task_id)
+        plan = await self.service.plan_rerun(request, changes=command.changes)
+        execution = await self.service.prepare_rerun_plan(request, plan)
+        return await self.project(command.task_id, execution.execution_id, "MODIFY")
+
     async def full_rerun(
         self, command: FullRerunCommand,
         materialize: Callable[[InterpretationInputVersion], Awaitable[None]],
@@ -96,8 +121,18 @@ class TaskCommands:
         )
         return await self.project(command.task_id, state.workflow_execution_id, "FULL_RERUN", True)
 
+    async def prepare_full_rerun(
+        self, command: FullRerunCommand,
+    ) -> TaskCommandResult:
+        """只提交全量计划；当前有效参数由 Resolver 继承。"""
+
+        request = await self.request(command.task_id)
+        plan = await self.service.plan_rerun(request, force_full_rerun=True)
+        execution = await self.service.prepare_rerun_plan(request, plan)
+        return await self.project(command.task_id, execution.execution_id, "FULL_RERUN")
+
     async def status(self, command: GetStatusCommand) -> TaskCommandResult:
-        """仅返回当前持久快照，不宣称存在后台 Worker。"""
+        """仅返回 Execution 的真实持久状态，不从聊天上下文推断。"""
 
         await self.request(command.task_id)
         task = await self.service.repository.get_task(command.task_id)
@@ -145,18 +180,28 @@ class TaskCommands:
         return TaskCommandResult(
             command=command, task_id=task_id, well_id=task.well_id,
             execution_id=execution_id, current_execution_id=task.current_execution_id,
-            execution_sequence=execution.sequence, status=execution.status,
+            execution_sequence=execution.sequence,
+            execution_status=execution.status, workflow_status=state.status,
             current_step=state.current_step, completed_steps=state.completed_steps,
             reused_steps=[item.step_id for item in state.reused_steps],
             effective_override=execution.override_snapshot,
-            input_version_id=execution.input_version_id, report_ready=bool(execution.markdown),
+            input_version_id=execution.input_version_id,
+            start_step=execution.start_step,
+            source_execution_id=execution.source_execution_id,
+            planning_reason=execution.planning_reason,
+            started_at=execution.started_at,
+            finished_at=execution.finished_at,
+            error_code=execution.error_code,
+            report_ready=(
+                execution.status in TERMINAL_EXECUTION_STATUSES and bool(execution.markdown)
+            ),
             tool_run_summary={
                 "count": len(runs), "last_tool": runs[-1].tool_code if runs else None,
                 "failed_count": sum(run.status == "FAILED" for run in runs),
             },
             summary=(
-                f"第 {execution.sequence} 版：{execution.status.value}；"
-                "当前为同步执行的持久化状态。"
+                f"第 {execution.sequence} 版执行状态：{execution.status.value}；"
+                f"Workflow 状态：{state.status.value}。"
             ),
             report_markdown=(
                 await self.service.get_execution_report(task_id, execution_id)

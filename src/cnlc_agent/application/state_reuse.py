@@ -11,7 +11,7 @@ from cnlc_agent.application.planning import (
 )
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import WorkflowError
-from cnlc_agent.domain.execution import Execution
+from cnlc_agent.domain.execution import Execution, ExecutionStatus
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import StageResult, TaskRequest
 from cnlc_agent.domain.state import InterpretationState, ReusedStep, StateChange
@@ -90,7 +90,7 @@ class StateReuseAssembler:
         ):
             raise WorkflowError("REUSE_SOURCE_TASK_MISMATCH", "复用来源不属于当前任务或井")
         if (
-            source.status not in VALID_SOURCE_STATUSES
+            source.status not in {ExecutionStatus.SUCCESS, ExecutionStatus.WARNING}
             or source.state_snapshot.status not in VALID_SOURCE_STATUSES
         ):
             raise WorkflowError("REUSE_SOURCE_INVALID_STATUS", "只能复用成功或告警执行")

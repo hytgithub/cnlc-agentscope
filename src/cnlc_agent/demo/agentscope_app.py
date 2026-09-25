@@ -1,6 +1,9 @@
 """把测井解释 Demo Tool 接入官方 AgentScope Agent Service。"""
 
-from collections.abc import Awaitable, Callable
+import asyncio
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -23,7 +26,9 @@ from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio.connection import SSLConnection
 
-from cnlc_agent.config.settings import AppSettings, ConnectionSettings
+from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispatcher
+from cnlc_agent.application.runtime import application_runtime
+from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
 from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
 
@@ -76,16 +81,79 @@ async def demo_agent_tools(
 class SessionTaskToolFactory:
     """应用实例内按完整会话身份隔离 runner，跨 HTTP 请求保留内存任务。"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        settings: AppSettings | None = None,
+        persistence: PersistenceSettings | None = None,
+        connections: ConnectionSettings | None = None,
+        dispatcher: InProcessExecutionDispatcher | None = None,
+    ) -> None:
+        self.settings = settings or AppSettings(mode="demo")
+        self.persistence = persistence or PersistenceSettings()
+        self.connections = connections or ConnectionSettings()
+        self.dispatcher = dispatcher or InProcessExecutionDispatcher()
         self.runners: dict[tuple[str, str, str], TaskCommandRunner] = {}
+        self._recovery_stack: AsyncExitStack | None = None
+        self._recovery_task: asyncio.Task[None] | None = None
 
     async def __call__(self, user_id: str, agent_id: str, session_id: str) -> list[ToolBase]:
         """工具可每轮重建，只有当前会话的任务仓库被复用。"""
 
         key = (user_id, agent_id, session_id)
         if key not in self.runners:
-            self.runners[key] = TaskCommandRunner()
+            self.runners[key] = TaskCommandRunner(
+                self.settings,
+                self.persistence,
+                self.dispatcher,
+                self.connections,
+            )
         return build_task_tools(self.runners[key])
+
+    async def start(self) -> None:
+        """PostgreSQL 模式启动时回收过期 RUNNING；内存会话没有跨进程状态。"""
+
+        if self.persistence.persistence != "postgres-redis":
+            return
+        stack = AsyncExitStack()
+        try:
+            service = await stack.enter_async_context(application_runtime(
+                self.settings, self.persistence, self.connections
+            ))
+            await self.dispatcher.recover(service.repository)
+        except BaseException:
+            await stack.aclose()
+            raise
+        self._recovery_stack = stack
+
+        async def poll_expired() -> None:
+            """运行中进程也识别失联 Worker；只改变过期 Execution 的状态。"""
+
+            while True:
+                await asyncio.sleep(self.persistence.execution_poll_seconds)
+                try:
+                    await self.dispatcher.recover(service.repository)
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Execution lease recovery failed: type=%s", type(exc).__name__
+                    )
+
+        self._recovery_task = asyncio.create_task(poll_expired(), name="execution-lease-recovery")
+
+    async def shutdown(self) -> None:
+        """统一停止应用级调度器，避免每个会话各自遗留后台协程。"""
+
+        if self._recovery_task is not None:
+            self._recovery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._recovery_task
+            self._recovery_task = None
+        try:
+            await self.dispatcher.shutdown()
+        finally:
+            if self._recovery_stack is not None:
+                await self._recovery_stack.aclose()
+                self._recovery_stack = None
 
 
 class AgentScopeServiceAdapter(LoggingInterpretationDemoAgent):
@@ -155,6 +223,7 @@ def create_demo_app(
     """创建 AgentScope FastAPI 服务；真正的网络连接由应用生命周期管理。"""
 
     settings = AppSettings()
+    persistence = PersistenceSettings()
     connections = connections or ConnectionSettings()
     workspace_dir = workspace_dir or settings.output_dir / "agentscope_workspaces"
     storage = _redis_storage(connections)
@@ -174,11 +243,16 @@ def create_demo_app(
     )
 
     # 聊天会话和消息落入 Redis；消息总线只负责当前进程中的实时事件分发。
+    task_tools = SessionTaskToolFactory(
+        settings=settings.model_copy(update={"mode": "demo"}),
+        persistence=persistence,
+        connections=connections,
+    )
     app = create_app(
         storage=storage,
         message_bus=InMemoryMessageBus(),
         workspace_manager=LocalWorkspaceManager(basedir=str(workspace_dir)),
-        extra_agent_tools=SessionTaskToolFactory(),
+        extra_agent_tools=task_tools,
         custom_agent_cls=AgentScopeServiceAdapter,
         resource_access_policy=BackendModelAccessPolicy(
             enabled=backend_credential is not None,
@@ -194,6 +268,23 @@ def create_demo_app(
         enable_scheduler=False,
         title="CNLC Well Interpretation Demo",
     )
+    # 应用级持有调度器和会话工厂，供生命周期管理与只读运行状态检查。
+    app.state.cnlc_task_tools = task_tools
+
+    original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def execution_lifespan(application: FastAPI) -> AsyncIterator[None]:
+        """在官方 lifespan 内加入租约恢复和后台任务清理。"""
+
+        async with original_lifespan(application):
+            await task_tools.start()
+            try:
+                yield
+            finally:
+                await task_tools.shutdown()
+
+    app.router.lifespan_context = execution_lifespan
 
     @app.middleware("http")
     async def provision_backend_model(

@@ -94,6 +94,8 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
     events = [event async for event in agent.reply_stream(upload_message(data_dir))]
     first = next(e for e in events if isinstance(e, ToolResultEndEvent)).metadata["result"]
     assert not model.seen
+    assert first["execution_status"] == "QUEUED"
+    await runner.wait_for_completion(first["task_id"], first["execution_id"])
     seen_results = []
     for text in ["把孔隙度、渗透率改成0.16", "给我上一版报告", "全部重新跑", "现在处理到哪里了？"]:
         events = [e async for e in agent.reply_stream(UserMsg(name="user", content=text))]
@@ -101,16 +103,23 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
         assert len(results) == 1
         assert results[0].state == "success"
         seen_results.append(results[0].metadata["result"])
+        if text in {"把孔隙度、渗透率改成0.16", "全部重新跑"}:
+            await runner.wait_for_completion(
+                first["task_id"], seen_results[-1]["execution_id"]
+            )
     modified, previous, full, status = seen_results
     assert modified["reused_steps"] == ["W01", "W02", "W03"]
     assert modified["effective_override"]["por"] == modified["effective_override"]["perm"] == 0.16
     assert previous["execution_id"] == first["execution_id"]
-    assert previous["report_markdown"] == first["report_markdown"]
+    assert previous["report_markdown"] == await runner.repository.get_execution_report(
+        first["execution_id"]
+    )
     assert full["execution_sequence"] == 3 and full["reused_steps"] == []
     assert full["effective_override"] == modified["effective_override"]
     assert status["execution_id"] == full["execution_id"]
     assert len(model.seen) == 8
     assert len(await runner.repository.list_executions(first["task_id"])) == 3
+    await runner.dispatcher.shutdown()
 
 
 async def test_missing_task_enters_react_without_inventing_identity(data_dir):

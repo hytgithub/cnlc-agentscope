@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from cnlc_agent.agents.interpretation_agent import InterpretationAgent
 from cnlc_agent.agents.main_agent import MainAgent
 from cnlc_agent.agents.validation_agent import ValidationAgent
+from cnlc_agent.application.checkpoints import CheckpointStore
 from cnlc_agent.application.ports import InterpretationStateStore, ModelGateway, TaskRepository
 from cnlc_agent.application.prediction import MockPredictionProvider
 from cnlc_agent.application.service import InterpretationTaskService
@@ -67,7 +68,14 @@ def build_application(
             validation,
             demo_mode=settings.mode == "demo",
         ),
-        state_store if state_store is not None else InMemoryStateStore(),
+        (
+            state_store
+            if isinstance(state_store, CheckpointStore)
+            else CheckpointStore(
+                active_tasks,
+                state_store if state_store is not None else InMemoryStateStore(),
+            )
+        ),
         telemetry,
     )
     return InterpretationTaskService(

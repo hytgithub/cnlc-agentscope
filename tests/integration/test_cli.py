@@ -78,7 +78,7 @@ def test_cli_execution_id_reads_exact_historical_version_without_running(tmp_pat
     from cnlc_agent import main as cli
     from cnlc_agent.domain.enums import StepStatus
     from cnlc_agent.domain.execution import Execution
-    from cnlc_agent.domain.models import TaskRequest
+    from cnlc_agent.domain.models import TaskRequest, utc_now
     from cnlc_agent.domain.state import InterpretationState
 
     state = InterpretationState(task=TaskRequest(task_id="task-cli", well_id="WELL_MOCK_001"))
@@ -88,6 +88,7 @@ def test_cli_execution_id_reads_exact_historical_version_without_running(tmp_pat
         task_id=state.task.task_id,
         sequence=1,
         status=state.status,
+        finished_at=utc_now(),
         state_snapshot=state,
         markdown="old report",
         trigger_type="INITIAL",

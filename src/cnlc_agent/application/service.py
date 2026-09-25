@@ -1,5 +1,10 @@
+import asyncio
+import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from datetime import timedelta
 from typing import Literal
+from uuid import uuid4
 
 from cnlc_agent.agents.main_agent import MainAgent
 from cnlc_agent.application.planning import DependencyResolver, ExecutionPlan
@@ -7,6 +12,12 @@ from cnlc_agent.application.ports import TaskRepository, Telemetry
 from cnlc_agent.application.state_reuse import StateReuseAssembler, planned_start_step
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import DataError, InfrastructureError
+from cnlc_agent.domain.execution import (
+    TERMINAL_EXECUTION_STATUSES,
+    Execution,
+    ExecutionStatus,
+    execution_status_from_state,
+)
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import ErrorDetail, MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
@@ -40,6 +51,8 @@ class InterpretationTaskService:
         execution = await self.repository.get_execution(execution_id)
         if execution is None or execution.task_id != task_id:
             raise InfrastructureError("EXECUTION_NOT_FOUND", "指定执行不属于当前任务")
+        if execution.status not in TERMINAL_EXECUTION_STATUSES:
+            raise DataError("REPORT_NOT_READY", "执行报告尚未完成")
         markdown = await self.repository.get_execution_report(execution_id)
         if not markdown:
             raise DataError("REPORT_NOT_READY", "执行报告尚未完成")
@@ -65,15 +78,17 @@ class InterpretationTaskService:
             },
         ):
             await self.repository.create(state)
-        return await self._run_execution(request, state)
+        return await self.execute_prepared(
+            state.workflow_execution_id,
+            worker_id=f"sync:{uuid4().hex}",
+        )
 
-    async def run_with_input(
+    async def prepare_initial_with_input(
         self,
         request: TaskRequest,
         fixture: MockFixture,
-        materialize: Callable[[InterpretationInputVersion], Awaitable[None]],
-    ) -> tuple[InterpretationState, str]:
-        """保存上传的规范化输入，再由 Demo 适配器物化它并运行完整流程。"""
+    ) -> Execution:
+        """持久化 Task、InputVersion 与 QUEUED Execution，不在提交请求中运行业务流程。"""
 
         if fixture.well.well_id != request.well_id:
             raise DataError("TASK_WELL_MISMATCH", "上传井号与任务井号不一致")
@@ -84,16 +99,31 @@ class InterpretationTaskService:
         ):
             await self.repository.create_task(state)
             version = await self.repository.create_input_version(request.task_id, fixture)
-            # 使用仓库读回的版本作为当前 W01 临时文件的唯一来源。
-            saved = await self.repository.get_input_version(version.input_version_id)
-            if saved is None:
-                raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "输入版本保存后无法读取")
-            await materialize(saved)
-            state.input_version_id = saved.input_version_id
-            await self.repository.create_execution(
-                state, "INITIAL", input_version_id=saved.input_version_id
+            state.input_version_id = version.input_version_id
+            return await self.repository.create_execution(
+                state,
+                "INITIAL",
+                input_version_id=version.input_version_id,
+                start_step=StepId.W01,
+                source_execution_id=None,
+                planning_reason="INITIAL",
+                expected_current_execution_id=None,
             )
-        return await self._run_execution(request, state)
+
+    async def run_with_input(
+        self,
+        request: TaskRequest,
+        fixture: MockFixture,
+        materialize: Callable[[InterpretationInputVersion], Awaitable[None]],
+    ) -> tuple[InterpretationState, str]:
+        """保存上传的规范化输入，再由 Demo 适配器物化它并运行完整流程。"""
+
+        execution = await self.prepare_initial_with_input(request, fixture)
+        return await self.execute_prepared(
+            execution.execution_id,
+            worker_id=f"sync:{uuid4().hex}",
+            materialize=materialize,
+        )
 
     async def rerun(
         self,
@@ -119,24 +149,27 @@ class InterpretationTaskService:
                 raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "输入版本不存在")
             if selected_input.task_id != request.task_id:
                 raise InfrastructureError("INPUT_VERSION_TASK_MISMATCH", "输入版本不属于此任务")
-            if materialize is None:
-                raise InfrastructureError(
-                    "INPUT_MATERIALIZER_REQUIRED", "上传输入重跑需要受控物化适配器"
-                )
-            await materialize(selected_input)
         state = InterpretationState(
             task=request,
             mode=self.mode,
             input_version_id=selected_input_id,
             effective_override=(override or InterpretationOverride()).model_copy(deep=True),
         )
-        await self.repository.create_execution(
+        execution = await self.repository.create_execution(
             state,
             "RERUN",
             input_version_id=selected_input_id,
             override_snapshot=override,
+            start_step=StepId.W01,
+            source_execution_id=task.latest_successful_execution_id,
+            planning_reason="FULL_RERUN",
+            expected_current_execution_id=task.current_execution_id,
         )
-        return await self._run_execution(request, state)
+        return await self.execute_prepared(
+            execution.execution_id,
+            worker_id=f"sync:{uuid4().hex}",
+            materialize=materialize,
+        )
 
     async def plan_rerun(
         self,
@@ -212,14 +245,12 @@ class InterpretationTaskService:
         )
         return await self.execute_rerun_plan(request, plan, materialize=materialize)
 
-    async def execute_rerun_plan(
+    async def prepare_rerun_plan(
         self,
         request: TaskRequest,
         plan: ExecutionPlan,
-        *,
-        materialize: Callable[[InterpretationInputVersion], Awaitable[None]] | None = None,
-    ) -> tuple[InterpretationState, str]:
-        """重新读取并校验计划来源，装配新状态后才创建 Execution 和执行。"""
+    ) -> Execution:
+        """重新读取并校验计划来源，原子创建可供 Worker claim 的执行记录。"""
 
         plan = ExecutionPlan.model_validate(plan.model_dump(mode="python"))
         task = await self.repository.get_task(request.task_id)
@@ -251,20 +282,130 @@ class InterpretationTaskService:
             mode=self.mode,
         )
         start_step = planned_start_step(plan)
-        # 现有 Mock 在 W03/W04 等步骤也读取 Fixture；REPORT_ONLY 完全不需要物化。
-        if selected is not None and start_step is not None:
-            if materialize is None:
-                raise InfrastructureError(
-                    "INPUT_MATERIALIZER_REQUIRED", "输入重跑需要受控物化适配器"
-                )
-            await materialize(selected)
-        await self.repository.create_execution(
+        return await self.repository.create_execution(
             state,
             "RERUN",
             input_version_id=plan.selected_input_version_id,
             override_snapshot=plan.effective_override,
+            start_step=start_step,
+            source_execution_id=plan.source_execution_id,
+            planning_reason=plan.planning_reason,
+            expected_current_execution_id=plan.expected_current_execution_id,
         )
-        return await self._run_execution(request, state, start_step=start_step)
+
+    async def execute_rerun_plan(
+        self,
+        request: TaskRequest,
+        plan: ExecutionPlan,
+        *,
+        materialize: Callable[[InterpretationInputVersion], Awaitable[None]] | None = None,
+    ) -> tuple[InterpretationState, str]:
+        """同步兼容入口：先准备 Execution，再由同一 Worker 生命周期执行。"""
+
+        execution = await self.prepare_rerun_plan(request, plan)
+        return await self.execute_prepared(
+            execution.execution_id,
+            worker_id=f"sync:{uuid4().hex}",
+            materialize=materialize,
+        )
+
+    async def execute_prepared(
+        self,
+        execution_id: str,
+        *,
+        worker_id: str,
+        materialize: Callable[[InterpretationInputVersion], Awaitable[None]] | None = None,
+        lease_seconds: float = 90.0,
+    ) -> tuple[InterpretationState, str]:
+        """claim 已准备执行，续租并写入唯一终态；提交请求不调用此方法等待结果。"""
+
+        now = utc_now()
+        claimed = await self.repository.claim_execution(
+            execution_id,
+            worker_id,
+            now + timedelta(seconds=lease_seconds),
+        )
+        if not claimed:
+            raise InfrastructureError("EXECUTION_NOT_CLAIMED", "执行已被其他 Worker 领取")
+        execution = await self.repository.get_execution(execution_id)
+        if execution is None:
+            raise InfrastructureError("EXECUTION_NOT_FOUND", "执行记录不存在")
+        request = execution.state_snapshot.task
+        lease_lost = asyncio.Event()
+
+        async def heartbeat() -> None:
+            """执行期间按短于租约的周期续租，失败后阻止当前 Worker 提交成功终态。"""
+
+            interval = max(1.0, lease_seconds / 3)
+            while True:
+                await asyncio.sleep(interval)
+                heartbeat_at = utc_now()
+                try:
+                    renewed = await self.repository.renew_execution_lease(
+                        execution_id,
+                        worker_id,
+                        heartbeat_at + timedelta(seconds=lease_seconds),
+                    )
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Execution lease renewal failed: type=%s", type(exc).__name__
+                    )
+                    lease_lost.set()
+                    return
+                if not renewed:
+                    lease_lost.set()
+                    return
+
+        heartbeat_task = asyncio.create_task(heartbeat())
+        try:
+            if execution.input_version_id is not None and execution.start_step is not None:
+                version = await self.repository.get_input_version(execution.input_version_id)
+                if version is None:
+                    raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "输入版本不存在")
+                if materialize is None:
+                    raise InfrastructureError(
+                        "INPUT_MATERIALIZER_REQUIRED", "输入执行需要受控物化适配器"
+                    )
+                await materialize(version)
+            state, markdown = await self._run_execution(
+                request,
+                execution.state_snapshot.model_copy(deep=True),
+                start_step=execution.start_step,
+            )
+            if lease_lost.is_set():
+                raise InfrastructureError("EXECUTION_LEASE_LOST", "执行租约已失效")
+            error_code = state.errors[-1].code if state.errors else None
+            await self.repository.finish_execution(
+                execution_id,
+                worker_id,
+                execution_status_from_state(state.status),
+                error_code=error_code,
+            )
+            return state, markdown
+        except asyncio.CancelledError:
+            with suppress(InfrastructureError):
+                await self.repository.finish_execution(
+                    execution_id,
+                    worker_id,
+                    ExecutionStatus.FAILED,
+                    error_code="BACKGROUND_EXECUTION_CANCELLED",
+                )
+            raise
+        except Exception:
+            with suppress(InfrastructureError):
+                await self.repository.finish_execution(
+                    execution_id,
+                    worker_id,
+                    ExecutionStatus.FAILED,
+                    error_code="BACKGROUND_EXECUTION_FAILED",
+                )
+            raise
+        finally:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
 
     async def _run_execution(
         self,
@@ -279,9 +420,14 @@ class InterpretationTaskService:
             if start_step is None:
                 # 仅重生成报告时，状态来自已校验的完整复用链，不进入业务节点。
                 state.status = state.completed_status()
+                state.current_step = None
                 state.updated_at = utc_now()
             else:
                 state = await self.main_agent.run(request, state=state, start_step=start_step)
+                if state.status in {StepStatus.SUCCESS, StepStatus.WARNING}:
+                    # Workflow 保留最后执行节点供其自身诊断；对已终结的任务清空运行指针。
+                    state.current_step = None
+                    state.updated_at = utc_now()
         except InfrastructureError as exc:
             # 持久化故障不能伪装成业务成功；尽量从长期存储恢复最近快照并形成诊断报告。
             self.telemetry.event(

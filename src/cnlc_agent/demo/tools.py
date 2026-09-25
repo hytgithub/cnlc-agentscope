@@ -193,8 +193,7 @@ class RunWellInterpretationTool(ToolBase):
 
     name = RUN_TOOL_NAME
     description = (
-        "对 well_id 执行现有单井常规测井解释流程 W01-W10，返回各步骤状态、"
-        "解释摘要和 Markdown 报告。"
+        "为 well_id 提交单井常规测井解释后台任务，立即返回 task_id、execution_id 和状态。"
     )
     input_schema: dict[str, Any] = {
         "type": "object",
@@ -257,11 +256,12 @@ class RunWellInterpretationTool(ToolBase):
         else:
             result = await self._runner.run(well_id)
             payload = result.model_dump(mode="json")
+        execution_status = payload.get("execution_status", payload.get("status"))
         return ToolChunk(
             content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))],
             state=(
                 ToolResultState.SUCCESS
-                if payload["status"] in {"SUCCESS", "WARNING"}
+                if execution_status in {"QUEUED", "RUNNING", "SUCCESS", "WARNING"}
                 else ToolResultState.ERROR
             ),
             metadata={"result": payload},

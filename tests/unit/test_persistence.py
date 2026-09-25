@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock
@@ -14,8 +15,9 @@ from cnlc_agent.application.runtime import application_runtime, database_url
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import DataError, InfrastructureError
+from cnlc_agent.domain.execution import ExecutionStatus
 from cnlc_agent.domain.inputs import fixture_digest
-from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.infrastructure.database import PostgreSQLTaskRepository
@@ -94,12 +96,24 @@ async def test_cache_failure_preserves_durable_failed_task(data_dir, caplog):
 
 async def test_database_checkpoint_failure_does_not_write_cache():
     repository, cache = AsyncMock(), AsyncMock()
-    repository.save.side_effect = InfrastructureError("DATABASE_WRITE_FAILED", "failed")
+    repository.save_execution_state.side_effect = InfrastructureError(
+        "DATABASE_WRITE_FAILED", "failed"
+    )
     with pytest.raises(InfrastructureError):
         await CheckpointStore(repository, cache).save(
             InterpretationState(task=TaskRequest(well_id="WELL_1"))
         )
     cache.save.assert_not_awaited()
+
+
+async def finish_execution(repository, state, status):
+    """测试仓库时按正式生命周期结束执行，避免跳过 active 保护。"""
+
+    worker = "test-worker"
+    assert await repository.claim_execution(
+        state.workflow_execution_id, worker, utc_now() + timedelta(minutes=1)
+    )
+    await repository.finish_execution(state.workflow_execution_id, worker, status)
 
 
 async def test_duplicate_task_is_rejected_without_overwriting(data_dir):
@@ -121,6 +135,7 @@ async def test_execution_versions_keep_independent_state_and_report():
     first.status = StepStatus.SUCCESS
     first.warnings.append("first version")
     await repository.save(first, "report one")
+    await finish_execution(repository, first, ExecutionStatus.SUCCESS)
     first_saved = await repository.get_execution(first.workflow_execution_id)
     assert first_saved is not None
 
@@ -134,6 +149,7 @@ async def test_execution_versions_keep_independent_state_and_report():
     second.status = StepStatus.FAILED
     second.warnings.append("second version")
     await repository.save(second, "report two")
+    await finish_execution(repository, second, ExecutionStatus.FAILED)
 
     versions = await repository.list_executions(request.task_id)
     assert [item.sequence for item in versions] == [1, 2]
@@ -173,6 +189,10 @@ async def test_execution_creation_conflicts_and_missing_task():
     second = InterpretationState(task=request)
     with pytest.raises(InfrastructureError) as caught:
         await repository.create_execution(second, sequence=1)
+    assert caught.value.code == "TASK_EXECUTION_ACTIVE"
+    await finish_execution(repository, first, ExecutionStatus.FAILED)
+    with pytest.raises(InfrastructureError) as caught:
+        await repository.create_execution(second, sequence=1)
     assert caught.value.code == "EXECUTION_SEQUENCE_EXISTS"
     task = await repository.get_task(request.task_id)
     assert task is not None
@@ -180,14 +200,21 @@ async def test_execution_creation_conflicts_and_missing_task():
     assert len(await repository.list_executions(request.task_id)) == 1
 
 
-async def test_concurrent_execution_creation_allocates_distinct_sequences():
+async def test_concurrent_execution_creation_allows_only_one_active():
     repository = InMemoryTaskRepository()
     request = TaskRequest(well_id="WELL_1")
-    await repository.create(InterpretationState(task=request))
+    first = InterpretationState(task=request)
+    await repository.create(first)
     states = [InterpretationState(task=request) for _ in range(10)]
-    created = await asyncio.gather(*(repository.create_execution(state) for state in states))
-    assert sorted(item.sequence for item in created) == list(range(2, 12))
-    assert len({item.execution_id for item in created}) == 10
+    await finish_execution(repository, first, ExecutionStatus.SUCCESS)
+    results = await asyncio.gather(
+        *(repository.create_execution(state) for state in states), return_exceptions=True
+    )
+    created = [item for item in results if not isinstance(item, Exception)]
+    rejected = [item for item in results if isinstance(item, InfrastructureError)]
+    assert len(created) == 1 and created[0].sequence == 2
+    assert len(rejected) == 9
+    assert all(item.code == "TASK_EXECUTION_ACTIVE" for item in rejected)
 
 
 async def test_service_rerun_creates_new_complete_execution(data_dir):

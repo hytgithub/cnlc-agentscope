@@ -30,6 +30,12 @@ def test_initial_migration_generates_postgresql_sql():
     assert "override_snapshot" in result.stdout
     assert "CREATE TABLE interpretation_tool_run" in result.stdout
     assert "ix_interpretation_tool_run_execution_id" in result.stdout
+    assert "ADD COLUMN start_step" in result.stdout
+    assert "ADD COLUMN lease_owner" in result.stdout
+    assert "ADD COLUMN lease_expires_at" in result.stdout
+    assert "ADD COLUMN error_code" in result.stdout
+    assert "WORKER_LEASE_EXPIRED" not in result.stdout
+    assert "LEGACY_EXECUTION_INCOMPLETE" in result.stdout
     assert (
         "FOREIGN KEY(task_id) REFERENCES interpretation_task (task_id) ON DELETE CASCADE"
         in result.stdout
@@ -80,3 +86,20 @@ def test_tool_run_migration_downgrades_to_0003():
     )
     assert result.returncode == 0, result.stderr
     assert "DROP TABLE interpretation_tool_run" in result.stdout
+
+
+def test_execution_lifecycle_migration_downgrades_to_0004():
+    """0005 回退只删除新增的生命周期列与索引。"""
+
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "0005:0004", "--sql"],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "DATABASE_URL": "postgresql+asyncpg://localhost/cnlc"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "DROP INDEX ix_interpretation_execution_lease_expires_at" in result.stdout
+    assert "DROP COLUMN lease_owner" in result.stdout
+    assert "DROP COLUMN start_step" in result.stdout

@@ -23,11 +23,12 @@ from cnlc_agent.application.commands import (
     TaskCommandResult,
     TaskCommands,
 )
+from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispatcher
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
-from cnlc_agent.demo.tools import DemoToolResult, _demo_result
 from cnlc_agent.domain.errors import ApplicationError
+from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import MockFixture, TaskRequest
 from cnlc_agent.domain.override import InterpretationOverride
@@ -49,11 +50,15 @@ class TaskCommandRunner:
     def __init__(
         self, settings: AppSettings | None = None,
         persistence: PersistenceSettings | None = None,
+        dispatcher: InProcessExecutionDispatcher | None = None,
+        connections: ConnectionSettings | None = None,
     ) -> None:
         self.settings = settings or AppSettings(mode="demo")
         self.persistence = persistence or PersistenceSettings()
         self.repository = InMemoryTaskRepository()
         self.state_store = InMemoryStateStore()
+        self.dispatcher = dispatcher or InProcessExecutionDispatcher()
+        self.connections = connections or ConnectionSettings()
         self._lock = asyncio.Lock()
 
     @asynccontextmanager
@@ -61,7 +66,7 @@ class TaskCommandRunner:
         """只共享会话内存状态，模型客户端在每个同步命令结束时关闭。"""
 
         settings = self.settings.model_copy(update={"mock_data_dir": root})
-        connections = ConnectionSettings()
+        connections = self.connections
         if settings.model_provider != "mock" and connections.model_name != "qwen-plus":
             raise ValueError("AgentScope Demo 的 MODEL_NAME 必须为 qwen-plus")
         if self.persistence.persistence == "memory":
@@ -78,28 +83,46 @@ class TaskCommandRunner:
 
     async def run(
         self, well_id: str, instruction: str = "执行单井测井解释骨架演示"
-    ) -> DemoToolResult:
+    ) -> TaskCommandResult:
         """Fixture 入口也保存 InputVersion，以支持后续受控重跑。"""
 
         fixture = await MockWellRepository(self.settings.mock_data_dir).load(well_id)
         return await self.start_uploaded(fixture, instruction)
 
-    async def start_uploaded(self, fixture: MockFixture, instruction: str) -> DemoToolResult:
-        """首轮结果保留原 Demo 展示字段，并增加后续交互所需 Execution 标识。"""
+    async def start_uploaded(self, fixture: MockFixture, instruction: str) -> TaskCommandResult:
+        """提交首轮 QUEUED Execution 并立即返回，实际流程在请求外运行。"""
 
         async with self._lock:
-            with TemporaryDirectory(prefix="cnlc-command-") as directory:
+            with TemporaryDirectory(prefix="cnlc-submit-") as directory:
                 root = Path(directory)
                 async with self.context(root) as service:
-                    state, report = await service.run_with_input(
+                    execution = await service.prepare_initial_with_input(
                         TaskRequest(well_id=fixture.well.well_id, instruction=instruction),
-                        fixture, self.materializer(root),
+                        fixture,
                     )
-                    result = _demo_result(state, report)
-                    execution = await service.repository.get_execution(state.workflow_execution_id)
-                    assert execution is not None
-                    result.execution_sequence = execution.sequence
-                    return result
+                    result = await TaskCommands(service).project(
+                        execution.task_id, execution.execution_id, "START"
+                    )
+            await self.dispatcher.submit(
+                execution.execution_id, self._executor(execution.execution_id)
+            )
+            return result
+
+    def _executor(self, execution_id: str) -> Callable[[str], Awaitable[None]]:
+        """每个后台 Worker 自建服务与临时输入目录，避免跨请求复用连接。"""
+
+        async def execute(worker_id: str) -> None:
+            with TemporaryDirectory(prefix="cnlc-worker-") as directory:
+                root = Path(directory)
+                async with self.context(root) as service:
+                    await service.execute_prepared(
+                        execution_id,
+                        worker_id=worker_id,
+                        materialize=self.materializer(root),
+                        lease_seconds=self.persistence.execution_lease_seconds,
+                    )
+
+        return execute
 
     @staticmethod
     def materializer(root: Path) -> Callable[[InterpretationInputVersion], Awaitable[None]]:
@@ -115,7 +138,7 @@ class TaskCommandRunner:
     async def execute(
         self, command: GetStatusCommand,
     ) -> TaskCommandResult:
-        """串行处理本会话命令；不创建后台任务，也不持有跨请求数据库连接。"""
+        """修改命令只提交后台任务；状态与报告命令始终查询持久事实。"""
 
         async with self._lock:
             with TemporaryDirectory(prefix="cnlc-command-") as directory:
@@ -123,12 +146,29 @@ class TaskCommandRunner:
                 async with self.context(root) as service:
                     commands = TaskCommands(service)
                     if isinstance(command, ModifyInterpretationCommand):
-                        return await commands.modify(command, self.materializer(root))
-                    if isinstance(command, FullRerunCommand):
-                        return await commands.full_rerun(command, self.materializer(root))
-                    if isinstance(command, GetReportCommand):
+                        result = await commands.prepare_modify(command)
+                    elif isinstance(command, FullRerunCommand):
+                        result = await commands.prepare_full_rerun(command)
+                    elif isinstance(command, GetReportCommand):
                         return await commands.report(command)
-                    return await commands.status(command)
+                    else:
+                        return await commands.status(command)
+            await self.dispatcher.submit(result.execution_id, self._executor(result.execution_id))
+            return result
+
+    async def wait_for_completion(
+        self, task_id: str, execution_id: str, *, timeout_seconds: float = 10
+    ) -> TaskCommandResult:
+        """供测试和非交互兼容调用等待终态；任务级 Tool 不使用此方法阻塞请求。"""
+
+        async with asyncio.timeout(timeout_seconds):
+            await self.dispatcher.wait(execution_id)
+        with TemporaryDirectory(prefix="cnlc-status-") as directory:
+            async with self.context(Path(directory)) as service:
+                execution = await service.repository.get_execution(execution_id)
+                if execution is None or execution.status not in TERMINAL_EXECUTION_STATUSES:
+                    raise TimeoutError("background execution did not finish")
+                return await TaskCommands(service).project(task_id, execution_id, "STATUS")
 
 
 _SAFE_ERRORS = {
@@ -138,6 +178,8 @@ _SAFE_ERRORS = {
     "REPORT_NOT_READY": "该版本尚无可用报告。",
     "NO_EFFECTIVE_CHANGE": "参数与当前版本相同，请提供实际变化的参数。",
     "EMPTY_OVERRIDE": "请明确要修改的参数名称和值。",
+    "TASK_EXECUTION_ACTIVE": "当前任务已有执行正在排队或运行，请稍后查询状态。",
+    "STALE_EXECUTION_PLAN": "任务版本已变化，请重新提交修改请求。",
 }
 
 
@@ -177,12 +219,7 @@ class TaskCommandTool(ToolBase):
             payload = result.model_dump(mode="json")
             return ToolChunk(
                 content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))],
-                state=(
-                    ToolResultState.ERROR
-                    if result.command in {"MODIFY", "FULL_RERUN"}
-                    and result.status not in {"SUCCESS", "WARNING"}
-                    else ToolResultState.SUCCESS
-                ),
+                state=ToolResultState.SUCCESS,
                 metadata={"result": payload},
             )
         except (ValidationError, ValueError, TypeError):
@@ -230,7 +267,7 @@ class GetInterpretationStatusTool(TaskCommandTool):
     """读取持久 Execution 当前状态。"""
 
     name = "get_interpretation_status"
-    description = "查询已有任务真实保存的执行状态、版本、参数和工具调用统计；当前为同步执行。"
+    description = "查询已有任务真实保存的后台执行状态、版本、参数和工具调用统计。"
     is_read_only = True
     input_schema = GetStatusCommand.model_json_schema()
 

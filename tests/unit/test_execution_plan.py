@@ -1,5 +1,7 @@
 """四阶段计划是纯判定结果，不应创建 Execution 或改变现有十步执行。"""
 
+from datetime import timedelta
+
 import pytest
 from pydantic import ValidationError
 
@@ -15,9 +17,9 @@ from cnlc_agent.application.planning import (
 from cnlc_agent.config.settings import AppSettings
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import DataError, WorkflowError
-from cnlc_agent.domain.execution import Execution
+from cnlc_agent.domain.execution import Execution, ExecutionStatus
 from cnlc_agent.domain.inputs import InterpretationInputVersion, fixture_digest
-from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.infrastructure.mock import InMemoryTaskRepository
@@ -49,6 +51,7 @@ def execution(
         task_id=request.task_id,
         sequence=sequence,
         status=status,
+        finished_at=utc_now(),
         state_snapshot=state,
         markdown="report" if status in {StepStatus.SUCCESS, StepStatus.WARNING} else "",
         trigger_type="INITIAL" if sequence == 1 else "RERUN",
@@ -268,6 +271,12 @@ async def test_service_uses_latest_successful_not_failed_current(data_dir):
     await repository.create_execution(first, "INITIAL", input_version_id=selected.input_version_id)
     first.status = StepStatus.SUCCESS
     await repository.save(first, "successful report")
+    assert await repository.claim_execution(
+        first.workflow_execution_id, "test-worker", utc_now() + timedelta(minutes=1)
+    )
+    await repository.finish_execution(
+        first.workflow_execution_id, "test-worker", ExecutionStatus.SUCCESS
+    )
     failed = InterpretationState(task=request)
     await repository.create_execution(
         failed,
@@ -276,6 +285,12 @@ async def test_service_uses_latest_successful_not_failed_current(data_dir):
     )
     failed.status = StepStatus.FAILED
     await repository.save(failed, "failed report")
+    assert await repository.claim_execution(
+        failed.workflow_execution_id, "test-worker", utc_now() + timedelta(minutes=1)
+    )
+    await repository.finish_execution(
+        failed.workflow_execution_id, "test-worker", ExecutionStatus.FAILED
+    )
     app = build_application(
         AppSettings(mock_data_dir=data_dir, _env_file=None), task_repository=repository
     )

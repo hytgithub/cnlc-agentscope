@@ -1,9 +1,18 @@
 """基础设施适配器实现这些端口，核心业务不直接持有第三方 SDK 连接。"""
 
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager
+from datetime import datetime
 from typing import Protocol
 
-from cnlc_agent.domain.execution import Execution, ExecutionTrigger, InterpretationTask
+from cnlc_agent.domain.enums import StepId
+from cnlc_agent.domain.execution import (
+    Execution,
+    ExecutionStatus,
+    ExecutionTrigger,
+    InterpretationTask,
+    PlanningReason,
+)
 from cnlc_agent.domain.inputs import InputSource, InterpretationInputVersion
 from cnlc_agent.domain.models import Contract, JsonObject, MockFixture, WellData, WellId
 from cnlc_agent.domain.override import InterpretationOverride
@@ -41,11 +50,33 @@ class TaskRepository(Protocol):
         sequence: int | None = None,
         input_version_id: str | None = None,
         override_snapshot: InterpretationOverride | None = None,
+        start_step: StepId | None = StepId.W01,
+        source_execution_id: str | None = None,
+        planning_reason: PlanningReason = "INITIAL",
+        expected_current_execution_id: str | None = None,
     ) -> Execution: ...
 
     async def get_execution(self, execution_id: str) -> Execution | None: ...
 
     async def list_executions(self, task_id: str) -> list[Execution]: ...
+
+    async def claim_execution(
+        self, execution_id: str, worker_id: str, lease_expires_at: datetime
+    ) -> bool: ...
+
+    async def renew_execution_lease(
+        self, execution_id: str, worker_id: str, lease_expires_at: datetime
+    ) -> bool: ...
+
+    async def finish_execution(
+        self,
+        execution_id: str,
+        worker_id: str,
+        status: ExecutionStatus,
+        error_code: str | None = None,
+    ) -> Execution: ...
+
+    async def recover_expired_executions(self, now: datetime) -> list[str]: ...
 
     async def create_tool_run(self, run: ToolRun) -> ToolRun: ...
 
@@ -112,3 +143,13 @@ class Telemetry(Protocol):
     def span(self, name: str, attributes: JsonObject) -> AbstractContextManager[None]: ...
 
     def event(self, name: str, attributes: JsonObject) -> None: ...
+
+
+class ExecutionDispatcher(Protocol):
+    """后台调度端口；专业执行逻辑由提交的应用服务回调承担。"""
+
+    async def submit(
+        self, execution_id: str, execute: Callable[[str], Awaitable[None]]
+    ) -> None: ...
+
+    async def shutdown(self) -> None: ...

@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,7 +17,8 @@ from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import InfrastructureError
-from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.execution import ExecutionStatus
+from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolExecutionMode, ToolRun, ToolRunStatus
@@ -36,6 +38,16 @@ pytestmark = pytest.mark.skipif(
     not (DB_URL and REDIS_URL),
     reason="Set CNLC_TEST_DATABASE_URL and CNLC_TEST_REDIS_URL for real services",
 )
+
+
+async def finish_execution(repository, state, status):
+    """真实数据库测试按 claim/finish 状态机结束执行。"""
+
+    worker = f"test-{uuid4().hex}"
+    assert await repository.claim_execution(
+        state.workflow_execution_id, worker, utc_now() + timedelta(minutes=1)
+    )
+    await repository.finish_execution(state.workflow_execution_id, worker, status)
 
 
 async def test_real_tool_run_and_report_survive_new_repository(migrated):
@@ -59,10 +71,12 @@ async def test_real_tool_run_and_report_survive_new_repository(migrated):
         )
         state.status = StepStatus.SUCCESS
         await repository.save(state, "first report")
+        await finish_execution(repository, state, ExecutionStatus.SUCCESS)
         second = InterpretationState(task=request)
         await repository.create_execution(second)
         second.status = StepStatus.SUCCESS
         await repository.save(second, "second report")
+        await finish_execution(repository, second, ExecutionStatus.SUCCESS)
         reopened = PostgreSQLTaskRepository(new_engine)
         runs = await reopened.list_tool_runs(state.workflow_execution_id)
         assert len(runs) == 1
@@ -226,6 +240,7 @@ async def test_postgresql_execution_versions_match_memory_semantics(migrated):
         first.status = StepStatus.SUCCESS
         first.warnings.append("first")
         await repository.save(first, "report one")
+        await finish_execution(repository, first, ExecutionStatus.SUCCESS)
         with pytest.raises(InfrastructureError) as caught:
             await repository.create_execution(first)
         assert caught.value.code == "EXECUTION_EXISTS"
@@ -239,6 +254,7 @@ async def test_postgresql_execution_versions_match_memory_semantics(migrated):
         second.status = StepStatus.FAILED
         second.warnings.append("second")
         await repository.save(second, "report two")
+        await finish_execution(repository, second, ExecutionStatus.FAILED)
         versions = await repository.list_executions(request.task_id)
         assert [item.sequence for item in versions] == [1, 2]
         assert versions[0].state_snapshot.warnings == ["first"]
@@ -254,6 +270,78 @@ async def test_postgresql_execution_versions_match_memory_semantics(migrated):
         assert caught.value.code == "EXECUTION_NOT_LATEST"
         assert await repository.get(request.task_id) == second
         assert await repository.get_report(request.task_id) == "report two"
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
+        await engine.dispose()
+
+
+async def test_postgresql_claim_is_atomic_and_expired_lease_is_failed(migrated):
+    """两个独立仓库并发 claim 只能有一个成功；过期不触发业务重跑。"""
+
+    request = TaskRequest(well_id="WELL_1")
+    state = InterpretationState(task=request)
+    first_engine = create_async_engine(DB_URL)
+    second_engine = create_async_engine(DB_URL)
+    first = PostgreSQLTaskRepository(first_engine)
+    second = PostgreSQLTaskRepository(second_engine)
+    try:
+        await first.create(state)
+        expiry = utc_now() + timedelta(minutes=1)
+        claims = await asyncio.gather(
+            first.claim_execution(state.workflow_execution_id, "worker-a", expiry),
+            second.claim_execution(state.workflow_execution_id, "worker-b", expiry),
+        )
+        assert sorted(claims) == [False, True]
+        claimed = await first.get_execution(state.workflow_execution_id)
+        assert claimed.status == ExecutionStatus.RUNNING
+        assert claimed.lease_owner in {"worker-a", "worker-b"}
+        other = "worker-b" if claimed.lease_owner == "worker-a" else "worker-a"
+        assert not await second.renew_execution_lease(
+            state.workflow_execution_id, other, utc_now() + timedelta(minutes=2)
+        )
+        assert await first.renew_execution_lease(
+            state.workflow_execution_id, claimed.lease_owner,
+            utc_now() + timedelta(seconds=1),
+        )
+        expired = await second.recover_expired_executions(utc_now() + timedelta(seconds=2))
+        assert state.workflow_execution_id in expired
+        failed = await first.get_execution(state.workflow_execution_id)
+        assert failed.status == ExecutionStatus.FAILED
+        assert failed.error_code == "WORKER_LEASE_EXPIRED"
+        assert not await first.claim_execution(
+            state.workflow_execution_id, "worker-c", utc_now() + timedelta(minutes=1)
+        )
+    finally:
+        async with first_engine.begin() as connection:
+            await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
+        await first_engine.dispose()
+        await second_engine.dispose()
+
+
+async def test_postgresql_stale_plan_rejected_under_task_lock(migrated):
+    """两份基于同一当前版本的计划只能创建一个新 Execution。"""
+
+    request = TaskRequest(well_id="WELL_1")
+    first_state = InterpretationState(task=request)
+    engine = create_async_engine(DB_URL)
+    repository = PostgreSQLTaskRepository(engine)
+    try:
+        await repository.create(first_state)
+        first_state.status = StepStatus.SUCCESS
+        await repository.save(first_state, "first report")
+        await finish_execution(repository, first_state, ExecutionStatus.SUCCESS)
+        expected = first_state.workflow_execution_id
+        second = await repository.create_execution(
+            InterpretationState(task=request), expected_current_execution_id=expected
+        )
+        assert second.status == ExecutionStatus.QUEUED
+        with pytest.raises(InfrastructureError) as caught:
+            await repository.create_execution(
+                InterpretationState(task=request), expected_current_execution_id=expected
+            )
+        assert caught.value.code == "STALE_EXECUTION_PLAN"
+        assert len(await repository.list_executions(request.task_id)) == 2
     finally:
         async with engine.begin() as connection:
             await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
@@ -277,6 +365,7 @@ async def test_postgresql_input_version_and_override_survive_new_repository(migr
         )
         first.status = StepStatus.SUCCESS
         await repository.save(first, "report one")
+        await finish_execution(repository, first, ExecutionStatus.SUCCESS)
         changed = fixture.model_copy(deep=True)
         changed.well.name = "第二份上传输入"
         input_two = await repository.create_input_version(request.task_id, changed)
@@ -291,6 +380,7 @@ async def test_postgresql_input_version_and_override_survive_new_repository(migr
         )
         second.status = StepStatus.FAILED
         await repository.save(second, "report two")
+        await finish_execution(repository, second, ExecutionStatus.FAILED)
 
         reloaded = PostgreSQLTaskRepository(engine)
         assert (await reloaded.get_input_version(input_one.input_version_id)) == input_one

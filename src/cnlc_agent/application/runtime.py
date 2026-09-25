@@ -9,7 +9,6 @@ from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from cnlc_agent.application.bootstrap import build_application
-from cnlc_agent.application.checkpoints import CheckpointStore
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.domain.errors import InfrastructureError
@@ -83,7 +82,7 @@ async def application_runtime(
         app = build_application(
             settings,
             task_repository=repository,
-            state_store=CheckpointStore(repository, cache),
+            state_store=cache,
         )
         try:
             yield app

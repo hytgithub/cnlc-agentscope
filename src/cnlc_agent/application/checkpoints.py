@@ -5,7 +5,7 @@ from cnlc_agent.domain.state import InterpretationState
 
 
 class CheckpointStore:
-    """把 PostgreSQL 任务仓库与 Redis 运行时快照组合成统一状态存储。"""
+    """把 Execution 仓库与运行时缓存组合；内存和 PostgreSQL 均保留可查询检查点。"""
 
     def __init__(self, repository: TaskRepository, cache: InterpretationStateStore) -> None:
         self.repository = repository
@@ -14,7 +14,7 @@ class CheckpointStore:
     async def save(self, state: InterpretationState) -> None:
         """先保存可恢复快照，再刷新缓存；缓存失败由上层终止流程。"""
 
-        await self.repository.save(state, "")
+        await self.repository.save_execution_state(state)
         await self.cache.save(state)
 
     async def get(self, task_id: str) -> InterpretationState | None:

@@ -2,15 +2,23 @@
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
 from pydantic import ValidationError as SchemaError
 
 from cnlc_agent.application.ports import ModelRequest
-from cnlc_agent.domain.enums import StepStatus
+from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.errors import DataError, InfrastructureError, ModelError
-from cnlc_agent.domain.execution import Execution, ExecutionTrigger, InterpretationTask
+from cnlc_agent.domain.execution import (
+    TERMINAL_EXECUTION_STATUSES,
+    Execution,
+    ExecutionStatus,
+    ExecutionTrigger,
+    InterpretationTask,
+    PlanningReason,
+)
 from cnlc_agent.domain.inputs import (
     InputSource,
     InterpretationInputVersion,
@@ -175,6 +183,10 @@ class InMemoryTaskRepository:
         sequence: int | None = None,
         input_version_id: str | None = None,
         override_snapshot: InterpretationOverride | None = None,
+        start_step: StepId | None = StepId.W01,
+        source_execution_id: str | None = None,
+        planning_reason: PlanningReason = "INITIAL",
+        expected_current_execution_id: str | None = None,
     ) -> Execution:
         """锁内分配序号并创建执行，随后才移动当前指针。"""
 
@@ -185,6 +197,11 @@ class InMemoryTaskRepository:
                 raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
             if task.well_id != state.task.well_id:
                 raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+            if (
+                expected_current_execution_id is not None
+                and task.current_execution_id != expected_current_execution_id
+            ):
+                raise InfrastructureError("STALE_EXECUTION_PLAN", "任务当前版本已变化，请重新规划")
             if input_version_id is not None:
                 input_version = self._inputs.get(input_version_id)
                 if input_version is None:
@@ -194,6 +211,11 @@ class InMemoryTaskRepository:
             execution_id = state.workflow_execution_id
             if execution_id in self._executions:
                 raise InfrastructureError("EXECUTION_EXISTS", "执行标识已存在")
+            current = self._executions.get(task.current_execution_id or "")
+            if current is not None and current.status in {
+                ExecutionStatus.QUEUED, ExecutionStatus.RUNNING
+            }:
+                raise InfrastructureError("TASK_EXECUTION_ACTIVE", "当前任务已有执行正在处理")
             existing = [self._executions[item].sequence for item in self._task_executions[task_id]]
             next_sequence = max(existing, default=0) + 1 if sequence is None else sequence
             if next_sequence < 1 or next_sequence in existing:
@@ -203,13 +225,16 @@ class InMemoryTaskRepository:
                 execution_id=execution_id,
                 task_id=task_id,
                 sequence=next_sequence,
-                status=state.status,
+                status=ExecutionStatus.QUEUED,
                 state_snapshot=state.model_copy(deep=True),
                 trigger_type=trigger_type,
                 input_version_id=input_version_id,
                 override_snapshot=(override_snapshot or InterpretationOverride()).model_copy(
                     deep=True
                 ),
+                start_step=start_step,
+                source_execution_id=source_execution_id,
+                planning_reason=planning_reason,
                 created_at=now,
                 updated_at=now,
             )
@@ -230,6 +255,112 @@ class InMemoryTaskRepository:
             self._executions[item].model_copy(deep=True)
             for item in self._task_executions.get(task_id, [])
         ]
+
+    async def claim_execution(
+        self, execution_id: str, worker_id: str, lease_expires_at: datetime
+    ) -> bool:
+        """同一锁内把 QUEUED 原子转换为带 lease 的 RUNNING。"""
+
+        async with self._lock:
+            execution = self._executions.get(execution_id)
+            if execution is None:
+                raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+            if execution.status != ExecutionStatus.QUEUED:
+                return False
+            now = utc_now()
+            self._executions[execution_id] = Execution.model_validate({
+                **execution.model_dump(mode="python"),
+                "status": ExecutionStatus.RUNNING,
+                "started_at": now,
+                "lease_owner": worker_id,
+                "lease_expires_at": lease_expires_at,
+                "updated_at": now,
+            })
+            return True
+
+    async def renew_execution_lease(
+        self, execution_id: str, worker_id: str, lease_expires_at: datetime
+    ) -> bool:
+        """只有仍由当前 Worker 持有且未过期的 lease 可以续约。"""
+
+        async with self._lock:
+            execution = self._executions.get(execution_id)
+            now = utc_now()
+            if (
+                execution is None
+                or execution.status != ExecutionStatus.RUNNING
+                or execution.lease_owner != worker_id
+                or execution.lease_expires_at is None
+                or execution.lease_expires_at <= now
+            ):
+                return False
+            execution.lease_expires_at = lease_expires_at
+            execution.updated_at = now
+            return True
+
+    async def finish_execution(
+        self,
+        execution_id: str,
+        worker_id: str,
+        status: ExecutionStatus,
+        error_code: str | None = None,
+    ) -> Execution:
+        """Worker 只能终结自己持有的 RUNNING；历史终态不可覆盖。"""
+
+        if status not in TERMINAL_EXECUTION_STATUSES:
+            raise InfrastructureError("INVALID_EXECUTION_STATUS", "执行只能写入终态")
+        async with self._lock:
+            execution = self._executions.get(execution_id)
+            if execution is None:
+                raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+            if execution.status != ExecutionStatus.RUNNING:
+                raise InfrastructureError("EXECUTION_NOT_RUNNING", "执行不在运行态")
+            if execution.lease_owner != worker_id:
+                raise InfrastructureError(
+                    "EXECUTION_LEASE_MISMATCH", "执行 lease 不属于当前 Worker"
+                )
+            now = utc_now()
+            if status in {ExecutionStatus.SUCCESS, ExecutionStatus.WARNING} and (
+                execution.lease_expires_at is None or execution.lease_expires_at <= now
+            ):
+                raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
+            execution = Execution.model_validate({
+                **execution.model_dump(mode="python"),
+                "status": status,
+                "finished_at": now,
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "error_code": error_code,
+                "updated_at": now,
+            })
+            self._executions[execution_id] = execution
+            task = self._tasks[execution.task_id]
+            task.updated_at = now
+            if status in {ExecutionStatus.SUCCESS, ExecutionStatus.WARNING} and execution.markdown:
+                task.latest_successful_execution_id = execution_id
+            return execution.model_copy(deep=True)
+
+    async def recover_expired_executions(self, now: datetime) -> list[str]:
+        """过期 RUNNING 标记失败；不透明重放原 Execution。"""
+
+        async with self._lock:
+            expired = [
+                item for item in self._executions.values()
+                if item.status == ExecutionStatus.RUNNING
+                and item.lease_expires_at is not None
+                and item.lease_expires_at <= now
+            ]
+            for execution in expired:
+                self._executions[execution.execution_id] = Execution.model_validate({
+                    **execution.model_dump(mode="python"),
+                    "status": ExecutionStatus.FAILED,
+                    "finished_at": now,
+                    "lease_owner": None,
+                    "lease_expires_at": None,
+                    "error_code": "WORKER_LEASE_EXPIRED",
+                    "updated_at": now,
+                })
+            return [item.execution_id for item in expired]
 
     async def create_tool_run(self, run: ToolRun) -> ToolRun:
         """只接受已创建 Execution 的真实调用，返回与历史存储隔离的副本。"""
@@ -309,8 +440,13 @@ class InMemoryTaskRepository:
                 raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不可写入当前快照")
             if task.well_id != state.task.well_id:
                 raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+            if execution.status != ExecutionStatus.RUNNING:
+                raise InfrastructureError("EXECUTION_NOT_RUNNING", "执行不在运行态")
+            if (
+                execution.lease_expires_at is None or execution.lease_expires_at <= utc_now()
+            ):
+                raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
             execution.state_snapshot = state.model_copy(deep=True)
-            execution.status = state.status
             execution.updated_at = utc_now()
             self._states[task_id] = state.model_copy(deep=True)
             task.updated_at = execution.updated_at
@@ -329,8 +465,6 @@ class InMemoryTaskRepository:
             execution.updated_at = utc_now()
             self.reports[execution.task_id] = markdown
             task.updated_at = execution.updated_at
-            if markdown and execution.status in {StepStatus.SUCCESS, StepStatus.WARNING}:
-                task.latest_successful_execution_id = execution_id
 
     async def set_current_execution(self, task_id: str, execution_id: str) -> None:
         """仅允许切换到属于该任务的已存在版本。"""
@@ -372,7 +506,7 @@ class InMemoryTaskRepository:
                 execution_id=execution_id,
                 task_id=task_id,
                 sequence=1,
-                status=state.status,
+                status=ExecutionStatus.QUEUED,
                 state_snapshot=state.model_copy(deep=True),
                 trigger_type="INITIAL",
                 created_at=state.created_at,
@@ -402,16 +536,19 @@ class InMemoryTaskRepository:
                 raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不可写入当前快照")
             if task.well_id != state.task.well_id:
                 raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+            if execution.error_code == "WORKER_LEASE_EXPIRED":
+                raise InfrastructureError("EXECUTION_NOT_RUNNING", "过期执行不可再写入")
+            if execution.status == ExecutionStatus.RUNNING and (
+                execution.lease_expires_at is None or execution.lease_expires_at <= utc_now()
+            ):
+                raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
             now = utc_now()
             execution.state_snapshot = state.model_copy(deep=True)
-            execution.status = state.status
             execution.markdown = markdown
             execution.updated_at = now
             self._states[task_id] = state.model_copy(deep=True)
             self.reports[task_id] = markdown
             task.updated_at = now
-            if markdown and state.status in {StepStatus.SUCCESS, StepStatus.WARNING}:
-                task.latest_successful_execution_id = execution_id
 
     async def get(self, task_id: str) -> InterpretationState | None:
         state = self._states.get(task_id)
