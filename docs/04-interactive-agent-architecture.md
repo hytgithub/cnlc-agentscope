@@ -13,7 +13,7 @@
 
 本文档用于固化交互式测井解释智能体的一期整体架构。当前优先目标不是一次性实现全部专业算法，而是先完成一个真实可交互的执行闭环：用户通过自然语言提出解释、参数修改或重跑请求，系统识别意图、生成执行计划、展示阶段与工具调用过程、产出对应的新解释结果和报告，并保留历史版本用于验证。
 
-> **核心架构结论：**采用“ReAct for Interaction，Workflow for Execution”的混合范式：AgentScope MainAgent 负责意图理解、参数提取与任务级工具调用；确定性 Workflow 负责四阶段业务执行、局部重跑、结果复用和状态推进。
+> **核心架构结论：**采用“ReAct for Interaction，Workflow for Execution”的混合范式：AgentScope 交互层负责意图理解、参数提取与任务级工具调用；现有业务 `MainAgent` 启动 `InterpretationWorkflow`，按 W01～W10 固定顺序执行。四阶段是 Execution、局部重跑和状态展示的上层视图，不是第二套 Workflow。当前实现与迁移顺序以 `docs/06-interactive-agent-gap-analysis.md` 的代码扫描为准。
 
 
 ## 1.1 一期核心目标
@@ -52,7 +52,8 @@
 flowchart TB
     U[用户 / 测井解释工程师] --> UI[Web UI
 对话 + 任务状态 + 工具轨迹 + 报告/历史版本]
-    UI --> A[AgentScope MainAgent
+    UI --> A[AgentScope 交互层
+现有 LoggingInterpretationDemoAgent 的渐进升级
 受约束 ReAct
 意图识别 / 参数提取 / 任务级 Tool 调用]
     A --> AT[任务级 Tools
@@ -62,22 +63,21 @@ full_rerun
 get_task_status
 pause/resume
 get_report]
-    AT --> TS[TaskService
+    AT --> TS[现有 InterpretationTaskService 的渐进扩展
 任务管理 / 配置管理]
     TS --> EP[ExecutionPlanner + DependencyResolver
 参数影响分析 / 局部重跑计划]
-    EP --> WR[WorkflowRunner
-阶段执行 / 状态控制 / 复用 / 暂停恢复]
+    EP --> SA[复用状态装配 / ExecutionPlan]
+    SA --> BM[现有业务 MainAgent]
+    BM --> WR[现有 InterpretationWorkflow.run
+受控局部重跑扩展 / W01-W10]
 
-    subgraph WF[四阶段 Workflow]
-      D[阶段一：数据解编
-资料读取 / 曲线识别 / 曲线角色识别]
-      P[阶段二：数据预处理
-完整性 / QC / 单位统一 / 重采样 / 深度对齐]
-      I[阶段三：智能处理
-参数覆盖 / 模型选择 / Heavy API / 解释结果投影]
-      R[阶段四：报告生成
-结果组装 / Report API / 报告路径]
+    subgraph WF[四阶段 Execution 视图：复用现有 W01-W10 与报告链]
+      D[DATA_DECODE：W01]
+      P[PREPROCESS：W02-W03]
+      I[INTERPRET：W04-W10]
+      R[REPORT：现有 ReportAssembler / ReportGenerator
+未来可接 Report API]
       D --> P --> I --> R
     end
 
@@ -85,22 +85,22 @@ get_report]
     D --> LT[Logical Tool 层
 REAL / VIRTUAL / DERIVED / MOCK]
     P --> LT
-    I --> PG[PredictionGateway
+    I --> PG[未来 PredictionGateway
 模型 A / B / C]
     PG --> HAPI[第三方 Heavy API]
     HAPI --> N[NormalizedPredictionResult]
     N --> VP[LogicalToolProjector
 岩性 / 物性 / Sw / 流体 / 层段]
-    R --> RG[ReportGateway]
+    R --> RG[未来 ReportGateway]
     RG --> RAPI[外部报告 API]
 
     TS --> DB[(PostgreSQL
-Task / Execution / StageRun / ToolRun / ExternalCall)]
+现有 Task 快照；增量扩展 Execution 等记录)]
     WR --> REDIS[(Redis
-任务队列 / 事件 / 缓存)]
+现有运行快照；后续后台状态/事件)]
     WR --> FS[(文件/对象存储
-原始数据 / 中间结果 / 报告)]
-    WR -. SSE .-> UI
+输入引用 / 中间结果 / 报告)]
+    WR -. 状态投影到现有 AgentScope Stream .-> UI
 ```
 
 
@@ -111,9 +111,9 @@ Task / Execution / StageRun / ToolRun / ExternalCall)]
 | **层**       | **核心职责**                                                | **关键组件**                                           |
 |--------------|-------------------------------------------------------------|--------------------------------------------------------|
 | 用户与前端层 | 自然语言交互、进度展示、工具轨迹、报告与历史版本查看        | Web UI、SSE Client                                     |
-| Agent层      | 意图识别、参数提取、任务级 Tool 调用、对话上下文管理        | AgentScope MainAgent、Agent Toolkit                    |
-| 应用服务层   | 任务管理、参数变更、Execution 规划、阶段执行、外部 API 适配 | TaskService、ExecutionPlanner、WorkflowRunner、Gateway |
-| 业务流程层   | 固定四阶段业务骨架；支持按 ExecutionPlan 局部/全量执行      | 数据解编、数据预处理、智能处理、报告生成               |
+| Agent层      | 意图识别、参数提取、任务级 Tool 调用、对话上下文管理        | AgentScope 交互层、Agent Toolkit                       |
+| 应用服务层   | 任务管理、参数变更、Execution 规划、复用状态装配、外部 API 适配 | 现有 TaskService、ExecutionPlan、DependencyResolver |
+| 业务流程层   | 现有 W01～W10 固定顺序；四阶段聚合执行状态、局部重跑和报告链 | 业务 MainAgent、InterpretationWorkflow、ReportAssembler |
 | 工具与服务层 | 阶段内部业务工具、Mock/Virtual Tool、第三方预测与报告 API   | ToolExecutor、PredictionGateway、ReportGateway         |
 | 基础设施层   | 持久化、异步执行、事件、文件与报告存储                      | PostgreSQL、Redis、文件/对象存储                       |
 
@@ -125,13 +125,13 @@ Task / Execution / StageRun / ToolRun / ExternalCall)]
 sequenceDiagram
     actor User as 用户
     participant UI as Web UI
-    participant Agent as AgentScope MainAgent
+    participant Agent as AgentScope 交互层
     participant Tool as modify_and_rerun
     participant Task as TaskService
     participant Plan as DependencyResolver/Planner
-    participant WF as WorkflowRunner
+    participant WF as 业务 MainAgent / InterpretationWorkflow
     participant API as Mock/Heavy API
-    participant Report as Report API
+    participant Report as ReportAssembler / ReportGenerator
 
     User->>UI: “把孔隙度、渗透率改成0.16，重新解释一下”
     UI->>Agent: 自然语言请求 + 当前 task_id
@@ -142,16 +142,17 @@ sequenceDiagram
     Task->>Plan: 计算参数影响范围
     Plan-->>Task: REUSE 解编/预处理
 RUN 智能处理/报告生成
-    Task->>WF: 创建新 Execution 并异步执行
+    Task->>Task: 创建新 Execution 并装配可复用状态
+    Task->>WF: 异步执行本次计划中的 W01-W10
     Task-->>Agent: execution_id + QUEUED
     Agent-->>UI: 已提交新的解释任务
-    WF-->>UI: SSE: EXECUTION_CREATED / STAGE_REUSED
+    WF-->>UI: 现有 AgentScope Stream：EXECUTION_CREATED / STAGE_REUSED
     WF->>API: 执行智能处理（Mock 或 Heavy API）
     API-->>WF: 综合解释结果
-    WF-->>UI: SSE: TOOL_COMPLETED（岩性/物性/流体/层段...）
-    WF->>Report: 生成报告
+    WF-->>UI: 现有 AgentScope Stream：TOOL_COMPLETED（岩性/物性/流体/层段...）
+    WF->>Report: W10 完成后独立生成报告
     Report-->>WF: report_path
-    WF-->>UI: SSE: REPORT_READY / EXECUTION_COMPLETED
+    WF-->>UI: 现有 AgentScope Stream：REPORT_READY / EXECUTION_COMPLETED
 ```
 
 
@@ -168,11 +169,16 @@ RUN 智能处理/报告生成
 | “不使用之前结果，全部重新跑”     | FULL_RERUN           | 四阶段全部执行                   |
 | “现在处理到哪一步了？”           | GET_TASK_STATUS      | 不启动新 Execution，仅查询状态   |
 
-# 4. AgentScope MainAgent 设计
+# 4. AgentScope 交互层设计
 
-MainAgent 采用受约束 ReAct 范式。ReAct 仅用于处理不确定的自然语言交互；业务阶段顺序、参数影响范围、复用规则和失败处理由确定性代码负责。
+目标是在现有 `LoggingInterpretationDemoAgent` Web 外壳上渐进增加受约束的交互能力。`agents/main_agent.py::MainAgent` 是现有业务编排类，不需重写成 AgentScope ReAct Agent；`InterpretationAgent` 和 `ValidationAgent` 继续负责各自专业步骤。ReAct 只处理不确定的自然语言交互；业务顺序、参数影响和复用规则由确定性代码负责。
 
-## 4.1 MainAgent 职责
+```text
+AgentScope 交互层 → 任务级命令 / Tool → 现有业务 MainAgent
+→ InterpretationWorkflow → W01～W10 → ReportAssembler / ReportGenerator
+```
+
+## 4.1 交互层职责
 
 - 判断输入是否属于测井解释任务、状态查询或知识问答。
 
@@ -195,19 +201,28 @@ MainAgent 采用受约束 ReAct 范式。ReAct 仅用于处理不确定的自然
 | pause_task / resume_task | 请求阶段级暂停与恢复                 | 否                       |
 | get_report               | 获取当前或历史 Execution 的报告      | 否                       |
 
-> **约束：**MainAgent 不直接调用 identify_lithology、calculate_sw、resample_curves 等底层业务工具；它只发出 Task Command。这样可避免 LLM 自主改变专业流程。
+> **约束：**AgentScope 交互层只发 Task Command，不直接调用 identify_lithology、calculate_sw、resample_curves 等底层专业工具；现有业务 MainAgent 仍负责启动和协调 InterpretationWorkflow。这样可避免 LLM 自主改变专业流程。
 
 
-# 5. 四阶段 Workflow 设计
+# 5. 四阶段 Execution 视图设计
 
-一级 Workflow 固定为四个业务阶段；每个阶段内部可以包含多个 Logical Tool。Workflow 本身不因为局部重跑而改变，变化的是每次 Execution 的 ExecutionPlan。
+四阶段固定为 Execution、局部重跑和状态展示的上层视图；现有 `InterpretationWorkflow` 仍按 W01～W10 顺序执行业务步骤。目标执行链是 `ExecutionPlan → 复用状态装配 → 现有 InterpretationWorkflow.run(...) → W01～W10`，只对运行入口做受控局部重跑所需的最小扩展。REPORT 在十步完成后单独执行，不属于 W10。
+
+```text
+DATA_DECODE → W01
+PREPROCESS  → W02、W03
+INTERPRET   → W04、W05、W06、W07、W08、W09、W10
+REPORT      → ReportAssembler / ReportGenerator
+```
+
+其中 W10 是最终一致性/结构检查。下表 Logical Tool 是目标候选，不表示现有 Demo 均已实现；实际能力清单见 `docs/06-interactive-agent-gap-analysis.md`。
 
 | **阶段**     | **阶段目标**                                            | **典型 Logical Tool**                                                                                                                                                                            | **标准产物**               |
 |--------------|---------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------|
 | ① 数据解编   | 把数据库/文件资料转成系统可识别的数据                   | load_well_data、parse_well_file、recognize_materials、recognize_curves、identify_curve_roles                                                                                                     | DecodedWellData            |
 | ② 数据预处理 | 形成可用于解释的标准化、可追溯输入数据版本              | check_completeness、check_curve_quality、standardize_curve_names、convert_units、resample_curves、align_depth、build_interpretation_input                                                        | InterpretationInputVersion |
 | ③ 智能处理   | 应用解释参数，选择预测模型，形成岩性/物性/流体/层段结果 | apply_overrides、select_prediction_model、invoke_prediction_model、identify_lithology、evaluate_petrophysics、calculate_sw、identify_fluid、classify_layer、merge_intervals、multi_source_review | InterpretationResult       |
-| ④ 报告生成   | 组织解释结果并调用报告服务生成最终报告                  | prepare_report_payload、generate_report、publish_report                                                                                                                                          | ReportArtifact             |
+| ④ 报告生成   | W10 结束后复用现有 ReportAssembler / ReportGenerator；后续可接报告服务 | prepare_report_payload、generate_report、publish_report                                                                                                               | ReportArtifact             |
 
 ## 5.1 数据角色规则
 
@@ -269,7 +284,9 @@ Mock 必须“参数感知”，不能所有请求都返回完全相同的固定
 | StageRun  | PENDING、REUSED、RUNNING、COMPLETED、FAILED、SKIPPED                   |
 | ToolRun   | PENDING、RUNNING、COMPLETED、FAILED、SKIPPED                           |
 
-## 8.2 SSE 事件
+## 8.2 现有 Stream 与目标事件
+
+AgentScope Web 已有 `/sessions/{session_id}/stream` 和流式消息能力。一期优先把 Execution、Stage、Tool 状态投影到现有 AgentScope SSE/Stream；不预设第二套 SSE 系统。当前 Web 进度只在请求期间流式展示 W01～W10，后台 Execution 的跨请求生命周期、持久状态及断线查询由迁移 Task 08 处理。目标事件包括：
 
 - INTENT_RECOGNIZED / COMMAND_ACCEPTED / EXECUTION_CREATED
 
@@ -283,20 +300,21 @@ Mock 必须“参数感知”，不能所有请求都返回完全相同的固定
 
 # 9. 核心数据模型与存储
 
-| **对象/表**         | **用途**                       | **关键字段示例**                                                  |
+| **目标对象/存储建议** | **用途**                       | **关键字段示例**                                                  |
 |---------------------|--------------------------------|-------------------------------------------------------------------|
 | interpretation_task | 一口井的持续交互任务           | task_id、well_id、current_config、current_execution_id            |
 | execution           | 一次不可变的解释执行快照       | execution_id、trigger、config_snapshot、override_snapshot、status |
-| stage_run           | 四阶段每次执行记录             | stage、status、input_ref、output_ref、started_at、finished_at     |
-| tool_run            | 业务工具轨迹                   | tool_code、execution_mode、source、input_json、output_json、error |
-| artifact            | 输入版本、预测结果、报告等产物 | artifact_type、uri/path、version、metadata                        |
+| interpretation_override | 用户参数覆盖，不改原始数据 | execution_id、POR、PERM、source |
+| stage_run           | 四阶段执行视图，优先聚合现有 StepExecution；后续再持久化 | stage、status、input_ref、output_ref、started_at、finished_at |
+| tool_run            | 后续补充的内部业务工具持久轨迹 | tool_code、execution_mode、source、input_json、output_json、error |
+| artifact 引用       | 一期先记录输入版本、预测结果和报告的最小引用，不建通用大表 | artifact_type、uri/path、version、metadata                     |
 | external_call       | 第三方 API 请求追踪            | provider、request_id、external_job_id、duration、status           |
 
-PostgreSQL 保存业务状态与可追溯记录；Redis 用于任务队列、执行事件和短期缓存；原始文件、中间结果和报告文件进入文件/对象存储。
+实施以 Gap Analysis 为准：Task 01 先扩展现有 Task 并增加 Execution；Task 02 增加输入版本和 Override；后续再补 StageRun、ToolRun 与 Artifact 引用。PostgreSQL 现有 Task 快照和 Redis 运行快照继续使用；任务队列与后台生命周期是后续设计，不能把当前 Redis 缓存等同于已存在的队列。
 
 # 10. 外部 API 与 Provider/Gateway
 
-外部三种预测大模型统一通过 PredictionGateway 屏蔽 URL、鉴权、输入格式和返回格式差异；报告生成统一通过 ReportGateway。Workflow 只依赖统一领域接口。
+现有 `ModelGateway`（`MockModelGateway` / `OpenAICompatibleModelGateway`）供 qwen-plus 或 Mock LLM 调用，服务 W06/W07 等模型能力，保持现有实现。未来第三方专业 Heavy API 的 MODEL_A/B/C 由独立 `PredictionProvider`/`PredictionGateway` 适配；用户要求“换成模型B”修改的是 `prediction_model`，不是把 qwen-plus 换掉。后续外部报告服务通过 ReportGateway 适配；本地 ReportAssembler / ReportGenerator 继续可用。
 
 | **接口**                   | **统一输入**                     | **统一输出**                           |
 |----------------------------|----------------------------------|----------------------------------------|
@@ -324,36 +342,9 @@ PostgreSQL 保存业务状态与可追溯记录；Redis 用于任务队列、执
 
 日志/Trace 建议统一携带 task_id、execution_id、stage_run_id、tool_run_id、external_request_id，保证从用户对话可追踪到具体外部调用和报告。
 
-# 12. 推荐代码模块
+# 12. 推荐代码落点
 
-> app/  
-> ├── agents/interpretation_agent.py  
-> ├── agent_tools/  
-> │ ├── start_interpretation.py  
-> │ ├── modify_and_rerun.py  
-> │ ├── full_rerun.py  
-> │ ├── get_task_status.py  
-> │ ├── pause_task.py  
-> │ ├── resume_task.py  
-> │ └── get_report.py  
-> ├── application/  
-> │ ├── task_service.py  
-> │ ├── execution_service.py  
-> │ └── command_service.py  
-> ├── workflow/  
-> │ ├── planner.py  
-> │ ├── dependency_resolver.py  
-> │ ├── runner.py  
-> │ └── stages/{decode,preprocess,interpret,report}.py  
-> ├── tools/  
-> │ ├── definitions.py  
-> │ ├── executor.py  
-> │ └── logical_tools/  
-> ├── providers/  
-> │ ├── prediction/{base,mock,external}.py  
-> │ └── report/{base,mock,external}.py  
-> ├── domain/{task,execution,stage_run,tool_run,artifact}.py  
-> └── infrastructure/{repository,redis,worker}/
+优先扩展现有 `src/cnlc_agent/demo/` 交互外壳、`application/` 服务与端口、`domain/state.py`、`workflows/interpretation_workflow.py`、`tools/contracts.py`、`reports/` 和 `infrastructure/`。规划/复用逻辑可增量加入 `application/` 或 `workflows/`；不要求新建 `runner.py`、四个阶段处理器或平行 Workflow。外部 Prediction/Report Provider 在协议确认后另加 Adapter。具体文件边界和 Task 01～11 顺序见 `docs/06-interactive-agent-gap-analysis.md`。
 
 # 13. 一期验收场景
 
@@ -372,13 +363,13 @@ PostgreSQL 保存业务状态与可追溯记录；Redis 用于任务队列、执
 
 一期实施应优先保证交互闭环，而不是优先补齐所有专业算法。推荐顺序如下：
 
-- P0：Task / Execution / StageRun / ToolRun 数据模型和持久化。
+- P0：先扩展现有 Task 持久化边界并新增 Execution；输入版本和 Override 随后实施。StageRun 优先聚合现有 StepExecution，ToolRun 与 Artifact 引用后续补齐。
 
-- P0：四阶段 WorkflowRunner + ExecutionPlanner + DependencyResolver。
+- P0：ExecutionPlan + DependencyResolver + 复用状态装配；最小扩展现有 InterpretationWorkflow.run(...)。
 
-- P0：AgentScope MainAgent + 任务级 Agent Tools。
+- P0：渐进升级现有 AgentScope Web 外壳并新增任务级命令/Tool；保留业务 MainAgent、InterpretationAgent、ValidationAgent。
 
-- P0：Logical Tool Definition + 参数感知 Mock Provider + SSE 事件展示。
+- P0：复用现有 Tool Contract、参数感知 Mock 和 AgentScope Stream 展示；跨请求后台 Execution 在后续独立 Task 实施。
 
 - P0：POR/PERM、采样间隔、模型切换、全量重跑四条 E2E。
 
@@ -390,3 +381,4 @@ PostgreSQL 保存业务状态与可追溯记录；Redis 用于任务队列、执
 
 > **最终判断：**只要“自然语言 → 意图识别 → 新 Execution → 正确局部/全量 Workflow → 工具轨迹 → 新报告”这条链跑通，一期交互式测井解释智能体即成立；后续真实专业工具的补齐属于能力替换，而不是架构重构。
 
+本文定位为**目标架构与总体原则**；`docs/05-interactive-agent-detailed-design.md` 负责详细契约与 E2E 目标，`docs/06-interactive-agent-gap-analysis.md` 负责代码现状、差距和渐进实施顺序。目标能力未标注为现有能力时，不代表已实现。

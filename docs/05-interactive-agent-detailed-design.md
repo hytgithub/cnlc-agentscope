@@ -13,7 +13,7 @@
 ```text
 用户自然语言输入
     ↓
-AgentScope MainAgent
+AgentScope 交互层（渐进升级现有 LoggingInterpretationDemoAgent）
     ↓
 意图识别 / 参数提取
     ↓
@@ -25,13 +25,15 @@ DependencyResolver
     ↓
 ExecutionPlan
     ↓
-四阶段 Workflow
+复用状态装配
+    ↓
+现有业务 MainAgent → InterpretationWorkflow → W01～W10
     ↓
 Logical Tool / Mock / Virtual / Real
     ↓
 解释结果
     ↓
-报告生成
+独立 REPORT：ReportAssembler / ReportGenerator
 ```
 
 一期重点验证：
@@ -53,7 +55,7 @@ Logical Tool / Mock / Virtual / Real
 
 ### 2.1 Agent 负责交互，不负责专业流程
 
-AgentScope MainAgent 负责：
+AgentScope 交互层负责：
 
 - 理解自然语言；
 - 识别用户意图；
@@ -74,21 +76,26 @@ Agent 不负责：
 
 > ReAct for Interaction，Workflow for Execution。
 
+现有 `agents/main_agent.py::MainAgent` 是业务编排类，不是 AgentScope ReAct Agent；真正的 Web 外壳是 `LoggingInterpretationDemoAgent`。目标是改造该交互外壳并增加任务级命令，继续由业务 MainAgent 启动 `InterpretationWorkflow`。`InterpretationAgent` 与 `ValidationAgent` 保持 W06/W07、W09 的现有职责。
+
 ### 2.2 Workflow 负责确定性执行
 
-一级业务 Workflow 固定为：
+四阶段是 Execution、局部重跑、状态展示的上层视图，对现有 W01～W10 与报告链作如下映射：
 
 ```text
-数据解编
-    ↓
-数据预处理
-    ↓
-智能处理
-    ↓
-报告生成
+DATA_DECODE
+└── W01
+PREPROCESS
+├── W02
+└── W03
+INTERPRET
+├── W04、W05、W06、W07、W08、W09
+└── W10：最终一致性 / 结构检查
+REPORT
+└── W01～W10 完成后，由 ReportAssembler / ReportGenerator 独立承担
 ```
 
-Workflow 本身不因为局部重跑而改变。
+W01～W10 保持现有业务顺序，不新建第二套四阶段 Workflow。当前 `InterpretationWorkflow.run(...)` 总从 W01 开始；局部重跑目标是对其入口做受控的最小扩展，而不是重写处理器。
 
 每一次实际执行由 `ExecutionPlan` 决定：
 
@@ -100,7 +107,7 @@ RUN / REUSE / SKIP
 
 Tool 不等同于一级 Workflow 节点。
 
-四个阶段分别拥有自己的 Logical ToolSet。
+四阶段可聚合现有步骤和 Tool；下文列出的 Logical ToolSet 是目标候选，不代表当前 Demo 均已实现。现状清单以 `docs/06-interactive-agent-gap-analysis.md` 为准。
 
 Logical Tool 可以是：
 
@@ -113,7 +120,7 @@ Logical Tool 可以是：
 
 ## 3. 核心数据模型
 
-一期先固定 6 个核心业务对象：
+目标保留 6 个核心业务对象，但不要求一期一次性全部建表或实现。Task 01 先扩展现有 Task 持久化并新增 Execution；Task 02 增加 Input Version 与 Override；StageRun、ToolRun 和 Artifact 引用按 Gap Analysis 后续 Task 渐进实施。
 
 ### 3.1 InterpretationTask
 
@@ -138,7 +145,7 @@ EXEC_004  全量重跑
 
 ### 3.3 StageRun
 
-每一个 Execution 下包含四个 StageRun：
+目标上每个 Execution 有四阶段状态。首先按固定映射聚合现有 `InterpretationState.executions` 中的 `StepExecution`，REPORT 由现有报告链状态补足；需要持久化复用来源和阶段生命周期时再补 StageRun 记录：
 
 ```text
 DATA_DECODE
@@ -160,7 +167,7 @@ REPORT        COMPLETED
 
 ### 3.4 ToolRun
 
-StageRun 下记录业务工具执行轨迹，并记录：
+后续在现有 `ToolCaller` 调用边界增加 ToolRun，记录业务工具轨迹，不把已有日志 Trace 或 AgentScope 高层 Tool 消息误作持久 ToolRun。字段包括：
 
 - tool_code；
 - stage；
@@ -189,7 +196,7 @@ source = USER
 
 ### 3.6 Artifact
 
-统一表示流程产生的重要文件或结果：
+目标上统一表示流程产生的重要文件或结果：
 
 ```text
 Decoded Data Artifact
@@ -200,9 +207,13 @@ Normalized Interpretation Result
 Report Artifact
 ```
 
+一期先记录受控 URI/路径、类型、输入摘要及来源 Execution 等最小 Artifact 引用；上传原文件必须可恢复供重跑使用，不立即建设通用 Artifact 大表。
+
 ---
 
-## 4. 四阶段 Workflow Contract
+## 4. 四阶段 Execution 视图与契约
+
+以下阶段边界不改变现有十步 Workflow。当前 W03 只回放 Mock QC 并将 `raw_data` 原样赋给 `processed_data`，尚无真正重采样；采样间隔的目标行为不得被描述为已实现。W10 仅做最终一致性/结构检查，REPORT 在其后独立运行。
 
 ### 4.1 DATA_DECODE
 
@@ -342,7 +353,7 @@ merge_intervals
 multi_source_review
 ```
 
-第三方 API 当前是文件交互，因此增加：
+未来第三方 Heavy API 预计采用文件交互，具体协议尚待确认，因此目标上增加：
 
 ```text
 PredictionInputBuilder
@@ -360,7 +371,7 @@ Model Config
 PredictionInputArtifact
 ```
 
-三种预测模型通过统一 `PredictionGateway` 管理：
+现有 `ModelGateway`（`MockModelGateway` / `OpenAICompatibleModelGateway`）供 qwen-plus 或 Mock LLM 使用，继续支持 W06/W07 等能力。未来专业预测的三种模型通过独立 `PredictionProvider` / `PredictionGateway` 管理：
 
 ```text
 PredictionGateway
@@ -368,6 +379,8 @@ PredictionGateway
     ├─ MODEL_B Adapter
     └─ MODEL_C Adapter
 ```
+
+用户说“换成模型B”时，新 Execution 修改 `prediction_model=MODEL_B`；不改变 qwen-plus 的 `ModelGateway` 配置。两个 Gateway 不合并，也不重构已验收的模型访问层。
 
 第三方输出文件统一经：
 
@@ -404,7 +417,7 @@ InterpretationResult
 
 ### 4.4 REPORT
 
-目标：根据 InterpretationResult 生成最终解释报告。
+目标：在 W10 完成后，根据 InterpretationResult 生成最终解释报告。当前由 `ReportAssembler` / `ReportGenerator` 读取 `InterpretationState` 生成 JSON / Markdown；Report API 是后续 Provider，不是现有能力。
 
 输入：
 
@@ -421,6 +434,8 @@ prepare_report_payload
 invoke_report_api
 resolve_report_artifact
 ```
+
+上述是后续外部 Report API 的候选逻辑能力；一期先包装现有报告链，并按 execution_id 保存新旧报告。
 
 输出：
 
@@ -455,6 +470,8 @@ EXEC_003 → REPORT_003
 ---
 
 ## 6. ExecutionPlan
+
+计划由确定性代码生成，执行目标链路是 `ExecutionPlan → 复用状态装配 → 现有业务 MainAgent → InterpretationWorkflow.run(...) → W01～W10 → 独立 REPORT`。复用的业务结果需验证来源与输入版本；仅在现有 Workflow 入口增加受控起点能力，不新增四阶段 WorkflowRunner。W10 仍检查有效的完整十步结果。
 
 首次解释：
 
@@ -554,9 +571,9 @@ DERIVED
 
 ---
 
-## 8. AgentScope MainAgent
+## 8. AgentScope 交互层与现有业务 MainAgent
 
-一期采用受约束 ReAct Agent。
+目标是在现有 `LoggingInterpretationDemoAgent` 上渐进增加受约束的 ReAct 交互。当前上传 Middleware 直接调用唯一 `run_well_interpretation` Tool，并未通过模型识别“修改/状态查询”意图；以下任务级 Tool 是未来能力。现有业务 MainAgent 继续启动和协调 Workflow，不需改写成 ReAct Agent。
 
 Agent Task Tools：
 
@@ -570,7 +587,7 @@ resume_task
 get_report
 ```
 
-MainAgent 不直接暴露底层专业工具。
+AgentScope 交互层不直接暴露底层专业工具。
 
 核心接口：
 
@@ -634,7 +651,7 @@ MODEL = B
 
 ## 10. 异步任务与事件
 
-单井解释通常 2 分钟甚至更久，因此采用后台执行：
+目标单井解释可能超过 2 分钟，因此后续 Task 08 增加跨请求后台 Execution 生命周期：
 
 ```text
 Agent
@@ -650,7 +667,7 @@ Queue
 Worker 执行 Workflow
 ```
 
-前端一期建议通过 SSE 接收执行事件：
+AgentScope Web 当前已有 `/sessions/{session_id}/stream` 与流式消息，且能显示 W01～W10 的请求期进度。一期优先把 Execution、Stage、Tool 状态投影到现有 AgentScope SSE/Stream，不预设第二套 SSE。后台执行的持久状态、断线查询/回放由后续 Task 08 处理。目标事件：
 
 ```text
 INTENT_RECOGNIZED
@@ -783,44 +800,27 @@ Mock Prediction 收到 POR=0.16 / PERM=0.16
 现在处理到哪里了？
 ```
 
-预期 MainAgent 调用 `get_task_status`，读取真实状态后回答，禁止根据聊天上下文猜测。
+预期 AgentScope 交互层调用 `get_task_status`，从业务 Repository 读取真实状态后回答，禁止根据聊天上下文猜测。
 
 ---
 
 ## 12. Codex 实施顺序
 
-### Task 01
-核心数据模型与状态模型。
+实施编号、文件边界、验收和风险以 `docs/06-interactive-agent-gap-analysis.md` 第 8 节为准，不沿用本设计文档原先假定的“新建四阶段 WorkflowRunner”顺序：
 
-### Task 02
-DependencyResolver + ExecutionPlan。
-
-### Task 03
-四阶段 WorkflowRunner，先全 Mock。
-
-### Task 04
-Logical Tool + ToolRun 执行轨迹。
-
-### Task 05
-参数感知 MockPredictionProvider / MockReportProvider。
-
-### Task 06
-AgentScope MainAgent + Task Tools。
-
-### Task 07
-异步任务 + 状态持久化 + SSE。
-
-### Task 08
-Web UI 过程展示。
-
-### Task 09
-CASE-01 ～ CASE-06 E2E 验收。
-
-### Task 10
-接入真实第三方 Heavy Prediction API。
-
-### Task 11
-接入真实 Report API。
+| Task | 渐进实施主题 |
+|---|---|
+| 01 | 扩展现有 Task 持久化并新增版本化 Execution，保持现有执行入口不变 |
+| 02 | 可恢复的输入版本与 InterpretationOverride 契约 |
+| 03 | DependencyResolver 与 ExecutionPlan |
+| 04 | 复用状态装配及现有 InterpretationWorkflow.run(...) 的受控局部重跑 |
+| 05 | 参数感知 Mock 与预处理输入版本验证 |
+| 06 | Execution 报告绑定与 ToolRun 记录 |
+| 07 | 任务级命令及现有 AgentScope 交互外壳升级 |
+| 08 | 后台 Execution、真实状态与现有 Stream 事件复用 |
+| 09 | 增量 Web 展示及 CASE-01～CASE-06 回归验收 |
+| 10 | 真实 Heavy Prediction API 适配，协议确认后实施 |
+| 11 | 真实 Report API 适配，协议确认后实施 |
 
 ---
 
@@ -850,3 +850,5 @@ CASE-01 ～ CASE-06 E2E 验收。
 6. Report API 输入协议；
 7. Report API 返回报告路径/文件的方式；
 8. 外部 API 是否支持 job_id、状态查询、cancel。
+
+本文定位为**详细契约、交互规则与 E2E 目标**；`docs/04-interactive-agent-architecture.md` 描述目标架构与总体原则，`docs/06-interactive-agent-gap-analysis.md` 记录实际代码现状、差距和实施顺序。当前是否已实现某能力，以 06 的代码扫描事实为准。
