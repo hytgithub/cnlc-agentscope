@@ -26,6 +26,7 @@ from cnlc_agent.domain.inputs import (
 )
 from cnlc_agent.domain.models import JsonObject, MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
+from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolRun, ToolRunStatus
 
@@ -112,6 +113,9 @@ class InMemoryTaskRepository:
         self._task_inputs: dict[str, list[str]] = {}
         self._states: dict[str, InterpretationState] = {}
         self.reports: dict[str, str] = {}
+        self._session_task_bindings: dict[
+            tuple[str, str, str, str], SessionTaskBinding
+        ] = {}
 
     async def create_task(self, state: InterpretationState) -> None:
         """保留旧当前快照读接口，同时建立持续任务。"""
@@ -134,6 +138,52 @@ class InMemoryTaskRepository:
     async def get_task(self, task_id: str) -> InterpretationTask | None:
         task = self._tasks.get(task_id)
         return task.model_copy(deep=True) if task is not None else None
+
+    async def bind_task_to_session(self, binding: SessionTaskBinding) -> None:
+        """同一绑定幂等写入；任务不存在时不能形成悬空授权。"""
+
+        binding = SessionTaskBinding.model_validate(binding.model_dump(mode="python"))
+        async with self._lock:
+            if binding.task_id not in self._tasks:
+                raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+            key = (
+                binding.user_id,
+                binding.agent_id,
+                binding.session_id,
+                binding.task_id,
+            )
+            self._session_task_bindings.setdefault(key, binding.model_copy(deep=True))
+
+    async def list_session_task_ids(self, identity: TaskSessionIdentity) -> list[str]:
+        """按创建时间稳定列出一个完整会话身份拥有的全部任务。"""
+
+        identity = TaskSessionIdentity.model_validate(identity.model_dump(mode="python"))
+        bindings = [
+            binding
+            for binding in self._session_task_bindings.values()
+            if (
+                binding.user_id,
+                binding.agent_id,
+                binding.session_id,
+            ) == (identity.user_id, identity.agent_id, identity.session_id)
+        ]
+        return [
+            binding.task_id
+            for binding in sorted(bindings, key=lambda item: (item.created_at, item.task_id))
+        ]
+
+    async def task_belongs_to_session(
+        self, identity: TaskSessionIdentity, task_id: str
+    ) -> bool:
+        """只检查四元组绑定，不能因任务真实存在而放行。"""
+
+        identity = TaskSessionIdentity.model_validate(identity.model_dump(mode="python"))
+        return (
+            identity.user_id,
+            identity.agent_id,
+            identity.session_id,
+            task_id,
+        ) in self._session_task_bindings
 
     async def create_input_version(
         self, task_id: str, fixture: MockFixture, source_type: InputSource = "UPLOAD"

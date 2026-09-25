@@ -19,6 +19,7 @@ from cnlc_agent.domain.execution import ExecutionStatus
 from cnlc_agent.domain.inputs import fixture_digest
 from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
+from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.infrastructure.database import PostgreSQLTaskRepository
 from cnlc_agent.infrastructure.mock import InMemoryTaskRepository
@@ -171,6 +172,41 @@ async def test_execution_versions_keep_independent_state_and_report():
     task = await repository.get_task(request.task_id)
     assert task is not None
     assert task.latest_successful_execution_id == first.workflow_execution_id
+
+
+async def test_memory_session_task_binding_is_idempotent_isolated_and_multi_task():
+    """内存实现与 PostgreSQL 保持同一绑定接口和四元组隔离语义。"""
+
+    repository = InMemoryTaskRepository()
+    first = TaskRequest(well_id="WELL_1")
+    second = TaskRequest(well_id="WELL_2")
+    await repository.create(InterpretationState(task=first))
+    await repository.create(InterpretationState(task=second))
+    identity = TaskSessionIdentity(user_id="alice", agent_id="agent-a", session_id="session-a")
+    first_binding = SessionTaskBinding(
+        **identity.model_dump(mode="python"), task_id=first.task_id
+    )
+    await repository.bind_task_to_session(first_binding)
+    await repository.bind_task_to_session(first_binding)
+    await repository.bind_task_to_session(SessionTaskBinding(
+        **identity.model_dump(mode="python"), task_id=second.task_id
+    ))
+
+    assert await repository.task_belongs_to_session(identity, first.task_id)
+    assert await repository.list_session_task_ids(identity) == [first.task_id, second.task_id]
+    for other in [
+        TaskSessionIdentity(user_id="bob", agent_id="agent-a", session_id="session-a"),
+        TaskSessionIdentity(user_id="alice", agent_id="agent-b", session_id="session-a"),
+        TaskSessionIdentity(user_id="alice", agent_id="agent-a", session_id="session-b"),
+    ]:
+        assert not await repository.task_belongs_to_session(other, first.task_id)
+        assert await repository.list_session_task_ids(other) == []
+
+    with pytest.raises(InfrastructureError) as caught:
+        await repository.bind_task_to_session(SessionTaskBinding(
+            **identity.model_dump(mode="python"), task_id="TASK_MISSING"
+        ))
+    assert caught.value.code == "TASK_NOT_FOUND"
 
 
 async def test_execution_creation_conflicts_and_missing_task():

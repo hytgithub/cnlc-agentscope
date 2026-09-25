@@ -7,10 +7,12 @@ import httpx
 from agentscope.app.storage import RedisStorage
 from fakeredis.aioredis import FakeRedis
 
+from cnlc_agent.application.bootstrap import build_application
 from cnlc_agent.config.settings import AppSettings, PersistenceSettings
-from cnlc_agent.demo.agentscope_app import create_demo_app
+from cnlc_agent.demo.agentscope_app import SessionTaskToolFactory, create_demo_app
 from cnlc_agent.demo.task_tools import TaskCommandRunner
 from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.infrastructure.mock import InMemoryTaskRepository
 
 
 async def test_read_api_queued_detail_and_session_isolation(tmp_path, data_dir, monkeypatch):
@@ -70,4 +72,70 @@ async def test_read_api_queued_detail_and_session_isolation(tmp_path, data_dir, 
             assert denied.status_code == 404
             assert denied.json()["detail"] == "TASK_NOT_FOUND"
     await runner.dispatcher.shutdown()
+    await redis.aclose()
+
+
+async def test_read_api_restores_durable_binding_before_any_new_chat(
+    tmp_path, data_dir, monkeypatch
+):
+    """模拟进程重启丢失 runners，Read API 直接从持久绑定恢复。"""
+
+    from contextlib import asynccontextmanager
+
+    repository = InMemoryTaskRepository()
+
+    @asynccontextmanager
+    async def runtime(settings, persistence, connections):
+        del persistence, connections
+        service = build_application(settings, task_repository=repository)
+        try:
+            yield service
+        finally:
+            await service.close()
+
+    monkeypatch.setattr("cnlc_agent.demo.task_tools.application_runtime", runtime)
+    monkeypatch.setenv("CNLC_MODEL_PROVIDER", "mock")
+    monkeypatch.setenv("CNLC_PERSISTENCE", "postgres-redis")
+    redis = FakeRedis(decode_responses=True)
+    monkeypatch.setattr(
+        "cnlc_agent.demo.agentscope_app._redis_storage",
+        lambda _: RedisStorage(connection_pool=redis.connection_pool),
+    )
+    settings = AppSettings(
+        mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None
+    )
+    persistence = PersistenceSettings(persistence="postgres-redis", _env_file=None)
+    first_factory = SessionTaskToolFactory(settings=settings, persistence=persistence)
+    tools = {
+        tool.name: tool for tool in await first_factory("alice", "agent-a", "session-a")
+    }
+    started = await tools["run_well_interpretation"].call(well_id="WELL_MOCK_001")
+    result = started.metadata["result"]
+    await tools["get_interpretation_status"].runner.wait_for_completion(
+        result["task_id"], result["execution_id"]
+    )
+    await first_factory.shutdown()
+
+    app = create_demo_app(workspace_dir=tmp_path / "restart-workspaces")
+    assert app.state.cnlc_task_tools.runners == {}
+    path = (
+        "/cnlc/interpretation/agents/agent-a/sessions/session-a/tasks/"
+        f"{result['task_id']}"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(path, headers={"X-User-ID": "alice"})
+        assert response.status_code == 200
+        assert response.json()["current_execution"]["execution_status"] == "SUCCESS"
+        assert ("alice", "agent-a", "session-a") in app.state.cnlc_task_tools.runners
+        for denied_path, user in [
+            (path, "bob"),
+            (path.replace("agent-a", "agent-b"), "alice"),
+            (path.replace("session-a", "session-b"), "alice"),
+        ]:
+            denied = await client.get(denied_path, headers={"X-User-ID": user})
+            assert denied.status_code == 404
+            assert denied.json()["detail"] == "TASK_NOT_FOUND"
+    await app.state.cnlc_task_tools.shutdown()
     await redis.aclose()

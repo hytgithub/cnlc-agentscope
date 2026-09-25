@@ -3,8 +3,9 @@
 from datetime import datetime
 
 from pydantic import ValidationError
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func, select
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, select
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -26,6 +27,7 @@ from cnlc_agent.domain.inputs import (
 )
 from cnlc_agent.domain.models import JsonObject, MockFixture, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
+from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolExecutionMode, ToolRun, ToolRunStatus
 
@@ -51,6 +53,31 @@ class TaskRow(Base):
     latest_successful_execution_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SessionTaskBindingRow(Base):
+    """AgentScope 会话对解释任务的持久归属；不是通用权限或 RBAC 表。"""
+
+    __tablename__ = "interpretation_session_task_binding"
+    __table_args__ = (
+        Index(
+            "ix_session_task_binding_session",
+            "user_id",
+            "agent_id",
+            "session_id",
+        ),
+        Index("ix_session_task_binding_task_id", "task_id"),
+    )
+
+    user_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("interpretation_task.task_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class InputVersionRow(Base):
@@ -369,6 +396,80 @@ class PostgreSQLTaskRepository:
             raise InfrastructureError("INVALID_STORED_TASK", "数据库任务结构无效") from None
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError("DATABASE_READ_FAILED", "数据库任务读取失败") from None
+
+    async def bind_task_to_session(self, binding: SessionTaskBinding) -> None:
+        """用 PostgreSQL 冲突忽略保证同一四元组可安全重复绑定。"""
+
+        binding = SessionTaskBinding.model_validate(binding.model_dump(mode="python"))
+        try:
+            async with self.sessions.begin() as session:
+                task = await session.get(TaskRow, binding.task_id)
+                if task is None:
+                    raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+                statement = postgresql_insert(SessionTaskBindingRow).values(
+                    user_id=binding.user_id,
+                    agent_id=binding.agent_id,
+                    session_id=binding.session_id,
+                    task_id=binding.task_id,
+                    created_at=binding.created_at,
+                ).on_conflict_do_nothing(
+                    index_elements=["user_id", "agent_id", "session_id", "task_id"]
+                )
+                await session.execute(statement)
+        except InfrastructureError:
+            raise
+        except (IntegrityError, SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError(
+                "SESSION_TASK_BINDING_FAILED", "会话任务归属保存失败"
+            ) from None
+
+    async def list_session_task_ids(self, identity: TaskSessionIdentity) -> list[str]:
+        """从持久绑定恢复一个完整会话身份下的所有任务标识。"""
+
+        identity = TaskSessionIdentity.model_validate(identity.model_dump(mode="python"))
+        try:
+            async with self.sessions() as session:
+                rows = (
+                    await session.scalars(
+                        select(SessionTaskBindingRow.task_id)
+                        .where(
+                            SessionTaskBindingRow.user_id == identity.user_id,
+                            SessionTaskBindingRow.agent_id == identity.agent_id,
+                            SessionTaskBindingRow.session_id == identity.session_id,
+                        )
+                        .order_by(
+                            SessionTaskBindingRow.created_at,
+                            SessionTaskBindingRow.task_id,
+                        )
+                    )
+                ).all()
+                return list(rows)
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError(
+                "SESSION_TASK_BINDING_READ_FAILED", "会话任务归属读取失败"
+            ) from None
+
+    async def task_belongs_to_session(
+        self, identity: TaskSessionIdentity, task_id: str
+    ) -> bool:
+        """查询完整四元组；单独存在的 task_id 不构成访问授权。"""
+
+        identity = TaskSessionIdentity.model_validate(identity.model_dump(mode="python"))
+        try:
+            async with self.sessions() as session:
+                result = await session.scalar(
+                    select(SessionTaskBindingRow.task_id).where(
+                        SessionTaskBindingRow.user_id == identity.user_id,
+                        SessionTaskBindingRow.agent_id == identity.agent_id,
+                        SessionTaskBindingRow.session_id == identity.session_id,
+                        SessionTaskBindingRow.task_id == task_id,
+                    )
+                )
+                return result is not None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError(
+                "SESSION_TASK_BINDING_READ_FAILED", "会话任务归属读取失败"
+            ) from None
 
     async def create_input_version(
         self, task_id: str, fixture: MockFixture, source_type: InputSource = "UPLOAD"

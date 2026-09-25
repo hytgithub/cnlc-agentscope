@@ -34,6 +34,7 @@ from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, ExecutionSt
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
+from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
 from cnlc_agent.infrastructure.mock import (
     InMemoryStateStore,
     InMemoryTaskRepository,
@@ -54,6 +55,7 @@ class TaskCommandRunner:
         persistence: PersistenceSettings | None = None,
         dispatcher: InProcessExecutionDispatcher | None = None,
         connections: ConnectionSettings | None = None,
+        session_identity: TaskSessionIdentity | None = None,
     ) -> None:
         self.settings = settings or AppSettings(mode="demo")
         self.persistence = persistence or PersistenceSettings()
@@ -61,7 +63,9 @@ class TaskCommandRunner:
         self.state_store = InMemoryStateStore()
         self.dispatcher = dispatcher or InProcessExecutionDispatcher()
         self.connections = connections or ConnectionSettings()
+        self.session_identity = session_identity
         self._lock = asyncio.Lock()
+        # 仅作为进程内加速缓存；postgres-redis 模式的 canonical source 是绑定表。
         self.observed_task_ids: set[str] = set()
 
     @asynccontextmanager
@@ -103,10 +107,17 @@ class TaskCommandRunner:
                         TaskRequest(well_id=fixture.well.well_id, instruction=instruction),
                         fixture,
                     )
+                    if self.session_identity is not None:
+                        await service.repository.bind_task_to_session(
+                            SessionTaskBinding(
+                                **self.session_identity.model_dump(mode="python"),
+                                task_id=execution.task_id,
+                            )
+                        )
+                    self.observed_task_ids.add(execution.task_id)
                     result = await TaskCommands(service).project(
                         execution.task_id, execution.execution_id, "START"
                     )
-                    self.observed_task_ids.add(execution.task_id)
             await self.dispatcher.submit(
                 execution.execution_id, self._executor(execution.execution_id)
             )
@@ -183,7 +194,7 @@ class TaskCommandRunner:
     ) -> TaskCommandResult:
         """修改命令只提交后台任务；状态与报告命令始终查询持久事实。"""
 
-        if command.task_id not in self.observed_task_ids:
+        if not await self.owns_task(command.task_id):
             raise ApplicationError("TASK_NOT_FOUND", "任务不属于当前会话")
 
         async with self._lock:
@@ -201,6 +212,41 @@ class TaskCommandRunner:
                         return await commands.status(command)
             await self.dispatcher.submit(result.execution_id, self._executor(result.execution_id))
             return result
+
+    async def owns_task(self, task_id: str) -> bool:
+        """缓存未命中时只在持久模式查询完整 Session binding。"""
+
+        if task_id in self.observed_task_ids:
+            return True
+        if (
+            self.persistence.persistence != "postgres-redis"
+            or self.session_identity is None
+        ):
+            return False
+        with TemporaryDirectory(prefix="cnlc-ownership-") as directory:
+            async with self.context(Path(directory)) as service:
+                owned = await service.repository.task_belongs_to_session(
+                    self.session_identity, task_id
+                )
+        if owned:
+            self.observed_task_ids.add(task_id)
+        return owned
+
+    async def restore_task_bindings(self) -> set[str]:
+        """PostgreSQL 模式从 durable binding 恢复缓存；内存模式不伪装可恢复。"""
+
+        if (
+            self.persistence.persistence != "postgres-redis"
+            or self.session_identity is None
+        ):
+            return set(self.observed_task_ids)
+        with TemporaryDirectory(prefix="cnlc-restore-") as directory:
+            async with self.context(Path(directory)) as service:
+                task_ids = await service.repository.list_session_task_ids(
+                    self.session_identity
+                )
+        self.observed_task_ids.update(task_ids)
+        return set(self.observed_task_ids)
 
     async def wait_for_completion(
         self, task_id: str, execution_id: str, *, timeout_seconds: float = 10
@@ -226,6 +272,7 @@ _SAFE_ERRORS = {
     "EMPTY_OVERRIDE": "请明确要修改的参数名称和值。",
     "TASK_EXECUTION_ACTIVE": "当前任务已有执行正在排队或运行，请稍后查询状态。",
     "STALE_EXECUTION_PLAN": "任务版本已变化，请重新提交修改请求。",
+    "SESSION_TASK_BINDING_FAILED": "任务归属保存失败，请稍后重试。",
 }
 
 

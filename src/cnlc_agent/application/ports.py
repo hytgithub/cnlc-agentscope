@@ -16,6 +16,7 @@ from cnlc_agent.domain.execution import (
 from cnlc_agent.domain.inputs import InputSource, InterpretationInputVersion
 from cnlc_agent.domain.models import Contract, JsonObject, MockFixture, WellData, WellId
 from cnlc_agent.domain.override import InterpretationOverride
+from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolRun, ToolRunStatus
 
@@ -32,6 +33,14 @@ class TaskRepository(Protocol):
     async def create_task(self, state: InterpretationState) -> None: ...
 
     async def get_task(self, task_id: str) -> InterpretationTask | None: ...
+
+    async def bind_task_to_session(self, binding: SessionTaskBinding) -> None: ...
+
+    async def list_session_task_ids(self, identity: TaskSessionIdentity) -> list[str]: ...
+
+    async def task_belongs_to_session(
+        self, identity: TaskSessionIdentity, task_id: str
+    ) -> bool: ...
 
     async def create_input_version(
         self, task_id: str, fixture: MockFixture, source_type: InputSource = "UPLOAD"

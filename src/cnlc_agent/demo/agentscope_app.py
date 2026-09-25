@@ -38,6 +38,7 @@ from cnlc_agent.demo.read_models import (
     present_task_view,
 )
 from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
+from cnlc_agent.domain.session_binding import TaskSessionIdentity
 
 BACKEND_MODEL_CREDENTIAL_ID = "cnlc-backend-model"
 BACKEND_MODEL_OWNER_ID = "__cnlc_backend_model__"
@@ -81,8 +82,11 @@ async def demo_agent_tools(
 ) -> list[ToolBase]:
     """独立调用时创建一组隔离任务工具；HTTP 使用下方应用级会话工厂。"""
 
-    del user_id, agent_id, session_id
-    return build_task_tools()
+    return build_task_tools(TaskCommandRunner(session_identity=TaskSessionIdentity(
+        user_id=user_id,
+        agent_id=agent_id,
+        session_id=session_id,
+    )))
 
 
 class SessionTaskToolFactory:
@@ -101,21 +105,37 @@ class SessionTaskToolFactory:
         self.connections = connections or ConnectionSettings()
         self.dispatcher = dispatcher or InProcessExecutionDispatcher()
         self.runners: dict[tuple[str, str, str], TaskCommandRunner] = {}
+        self._runner_lock = asyncio.Lock()
         self._recovery_stack: AsyncExitStack | None = None
         self._recovery_task: asyncio.Task[None] | None = None
 
     async def __call__(self, user_id: str, agent_id: str, session_id: str) -> list[ToolBase]:
-        """工具可每轮重建，只有当前会话的任务仓库被复用。"""
+        """创建会话 runner，并在持久模式先恢复历史任务归属。"""
 
         key = (user_id, agent_id, session_id)
-        if key not in self.runners:
-            self.runners[key] = TaskCommandRunner(
-                self.settings,
-                self.persistence,
-                self.dispatcher,
-                self.connections,
-            )
+        async with self._runner_lock:
+            if key not in self.runners:
+                runner = self._new_runner(user_id, agent_id, session_id)
+                await runner.restore_task_bindings()
+                self.runners[key] = runner
         return build_task_tools(self.runners[key])
+
+    def _new_runner(
+        self, user_id: str, agent_id: str, session_id: str
+    ) -> TaskCommandRunner:
+        """集中构造携带完整 Session identity 的 runner。"""
+
+        return TaskCommandRunner(
+            self.settings,
+            self.persistence,
+            self.dispatcher,
+            self.connections,
+            session_identity=TaskSessionIdentity(
+                user_id=user_id,
+                agent_id=agent_id,
+                session_id=session_id,
+            ),
+        )
 
     def get_existing_runner(
         self, user_id: str, agent_id: str, session_id: str
@@ -123,6 +143,27 @@ class SessionTaskToolFactory:
         """只查找既有会话 runner；只读 API 不得隐式创建会话状态。"""
 
         return self.runners.get((user_id, agent_id, session_id))
+
+    async def get_or_restore_runner(
+        self, user_id: str, agent_id: str, session_id: str
+    ) -> TaskCommandRunner | None:
+        """Read API 可恢复持久 runner；内存模式仍只承认进程内已有实例。"""
+
+        key = (user_id, agent_id, session_id)
+        existing = self.runners.get(key)
+        if existing is not None:
+            return existing
+        if self.persistence.persistence != "postgres-redis":
+            return None
+        async with self._runner_lock:
+            existing = self.runners.get(key)
+            if existing is not None:
+                return existing
+            runner = self._new_runner(user_id, agent_id, session_id)
+            if not await runner.restore_task_bindings():
+                return None
+            self.runners[key] = runner
+            return runner
 
     async def start(self) -> None:
         """PostgreSQL 模式启动时回收过期 RUNNING；内存会话没有跨进程状态。"""
@@ -314,7 +355,7 @@ def create_demo_app(
             )
         return await call_next(request)
 
-    def owned_runner(
+    async def owned_runner(
         request: Request, agent_id: str, session_id: str, task_id: str
     ) -> TaskCommandRunner:
         """用完整会话身份定位任务；所有不匹配统一返回 404，避免泄露存在性。"""
@@ -322,8 +363,8 @@ def create_demo_app(
         user_id = request.headers.get("X-User-ID", "")
         if not user_id:
             raise HTTPException(status_code=404, detail="TASK_NOT_FOUND")
-        runner = task_tools.get_existing_runner(user_id, agent_id, session_id)
-        if runner is None or task_id not in runner.observed_task_ids:
+        runner = await task_tools.get_or_restore_runner(user_id, agent_id, session_id)
+        if runner is None or not await runner.owns_task(task_id):
             raise HTTPException(status_code=404, detail="TASK_NOT_FOUND")
         return runner
 
@@ -336,7 +377,7 @@ def create_demo_app(
     ) -> InterpretationTaskView:
         """读取当前会话拥有的持续任务和执行历史，不触发 Agent 或模型。"""
 
-        runner = owned_runner(request, agent_id, session_id, task_id)
+        runner = await owned_runner(request, agent_id, session_id, task_id)
         with TemporaryDirectory(prefix="cnlc-read-") as directory:
             async with runner.context(Path(directory)) as service:
                 task = await service.repository.get_task(task_id)
@@ -358,7 +399,7 @@ def create_demo_app(
     ) -> InterpretationExecutionView:
         """读取指定历史版本；执行标识还必须属于 URL 中的任务。"""
 
-        runner = owned_runner(request, agent_id, session_id, task_id)
+        runner = await owned_runner(request, agent_id, session_id, task_id)
         with TemporaryDirectory(prefix="cnlc-read-") as directory:
             async with runner.context(Path(directory)) as service:
                 execution = await service.repository.get_execution(execution_id)

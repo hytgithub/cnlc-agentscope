@@ -3,6 +3,7 @@
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from agentscope.tool import Toolkit
@@ -12,7 +13,9 @@ from cnlc_agent.config.settings import AppSettings, PersistenceSettings
 from cnlc_agent.demo.agentscope_app import SessionTaskToolFactory
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
 from cnlc_agent.demo.task_tools import ALLOWED_TASK_TOOLS, TaskCommandRunner, build_task_tools
+from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.models import MockFixture
+from cnlc_agent.domain.session_binding import TaskSessionIdentity
 from cnlc_agent.infrastructure.mock import InMemoryTaskRepository
 
 
@@ -87,6 +90,35 @@ async def test_tools_reject_unknown_and_no_effective_change(data_dir):
     await session.dispatcher.shutdown()
 
 
+async def test_binding_failure_does_not_submit_background_execution(data_dir, monkeypatch):
+    """归属未持久化时返回稳定错误，不能向用户伪装任务已提交。"""
+
+    session = TaskCommandRunner(
+        AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),
+        PersistenceSettings(persistence="memory", _env_file=None),
+        session_identity=TaskSessionIdentity(
+            user_id="alice", agent_id="agent-a", session_id="session-a"
+        ),
+    )
+
+    async def fail_binding(_binding):
+        raise InfrastructureError(
+            "SESSION_TASK_BINDING_FAILED", "database secret must stay private"
+        )
+
+    submit = AsyncMock()
+    monkeypatch.setattr(session.repository, "bind_task_to_session", fail_binding)
+    monkeypatch.setattr(session.dispatcher, "submit", submit)
+    tool = {item.name: item for item in build_task_tools(session)}[
+        "run_well_interpretation"
+    ]
+    result = await tool.call(well_id="WELL_MOCK_001")
+    assert result.metadata["error_code"] == "SESSION_TASK_BINDING_FAILED"
+    assert "secret" not in result.metadata["message"]
+    assert session.observed_task_ids == set()
+    submit.assert_not_awaited()
+
+
 async def test_session_factory_keeps_same_session_and_separates_identity(monkeypatch):
     monkeypatch.setenv("CNLC_PERSISTENCE", "memory")
     factory = SessionTaskToolFactory()
@@ -125,6 +157,66 @@ async def test_postgres_mode_uses_existing_runtime(data_dir, monkeypatch):
     assert result.state == "success"
     assert contexts == ["postgres-redis", "postgres-redis"]
     assert await session.repository.get_task(first["task_id"]) is None
+
+
+async def test_postgres_factory_restores_binding_for_status_and_modify(data_dir, monkeypatch):
+    """新 Factory 没有进程缓存时，仍从 durable repository 恢复 Task Tool 归属。"""
+
+    repository = InMemoryTaskRepository()
+
+    @asynccontextmanager
+    async def runtime(settings, persistence, connections):
+        del persistence, connections
+        app = build_application(settings, task_repository=repository)
+        try:
+            yield app
+        finally:
+            await app.close()
+
+    monkeypatch.setattr("cnlc_agent.demo.task_tools.application_runtime", runtime)
+    settings = AppSettings(
+        mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None
+    )
+    persistence = PersistenceSettings(persistence="postgres-redis", _env_file=None)
+    first_factory = SessionTaskToolFactory(settings=settings, persistence=persistence)
+    first_tools = {
+        tool.name: tool for tool in await first_factory("alice", "agent-a", "session-a")
+    }
+    started = await first_tools["run_well_interpretation"].call(well_id="WELL_MOCK_001")
+    first = started.metadata["result"]
+    await first_tools["get_interpretation_status"].runner.wait_for_completion(
+        first["task_id"], first["execution_id"]
+    )
+    await first_factory.shutdown()
+
+    restored_factory = SessionTaskToolFactory(settings=settings, persistence=persistence)
+    assert restored_factory.runners == {}
+    restored_tools = {
+        tool.name: tool for tool in await restored_factory("alice", "agent-a", "session-a")
+    }
+    restored_runner = restored_tools["get_interpretation_status"].runner
+    assert first["task_id"] in restored_runner.observed_task_ids
+    restored_runner.observed_task_ids.clear()
+    status = await restored_tools["get_interpretation_status"].call(task_id=first["task_id"])
+    assert status.state == "success"
+    assert first["task_id"] in restored_runner.observed_task_ids
+    modified = await restored_tools["modify_well_interpretation"].call(
+        task_id=first["task_id"], por=0.17
+    )
+    assert modified.state == "success"
+    await restored_runner.wait_for_completion(
+        first["task_id"], modified.metadata["result"]["execution_id"]
+    )
+    assert await restored_factory.get_or_restore_runner(
+        "bob", "agent-a", "session-a"
+    ) is None
+    assert await restored_factory.get_or_restore_runner(
+        "alice", "agent-b", "session-a"
+    ) is None
+    assert await restored_factory.get_or_restore_runner(
+        "alice", "agent-a", "session-b"
+    ) is None
+    await restored_factory.shutdown()
 
 
 def test_agent_rejects_every_unapproved_tool(data_dir):

@@ -21,6 +21,7 @@ from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.demo.presentation import DemoStep, present_steps
 from cnlc_agent.domain.enums import StepId, StepStatus
+from cnlc_agent.domain.errors import ApplicationError
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import MockFixture, TaskRequest
 from cnlc_agent.domain.override import InterpretationOverride
@@ -232,6 +233,26 @@ class RunWellInterpretationTool(ToolBase):
 
         try:
             return await self._call(*args, **kwargs)
+        except ApplicationError as exc:
+            # 首次提交必须保留归属持久化失败语义，同时只返回固定安全文案。
+            if exc.code == "SESSION_TASK_BINDING_FAILED":
+                payload = {
+                    "error_code": exc.code,
+                    "message": "任务归属保存失败，请稍后重试。",
+                }
+                return ToolChunk(
+                    content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))],
+                    state=ToolResultState.ERROR,
+                    metadata=payload,
+                )
+            logging.getLogger(__name__).warning(
+                "Demo tool failed: %s", type(exc).__name__
+            )
+            return ToolChunk(
+                content=[TextBlock(text="解释任务失败，请检查井资料或服务配置后重试。")],
+                state=ToolResultState.ERROR,
+                metadata={"error_code": "DEMO_INTERPRETATION_FAILED"},
+            )
         except Exception as exc:
             logging.getLogger(__name__).warning("Demo tool failed: %s", type(exc).__name__)
             return ToolChunk(
