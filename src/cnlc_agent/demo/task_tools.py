@@ -62,6 +62,7 @@ class TaskCommandRunner:
         self.dispatcher = dispatcher or InProcessExecutionDispatcher()
         self.connections = connections or ConnectionSettings()
         self._lock = asyncio.Lock()
+        self.observed_task_ids: set[str] = set()
 
     @asynccontextmanager
     async def context(self, root: Path) -> AsyncIterator[InterpretationTaskService]:
@@ -105,6 +106,7 @@ class TaskCommandRunner:
                     result = await TaskCommands(service).project(
                         execution.task_id, execution.execution_id, "START"
                     )
+                    self.observed_task_ids.add(execution.task_id)
             await self.dispatcher.submit(
                 execution.execution_id, self._executor(execution.execution_id)
             )
@@ -180,6 +182,9 @@ class TaskCommandRunner:
         self, command: GetStatusCommand,
     ) -> TaskCommandResult:
         """修改命令只提交后台任务；状态与报告命令始终查询持久事实。"""
+
+        if command.task_id not in self.observed_task_ids:
+            raise ApplicationError("TASK_NOT_FOUND", "任务不属于当前会话")
 
         async with self._lock:
             with TemporaryDirectory(prefix="cnlc-command-") as directory:

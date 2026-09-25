@@ -1,4 +1,3 @@
-import { ChevronRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import { getResultText, parseInput, toolArgClass, toolLabelClass } from './_shared';
@@ -6,102 +5,49 @@ import type { ToolCallWithResult, ToolRenderer } from './types';
 import { Markdown } from '@/components/markdown';
 import { Badge } from '@/components/ui/badge';
 
-interface DemoStep {
-	/** Workflow 单步的结构化展示数据，与后端 W01-W10 步骤结果一一对应。 */
-	id: string;
-	name: string;
-	status: string;
-	source: string;
-	input_summary?: Record<string, unknown>;
-	output_summary?: Record<string, unknown>;
-	evidence?: string[];
-	warnings?: string[];
-}
-
-interface DemoToolResult {
-	/** run_well_interpretation 工具返回的前端展示载荷。 */
-	status?: string;
+interface TaskToolResult {
+	command?: string;
 	task_id?: string;
 	well_id?: string;
-	steps?: DemoStep[];
+	execution_sequence?: number;
+	execution_status?: string;
+	current_step?: string | null;
+	effective_override?: Record<string, unknown>;
 	summary?: string;
-	report_markdown?: string;
+	report_markdown?: string | null;
 }
 
-function resultPayload(pair: ToolCallWithResult): DemoToolResult | null {
-	// 工具结果可能为空、非文本或非 JSON；渲染器只消费可识别的结构化结果。
+const LABELS: Record<string, string> = {
+	run_well_interpretation: '单井测井解释',
+	modify_well_interpretation: '解释参数修改',
+	rerun_well_interpretation: '全流程重跑',
+	get_interpretation_status: '解释执行状态',
+	get_interpretation_report: '解释报告',
+};
+
+function resultPayload(pair: ToolCallWithResult): TaskToolResult | null {
+	const metadataResult = pair.result?.metadata?.result;
+	if (metadataResult && typeof metadataResult === 'object') return metadataResult as TaskToolResult;
 	const text = getResultText(pair.result);
 	if (!text) return null;
 	try {
 		const value: unknown = JSON.parse(text);
-		return value && typeof value === 'object' ? (value as DemoToolResult) : null;
+		return value && typeof value === 'object' ? value as TaskToolResult : null;
 	} catch {
 		return null;
 	}
 }
 
-function renderJsonBlock(value: unknown): ReactNode {
-	return (
-		<pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-sm bg-muted p-2 text-xs">
-			{JSON.stringify(value ?? {}, null, 2)}
-		</pre>
-	);
-}
-
-function renderStepCard(step: DemoStep): ReactNode {
-	// 每个步骤默认折叠，用户可按需查看输入、输出、证据和告警详情。
-	return (
-		<details className="rounded-sm border bg-background">
-			<summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 text-xs">
-				<ChevronRight className="size-3 shrink-0 [[open]>&]:rotate-90" />
-				<span className="font-medium">{step.id}</span>
-				<span className="min-w-0 flex-1 truncate">{step.name}</span>
-				<Badge variant={step.status === 'SUCCESS' ? 'secondary' : 'outline'}>
-					{step.status}
-				</Badge>
-				<Badge variant="outline">{step.source}</Badge>
-			</summary>
-			<div className="space-y-2 border-t px-2 py-2 text-xs">
-				<div>
-					<div className="mb-1 text-muted-foreground">输入摘要</div>
-					{renderJsonBlock(step.input_summary)}
-				</div>
-				<div>
-					<div className="mb-1 text-muted-foreground">输出摘要</div>
-					{renderJsonBlock(step.output_summary)}
-				</div>
-				{step.evidence && step.evidence.length > 0 && (
-					<div>
-						<div className="mb-1 text-muted-foreground">Evidence</div>
-						<ul className="list-disc space-y-0.5 pl-5">
-							{step.evidence.map((item, index) => <li key={`${step.id}-evidence-${index}`}>{item}</li>)}
-						</ul>
-					</div>
-				)}
-				{step.warnings && step.warnings.length > 0 && (
-					<div className="text-amber-700 dark:text-amber-300">
-						<div className="mb-1">Warnings</div>
-						<ul className="list-disc space-y-0.5 pl-5">
-							{step.warnings.map((item, index) => <li key={`${step.id}-warning-${index}`}>{item}</li>)}
-						</ul>
-					</div>
-				)}
-			</div>
-		</details>
-	);
-}
-
 function renderHeader(pair: ToolCallWithResult): ReactNode {
-	const input = parseInput(pair.call.input) as { well_id?: unknown };
+	const input = parseInput(pair.call.input) as Record<string, unknown>;
 	const payload = resultPayload(pair);
-	// 优先使用后端规范化后的井号，工具尚未返回时再回退到调用参数。
-	const wellId = typeof payload?.well_id === 'string'
-		? payload.well_id
-		: typeof input.well_id === 'string' ? input.well_id : '上传井资料';
+	const argument = payload?.well_id
+		?? (typeof input.well_id === 'string' ? input.well_id : payload?.task_id)
+		?? '任务';
 	return (
 		<>
-			<span className={toolLabelClass}>单井测井解释</span>
-			<span className={toolArgClass}>{wellId}</span>
+			<span className={toolLabelClass}>{LABELS[pair.call.name] ?? '测井解释'}</span>
+			<span className={toolArgClass}>{argument}</span>
 		</>
 	);
 }
@@ -109,31 +55,26 @@ function renderHeader(pair: ToolCallWithResult): ReactNode {
 function renderBody(pair: ToolCallWithResult): ReactNode {
 	const payload = resultPayload(pair);
 	if (!payload) return null;
+	const changed = Object.entries(payload.effective_override ?? {})
+		.filter(([, value]) => value !== null && value !== undefined)
+		.map(([key, value]) => `${key.toUpperCase()} ${String(value)}`);
 	return (
-		<div className="space-y-3 rounded-sm border bg-background p-2 text-xs">
+		<div className="space-y-2 rounded-sm border bg-background p-2 text-xs">
 			<div className="flex flex-wrap items-center gap-2">
-				<span className="font-medium">W01–W10 解释过程</span>
-				{payload.status && <Badge variant="secondary">{payload.status}</Badge>}
-				{payload.task_id && <span className="text-muted-foreground">任务：{payload.task_id}</span>}
+				{payload.execution_sequence && <span className="font-medium">Execution #{payload.execution_sequence}</span>}
+				{payload.execution_status && <Badge variant="secondary">{payload.execution_status}</Badge>}
+				{payload.current_step && <Badge variant="outline">{payload.current_step}</Badge>}
 			</div>
-			{payload.summary && <p className="text-muted-foreground">{payload.summary}</p>}
-			<div className="space-y-1.5">
-				{(payload.steps ?? []).map((step) => (
-					<div key={step.id}>{renderStepCard(step)}</div>
-				))}
-			</div>
-			{payload.report_markdown && (
-				<div className="space-y-1 border-t pt-3">
-					<div className="font-medium">Markdown Report</div>
-					<Markdown>{payload.report_markdown}</Markdown>
-				</div>
-			)}
+			{changed.length > 0 && payload.command === 'MODIFY' && <div>{changed.join(' · ')}</div>}
+			{payload.summary && <div className="text-muted-foreground">{payload.summary}</div>}
+			{payload.execution_status === 'QUEUED' && <div className="text-muted-foreground">任务已提交</div>}
+			{payload.report_markdown && <Markdown>{payload.report_markdown}</Markdown>}
 		</div>
 	);
 }
 
 export const RunWellInterpretationRenderer: ToolRenderer = {
-	getDisplayName: () => '单井测井解释',
+	getDisplayName: (call) => LABELS[call.name] ?? '测井解释',
 	renderHeader,
 	renderBody,
 };

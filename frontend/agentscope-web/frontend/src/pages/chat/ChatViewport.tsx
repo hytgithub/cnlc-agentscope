@@ -1,6 +1,7 @@
 import type { PermissionContext } from '@agentscope-ai/agentscope/permission';
 import type { TaskContext } from '@agentscope-ai/agentscope/state';
 import {
+	Activity,
 	BookText,
 	ChevronDown,
 	Database,
@@ -23,6 +24,7 @@ import MCPSvg from '@/assets/images/mcp.svg?react';
 import { ChatContent } from '@/components/chat/ChatContent.tsx';
 import { SubagentHitlCard } from '@/components/chat/SubagentHitlCard';
 import { CreateCredentialDialog } from '@/components/dialog/CreateCredentialDialog';
+import { InterpretationPanel } from '@/components/panel/InterpretationPanel';
 import { KnowledgeBasePanel } from '@/components/panel/KnowledgeBasePanel';
 import { McpPanel } from '@/components/panel/McpPanel';
 import { PanelDock, type PanelDescriptor, type PanelKey } from '@/components/panel/PanelDock.tsx';
@@ -49,6 +51,10 @@ import {
 } from '@/components/ui/resizable.tsx';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { useAvailableModels } from '@/hooks/useAvailableModels';
+import {
+	findLatestInterpretationTaskId,
+	useInterpretationTask,
+} from '@/hooks/useInterpretationTask';
 import { useKnowledgeBaseMiddlewareSchema } from '@/hooks/useKnowledgeBaseMiddlewareSchema';
 import { useKnowledgeBases } from '@/hooks/useKnowledgeBases';
 import { useMessages } from '@/hooks/useMessages';
@@ -93,6 +99,7 @@ const KNOWN_PANELS: Record<PanelKey, true> = {
 	permission: true,
 	knowledge: true,
 	team: true,
+	interpretation: true,
 };
 
 /**
@@ -261,6 +268,23 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		onStateUpdated: handleStateUpdated,
 		onSessionUpdated: handleSessionUpdated,
 	});
+	const interpretationTaskId = useMemo(
+		() => findLatestInterpretationTaskId(msgs),
+		[msgs],
+	);
+	const interpretationTask = useInterpretationTask(
+		agentId,
+		sessionId,
+		interpretationTaskId,
+	);
+	// 每个 Session 首次收到可信任务结果时自动打开一次；关闭后轮询不会重开。
+	const interpretationPanelOpenedForRef = useRef<string | null>(null);
+	useEffect(() => {
+		if (!sessionId || !interpretationTaskId) return;
+		if (interpretationPanelOpenedForRef.current === sessionId) return;
+		interpretationPanelOpenedForRef.current = sessionId;
+		setPanelLayout((layout) => openPanelInLayout(layout, 'interpretation'));
+	}, [sessionId, interpretationTaskId]);
 	const {
 		mcps,
 		loading: mcpsLoading,
@@ -464,6 +488,18 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 				icon: <UsersRound className="size-4" />,
 				content: <TeamPanel team={view?.team ?? null} currentSessionId={sessionId} />,
 			},
+			interpretation: {
+				title: '测井解释',
+				icon: <Activity className="size-4" />,
+				content: (
+					<InterpretationPanel
+						agentId={agentId}
+						sessionId={sessionId}
+						task={interpretationTask.data}
+						loading={interpretationTask.isLoading}
+					/>
+				),
+			},
 		}),
 		[
 			t,
@@ -486,6 +522,9 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 			handleKnowledgeConfigChange,
 			sessionId,
 			view,
+			agentId,
+			interpretationTask.data,
+			interpretationTask.isLoading,
 		],
 	);
 
@@ -774,6 +813,14 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 											</Button>
 										</DropdownMenuTrigger>
 										<DropdownMenuContent align="end" className="w-auto">
+											<DropdownMenuCheckboxItem
+												checked={isPanelOpen('interpretation')}
+												onCheckedChange={() => togglePanel('interpretation')}
+												onSelect={(e) => e.preventDefault()}
+											>
+												<Activity />
+												测井解释
+											</DropdownMenuCheckboxItem>
 											<DropdownMenuCheckboxItem
 												checked={isPanelOpen('plan')}
 												onCheckedChange={() => togglePanel('plan')}

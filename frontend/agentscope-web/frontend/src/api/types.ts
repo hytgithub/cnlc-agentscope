@@ -224,6 +224,91 @@ export interface SessionListResponse {
 	total: number;
 }
 
+// ─── CNLC interpretation execution read models ──────────────────────────────
+
+export type InterpretationExecutionStatus =
+	| 'QUEUED'
+	| 'RUNNING'
+	| 'SUCCESS'
+	| 'WARNING'
+	| 'FAILED'
+	| 'BLOCKED'
+	| 'REVIEW_REQUIRED';
+
+export interface InterpretationOverrideView {
+	sampling_interval: number | null;
+	por: number | null;
+	perm: number | null;
+	prediction_model: string | null;
+}
+
+export interface InterpretationExecutionSummary {
+	execution_id: string;
+	sequence: number;
+	execution_status: InterpretationExecutionStatus;
+	workflow_status: string;
+	planning_reason: string;
+	start_step: string | null;
+	source_execution_id: string | null;
+	effective_override: InterpretationOverrideView;
+	input_version_id: string | null;
+	created_at: string;
+	started_at: string | null;
+	finished_at: string | null;
+	error_code: string | null;
+	report_ready: boolean;
+}
+
+export interface InterpretationStageView {
+	stage: 'DATA_DECODE' | 'PREPROCESS' | 'INTERPRET' | 'REPORT';
+	name: string;
+	action: 'RUN' | 'REUSE';
+}
+
+export interface InterpretationStepView {
+	id: string;
+	name: string;
+	status: string;
+	display_status: string;
+	source: string;
+	input_summary: Record<string, unknown>;
+	output_summary: Record<string, unknown>;
+	evidence: string[];
+	warnings: string[];
+}
+
+export interface InterpretationToolRunView {
+	tool_run_id: string;
+	step_id: string;
+	tool_code: string;
+	status: string;
+	execution_mode: string;
+	source: string;
+	started_at: string;
+	finished_at: string | null;
+	error_code: string | null;
+}
+
+export interface InterpretationExecutionView extends InterpretationExecutionSummary {
+	current_step: string | null;
+	completed_steps: string[];
+	reused_steps: string[];
+	stages: InterpretationStageView[];
+	steps: InterpretationStepView[];
+	tool_runs: InterpretationToolRunView[];
+	report_markdown: string | null;
+}
+
+export interface InterpretationTaskView {
+	task_id: string;
+	well_id: string;
+	current_execution_id: string | null;
+	latest_successful_execution_id: string | null;
+	current_input_version_id: string | null;
+	executions: InterpretationExecutionSummary[];
+	current_execution: InterpretationExecutionView | null;
+}
+
 /**
  * Response body for `GET /schedule/{id}/sessions`. Returns plain
  * `SessionRecord[]` (no team / is_running enrichment) because

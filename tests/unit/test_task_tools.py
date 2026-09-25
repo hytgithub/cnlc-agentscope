@@ -90,7 +90,10 @@ async def test_tools_reject_unknown_and_no_effective_change(data_dir):
 async def test_session_factory_keeps_same_session_and_separates_identity(monkeypatch):
     monkeypatch.setenv("CNLC_PERSISTENCE", "memory")
     factory = SessionTaskToolFactory()
+    assert factory.get_existing_runner("user", "agent", "missing") is None
+    assert factory.runners == {}
     first = await factory("user", "agent", "session")
+    assert factory.get_existing_runner("user", "agent", "session") is first[1].runner
     again = await factory("user", "agent", "session")
     assert first[1].runner is again[1].runner
     for identity in [("other", "agent", "session"), ("user", "other", "session"),

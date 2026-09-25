@@ -26,8 +26,12 @@ const renderers: Record<string, ToolRenderer> = {
 	Glob: GlobRenderer,
 	Grep: GrepRenderer,
 	TaskCreate: TaskCreateRenderer,
-	// 测井解释工具使用项目专用渲染器展示 W01-W10 与最终报告。
+	// 五个任务级工具都使用紧凑卡片；持续进度由右侧只读面板展示。
 	run_well_interpretation: RunWellInterpretationRenderer,
+	modify_well_interpretation: RunWellInterpretationRenderer,
+	rerun_well_interpretation: RunWellInterpretationRenderer,
+	get_interpretation_status: RunWellInterpretationRenderer,
+	get_interpretation_report: RunWellInterpretationRenderer,
 };
 
 function getRenderer(toolName: string): ToolRenderer {

@@ -5,6 +5,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
@@ -21,7 +22,7 @@ from agentscope.app.storage import RedisStorage, StorageBase
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.credential import DashScopeCredential
 from agentscope.tool import ToolBase, Toolkit
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio.connection import SSLConnection
@@ -30,6 +31,12 @@ from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispat
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
+from cnlc_agent.demo.read_models import (
+    InterpretationExecutionView,
+    InterpretationTaskView,
+    present_execution_view,
+    present_task_view,
+)
 from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
 
 BACKEND_MODEL_CREDENTIAL_ID = "cnlc-backend-model"
@@ -109,6 +116,13 @@ class SessionTaskToolFactory:
                 self.connections,
             )
         return build_task_tools(self.runners[key])
+
+    def get_existing_runner(
+        self, user_id: str, agent_id: str, session_id: str
+    ) -> TaskCommandRunner | None:
+        """只查找既有会话 runner；只读 API 不得隐式创建会话状态。"""
+
+        return self.runners.get((user_id, agent_id, session_id))
 
     async def start(self) -> None:
         """PostgreSQL 模式启动时回收过期 RUNNING；内存会话没有跨进程状态。"""
@@ -299,6 +313,58 @@ def create_demo_app(
                 backend_credential,
             )
         return await call_next(request)
+
+    def owned_runner(
+        request: Request, agent_id: str, session_id: str, task_id: str
+    ) -> TaskCommandRunner:
+        """用完整会话身份定位任务；所有不匹配统一返回 404，避免泄露存在性。"""
+
+        user_id = request.headers.get("X-User-ID", "")
+        if not user_id:
+            raise HTTPException(status_code=404, detail="TASK_NOT_FOUND")
+        runner = task_tools.get_existing_runner(user_id, agent_id, session_id)
+        if runner is None or task_id not in runner.observed_task_ids:
+            raise HTTPException(status_code=404, detail="TASK_NOT_FOUND")
+        return runner
+
+    @app.get(
+        "/cnlc/interpretation/agents/{agent_id}/sessions/{session_id}/tasks/{task_id}",
+        response_model=InterpretationTaskView,
+    )
+    async def get_interpretation_task(
+        request: Request, agent_id: str, session_id: str, task_id: str
+    ) -> InterpretationTaskView:
+        """读取当前会话拥有的持续任务和执行历史，不触发 Agent 或模型。"""
+
+        runner = owned_runner(request, agent_id, session_id, task_id)
+        with TemporaryDirectory(prefix="cnlc-read-") as directory:
+            async with runner.context(Path(directory)) as service:
+                task = await service.repository.get_task(task_id)
+                if task is None:
+                    raise HTTPException(status_code=404, detail="TASK_NOT_FOUND")
+                return await present_task_view(service.repository, task)
+
+    @app.get(
+        "/cnlc/interpretation/agents/{agent_id}/sessions/{session_id}/tasks/{task_id}"
+        "/executions/{execution_id}",
+        response_model=InterpretationExecutionView,
+    )
+    async def get_interpretation_execution(
+        request: Request,
+        agent_id: str,
+        session_id: str,
+        task_id: str,
+        execution_id: str,
+    ) -> InterpretationExecutionView:
+        """读取指定历史版本；执行标识还必须属于 URL 中的任务。"""
+
+        runner = owned_runner(request, agent_id, session_id, task_id)
+        with TemporaryDirectory(prefix="cnlc-read-") as directory:
+            async with runner.context(Path(directory)) as service:
+                execution = await service.repository.get_execution(execution_id)
+                if execution is None or execution.task_id != task_id:
+                    raise HTTPException(status_code=404, detail="EXECUTION_NOT_FOUND")
+                return await present_execution_view(service.repository, execution)
 
     return app
 
