@@ -18,6 +18,15 @@ class UploadError(ValueError):
     """可安全展示给用户的附件错误，不携带解析器堆栈或原始内容。"""
 
 
+def has_attachment(messages: list[Msg]) -> bool:
+    """只检查当前轮附件形状；包括不支持的媒体，也应交给确定性校验拒绝。"""
+
+    return any(
+        not isinstance(block, TextBlock) or block.text.startswith("[File: ")
+        for message in messages if message.role == "user" for block in message.content
+    )
+
+
 def parse_upload(messages: list[Msg]) -> tuple[MockFixture, str]:
     """从当前轮消息中提取一份 JSON Fixture 和自然语言指令。"""
 

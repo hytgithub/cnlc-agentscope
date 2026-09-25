@@ -3,12 +3,12 @@
 import asyncio
 import base64
 import json
-from types import SimpleNamespace
 
 import httpx
 from agentscope.app.storage import RedisStorage
 from agentscope.event import EventType
 from fakeredis.aioredis import FakeRedis
+from test_task_react import ScriptedTaskModel
 
 from cnlc_agent.demo.agentscope_app import create_demo_app
 
@@ -23,7 +23,7 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
     )
 
     async def offline_shell_model(*args, **kwargs):
-        return SimpleNamespace(model="qwen-plus")
+        return ScriptedTaskModel()
 
     monkeypatch.setattr("agentscope.app._service._chat.get_model", offline_shell_model)
     app = create_demo_app(workspace_dir=tmp_path / "workspaces")
@@ -155,6 +155,44 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                             break
                         await asyncio.sleep(0.01)
                 assert any(report in (m.get_text_content() or "") for m in messages)
+                first = result["metadata"]["result"]
+                # 每轮官方服务重新创建 Agent/Tools，内存仓库仍由同一会话 runner 持有。
+                for text, command in [
+                    ("把孔隙度、渗透率改成0.16", "MODIFY"),
+                    ("给我上一版报告", "GET_REPORT"),
+                    ("现在处理到哪里了？", "STATUS"),
+                ]:
+                    previous_count = sum(m.role == "assistant" for m in messages)
+                    events.clear()
+                    finished.clear()
+                    response = await client.post("/chat/", json={
+                        "agent_id": agent_id, "session_id": session_id,
+                        "input": {
+                            "name": "user", "role": "user",
+                            "content": [{"type": "text", "text": text}],
+                        },
+                    })
+                    assert response.status_code == 200, response.text
+                    await asyncio.wait_for(finished.wait(), 10)
+                    tool_results = [e for e in events if e["type"] == EventType.TOOL_RESULT_END]
+                    assert len(tool_results) == 1
+                    assert tool_results[0]["state"] == "success", tool_results
+                    payload = tool_results[0]["metadata"]["result"]
+                    assert payload["command"] == command
+                    assert payload["task_id"] == first["task_id"]
+                    if command == "MODIFY":
+                        assert payload["reused_steps"] == ["W01", "W02", "W03"]
+                    if command == "GET_REPORT":
+                        assert payload["execution_id"] == first["execution_id"]
+                        assert payload["report_markdown"] == report
+                    async with asyncio.timeout(5):
+                        while True:
+                            messages, _ = await app.state.storage.list_messages(
+                                "upload-test", session_id
+                            )
+                            if sum(m.role == "assistant" for m in messages) > previous_count:
+                                break
+                            await asyncio.sleep(0.01)
             finally:
                 disconnected.set()
                 await asyncio.wait_for(stream, 5)

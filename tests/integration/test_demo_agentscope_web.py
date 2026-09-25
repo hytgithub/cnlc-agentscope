@@ -18,10 +18,12 @@ from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.demo.agentscope_app import (
     BACKEND_MODEL_CREDENTIAL_ID,
+    AgentScopeServiceAdapter,
     create_demo_app,
     demo_agent_tools,
 )
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
+from cnlc_agent.demo.task_tools import ALLOWED_TASK_TOOLS, build_task_tools
 from cnlc_agent.demo.tools import (
     RUN_TOOL_NAME,
     InterpretationToolRunner,
@@ -53,6 +55,11 @@ async def test_tool_reuses_task_service_and_returns_stable_result(data_dir):
     assert "# 虚构演示井 001测井评价报告" in result.report_markdown
     assert "W10" not in result.report_markdown
     assert set(result.model_dump()) == {
+        "command",
+        "effective_override",
+        "input_version_id",
+        "execution_id",
+        "execution_sequence",
         "status",
         "task_id",
         "well_id",
@@ -74,10 +81,10 @@ async def test_demo_agent_registers_and_calls_only_interpretation_tool(data_dir)
         name="ignored",
         system_prompt="ignored",
         model=model,
-        toolkit=Toolkit(tools=[tool]),
+        toolkit=Toolkit(tools=[tool, *build_task_tools()[1:]]),
     )
     schemas = await agent.toolkit.get_tool_schemas()
-    assert [schema["function"]["name"] for schema in schemas] == [RUN_TOOL_NAME]
+    assert {schema["function"]["name"] for schema in schemas} == ALLOWED_TASK_TOOLS
 
     chunks = [
         chunk
@@ -112,9 +119,9 @@ async def test_agent_service_adapter_constructs_offline(tmp_path):
     paths = set(app.openapi()["paths"])
     assert "/health" in paths
     assert "/chat/" in paths
-    assert app.state.custom_agent_cls is LoggingInterpretationDemoAgent
+    assert app.state.custom_agent_cls is AgentScopeServiceAdapter
     tools = await demo_agent_tools("user", "agent", "session")
-    assert [tool.name for tool in tools] == [RUN_TOOL_NAME]
+    assert {tool.name for tool in tools} == ALLOWED_TASK_TOOLS
 
     with TestClient(app, headers={"X-User-ID": "demo-test"}) as client:
         response = client.get("/health")

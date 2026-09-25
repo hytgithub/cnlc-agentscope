@@ -23,7 +23,7 @@ from agentscope.tool import Toolkit
 
 from cnlc_agent.application.bootstrap import build_application
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
-from cnlc_agent.demo.tools import RunWellInterpretationTool
+from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
 from cnlc_agent.demo.uploads import MAX_UPLOAD_BYTES, UploadError, parse_upload
 from cnlc_agent.domain.inputs import fixture_digest
 from cnlc_agent.infrastructure.mock import InMemoryTaskRepository, MockModelGateway
@@ -70,7 +70,7 @@ def demo_agent() -> LoggingInterpretationDemoAgent:
         name="demo",
         system_prompt="",
         model=cast(ChatModelBase, SimpleNamespace(model="qwen-plus")),
-        toolkit=Toolkit(tools=[RunWellInterpretationTool()]),
+        toolkit=Toolkit(tools=build_task_tools()),
     )
 
 
@@ -139,15 +139,16 @@ async def test_upload_persists_normalized_input_before_temporary_file_is_removed
     roots: list[Path] = []
 
     @asynccontextmanager
-    async def shared_runtime(settings, _persistence, _connections):
-        roots.append(settings.mock_data_dir)
+    async def shared_runtime(self, root):
+        roots.append(root)
+        settings = self.settings.model_copy(update={"mock_data_dir": root})
         app = build_application(settings, task_repository=repository)
         try:
             yield app
         finally:
             await app.close()
 
-    monkeypatch.setattr("cnlc_agent.demo.tools.application_runtime", shared_runtime)
+    monkeypatch.setattr(TaskCommandRunner, "context", shared_runtime)
     data = json.loads((data_dir / "WELL_MOCK_001.json").read_bytes())
     del data["well"]["well_id"]
     upload = json.dumps(data).encode()
@@ -258,11 +259,23 @@ async def test_invalid_upload_has_safe_reply_and_does_not_start_workflow(content
     assert "secret-token" not in reply.get_text_content()
 
 
-async def test_no_attachment_prompts_for_file_not_ids():
-    events, reply = await collect_reply(UserMsg(name="user", content="帮我解释一下这口井"))
-    assert "请上传" in reply.get_text_content()
-    assert "well_id" not in reply.get_text_content()
-    assert not any(isinstance(e, ToolCallStartEvent) for e in events)
+async def test_no_attachment_delegates_to_next_handler():
+    from cnlc_agent.demo.upload_reply import UploadInterpretationReply
+
+    agent = demo_agent()
+    middleware = UploadInterpretationReply(agent.toolkit.tool_groups[0].tools[0])
+    message = UserMsg(name="user", content="把孔隙度改成0.16")
+    received = []
+
+    async def next_handler(**kwargs):
+        received.append(kwargs["inputs"])
+        yield message
+
+    result = [event async for event in middleware.on_reply(
+        agent, {"inputs": message}, next_handler
+    )]
+    assert received == [message]
+    assert result == [message]
 
 
 def test_text_attachment_compatibility_and_size_limit(data_dir):
@@ -279,7 +292,7 @@ async def test_raw_service_error_is_not_exposed(data_dir, monkeypatch):
     async def broken(*args, **kwargs):
         raise RuntimeError("sk-private-test-key RAW_MODEL_EXCEPTION https://private")
 
-    monkeypatch.setattr("cnlc_agent.demo.tools.run_uploaded_well", broken)
+    monkeypatch.setattr(TaskCommandRunner, "start_uploaded", broken)
     events, reply = await collect_reply(
         uploaded_message((data_dir / "WELL_MOCK_001.json").read_bytes())
     )

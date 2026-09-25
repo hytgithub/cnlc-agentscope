@@ -1,0 +1,261 @@
+"""会话级任务工具：共享内存仓库，隔离临时输入，保持业务服务资源按调用释放。"""
+
+import asyncio
+import json
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any
+
+from agentscope.message import TextBlock, ToolResultState
+from agentscope.permission import PermissionBehavior, PermissionDecision
+from agentscope.tool import ToolBase, ToolChunk
+from pydantic import ValidationError
+
+from cnlc_agent.application.bootstrap import build_application
+from cnlc_agent.application.commands import (
+    FullRerunCommand,
+    GetReportCommand,
+    GetStatusCommand,
+    ModifyInterpretationCommand,
+    TaskCommandResult,
+    TaskCommands,
+)
+from cnlc_agent.application.runtime import application_runtime
+from cnlc_agent.application.service import InterpretationTaskService
+from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
+from cnlc_agent.demo.tools import DemoToolResult, _demo_result
+from cnlc_agent.domain.errors import ApplicationError
+from cnlc_agent.domain.inputs import InterpretationInputVersion
+from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.override import InterpretationOverride
+from cnlc_agent.infrastructure.mock import (
+    InMemoryStateStore,
+    InMemoryTaskRepository,
+    MockWellRepository,
+)
+
+ALLOWED_TASK_TOOLS = frozenset({
+    "run_well_interpretation", "modify_well_interpretation", "rerun_well_interpretation",
+    "get_interpretation_status", "get_interpretation_report",
+})
+
+
+class TaskCommandRunner:
+    """每个会话独享实例；临时目录每次重建，数据库模式仍走现有 runtime。"""
+
+    def __init__(
+        self, settings: AppSettings | None = None,
+        persistence: PersistenceSettings | None = None,
+    ) -> None:
+        self.settings = settings or AppSettings(mode="demo")
+        self.persistence = persistence or PersistenceSettings()
+        self.repository = InMemoryTaskRepository()
+        self.state_store = InMemoryStateStore()
+        self._lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def context(self, root: Path) -> AsyncIterator[InterpretationTaskService]:
+        """只共享会话内存状态，模型客户端在每个同步命令结束时关闭。"""
+
+        settings = self.settings.model_copy(update={"mock_data_dir": root})
+        connections = ConnectionSettings()
+        if settings.model_provider != "mock" and connections.model_name != "qwen-plus":
+            raise ValueError("AgentScope Demo 的 MODEL_NAME 必须为 qwen-plus")
+        if self.persistence.persistence == "memory":
+            service = build_application(
+                settings, task_repository=self.repository, state_store=self.state_store
+            )
+            try:
+                yield service
+            finally:
+                await service.close()
+        else:
+            async with application_runtime(settings, self.persistence, connections) as service:
+                yield service
+
+    async def run(
+        self, well_id: str, instruction: str = "执行单井测井解释骨架演示"
+    ) -> DemoToolResult:
+        """Fixture 入口也保存 InputVersion，以支持后续受控重跑。"""
+
+        fixture = await MockWellRepository(self.settings.mock_data_dir).load(well_id)
+        return await self.start_uploaded(fixture, instruction)
+
+    async def start_uploaded(self, fixture: MockFixture, instruction: str) -> DemoToolResult:
+        """首轮结果保留原 Demo 展示字段，并增加后续交互所需 Execution 标识。"""
+
+        async with self._lock:
+            with TemporaryDirectory(prefix="cnlc-command-") as directory:
+                root = Path(directory)
+                async with self.context(root) as service:
+                    state, report = await service.run_with_input(
+                        TaskRequest(well_id=fixture.well.well_id, instruction=instruction),
+                        fixture, self.materializer(root),
+                    )
+                    result = _demo_result(state, report)
+                    execution = await service.repository.get_execution(state.workflow_execution_id)
+                    assert execution is not None
+                    result.execution_sequence = execution.sequence
+                    return result
+
+    @staticmethod
+    def materializer(root: Path) -> Callable[[InterpretationInputVersion], Awaitable[None]]:
+        """仅从已校验的 InputVersion 物化数据；不使用上传文件名或旧临时路径。"""
+
+        async def materialize(version: InterpretationInputVersion) -> None:
+            await asyncio.to_thread(
+                (root / f"{version.well_id}.json").write_text,
+                version.payload.model_dump_json(), encoding="utf-8",
+            )
+        return materialize
+
+    async def execute(
+        self, command: GetStatusCommand,
+    ) -> TaskCommandResult:
+        """串行处理本会话命令；不创建后台任务，也不持有跨请求数据库连接。"""
+
+        async with self._lock:
+            with TemporaryDirectory(prefix="cnlc-command-") as directory:
+                root = Path(directory)
+                async with self.context(root) as service:
+                    commands = TaskCommands(service)
+                    if isinstance(command, ModifyInterpretationCommand):
+                        return await commands.modify(command, self.materializer(root))
+                    if isinstance(command, FullRerunCommand):
+                        return await commands.full_rerun(command, self.materializer(root))
+                    if isinstance(command, GetReportCommand):
+                        return await commands.report(command)
+                    return await commands.status(command)
+
+
+_SAFE_ERRORS = {
+    "TASK_NOT_FOUND": "请先上传井资料或开始一次解释任务。",
+    "EXECUTION_NOT_FOUND": "指定执行不存在或不属于当前任务。",
+    "REPORT_NOT_FOUND": "没有符合条件的历史报告。",
+    "REPORT_NOT_READY": "该版本尚无可用报告。",
+    "NO_EFFECTIVE_CHANGE": "参数与当前版本相同，请提供实际变化的参数。",
+    "EMPTY_OVERRIDE": "请明确要修改的参数名称和值。",
+}
+
+
+class TaskCommandTool(ToolBase):
+    """严格 Schema 的任务工具公共错误与响应外壳，不允许任意命令字典。"""
+
+    is_concurrency_safe = False
+    is_read_only = False
+    command_type: type[GetStatusCommand] = GetStatusCommand
+
+    def __init__(self, runner: TaskCommandRunner) -> None:
+        super().__init__()
+        self.runner = runner
+
+    async def check_permissions(self, *_args: Any, **_kwargs: Any) -> PermissionDecision:
+        """用户主动请求的任务操作可直接执行。"""
+
+        return PermissionDecision(
+            behavior=PermissionBehavior.ALLOW, message="执行用户请求的任务操作"
+        )
+
+    async def call(self, *args: Any, **kwargs: Any) -> ToolChunk:
+        """应用异常只输出稳定代码和固定安全文案，绝不输出异常原文。"""
+
+        try:
+            if args:
+                raise ValueError("keyword arguments required")
+            command: GetStatusCommand
+            if self.command_type is ModifyInterpretationCommand:
+                command = ModifyInterpretationCommand(
+                    task_id=kwargs.pop("task_id", ""),
+                    changes=InterpretationOverride.model_validate(kwargs)
+                )
+            else:
+                command = self.command_type.model_validate(kwargs)
+            result = await self.runner.execute(command)
+            payload = result.model_dump(mode="json")
+            return ToolChunk(
+                content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))],
+                state=(
+                    ToolResultState.ERROR
+                    if result.command in {"MODIFY", "FULL_RERUN"}
+                    and result.status not in {"SUCCESS", "WARNING"}
+                    else ToolResultState.SUCCESS
+                ),
+                metadata={"result": payload},
+            )
+        except (ValidationError, ValueError, TypeError):
+            code = "INVALID_COMMAND"
+            message = "参数无效；当前只支持采样间隔、POR、PERM 和预测模型。"
+        except ApplicationError as exc:
+            code = exc.code if exc.code in _SAFE_ERRORS else "TASK_COMMAND_FAILED"
+            message = _SAFE_ERRORS.get(code, "任务操作失败，请检查资料或服务配置。")
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Task command failed: %s", type(exc).__name__)
+            code, message = "TASK_COMMAND_FAILED", "任务操作失败，请检查资料或服务配置。"
+        payload = {"error_code": code, "message": message}
+        return ToolChunk(
+            content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))],
+            state=ToolResultState.ERROR, metadata=payload,
+        )
+
+
+class ModifyWellInterpretationTool(TaskCommandTool):
+    """修改受支持参数，执行范围由确定性计划决定。"""
+
+    name = "modify_well_interpretation"
+    description = "修改已有任务的采样间隔、POR、PERM 或专业预测模型并重跑；至少一个实际变化。"
+    command_type = ModifyInterpretationCommand
+    input_schema = {
+        **InterpretationOverride.model_json_schema(),
+        "properties": {
+            "task_id": GetStatusCommand.model_json_schema()["properties"]["task_id"],
+            **InterpretationOverride.model_json_schema()["properties"],
+        },
+        "required": ["task_id"],
+    }
+
+
+class RerunWellInterpretationTool(TaskCommandTool):
+    """显式全量重跑任务，并保留有效参数。"""
+
+    name = "rerun_well_interpretation"
+    description = "对已有任务全部重新解释一次，保留当前有效参数。"
+    command_type = FullRerunCommand
+    input_schema = FullRerunCommand.model_json_schema()
+
+
+class GetInterpretationStatusTool(TaskCommandTool):
+    """读取持久 Execution 当前状态。"""
+
+    name = "get_interpretation_status"
+    description = "查询已有任务真实保存的执行状态、版本、参数和工具调用统计；当前为同步执行。"
+    is_read_only = True
+    input_schema = GetStatusCommand.model_json_schema()
+
+
+class GetInterpretationReportTool(TaskCommandTool):
+    """读取指定或选定历史版本的原始报告。"""
+
+    name = "get_interpretation_report"
+    description = (
+        "读取已有任务报告，支持 CURRENT、PREVIOUS、LATEST_SUCCESSFUL 或可信 execution_id。"
+    )
+    command_type = GetReportCommand
+    is_read_only = True
+    input_schema = GetReportCommand.model_json_schema()
+
+
+def build_task_tools(runner: TaskCommandRunner | None = None) -> list[ToolBase]:
+    """所有工具共用一个会话 runner，不建立进程全局任务仓库。"""
+
+    from cnlc_agent.demo.tools import RunWellInterpretationTool
+
+    runner = runner if runner is not None else TaskCommandRunner()
+    return [RunWellInterpretationTool(runner), *[
+        tool(runner) for tool in (
+            ModifyWellInterpretationTool, RerunWellInterpretationTool,
+            GetInterpretationStatusTool, GetInterpretationReportTool,
+        )
+    ]]

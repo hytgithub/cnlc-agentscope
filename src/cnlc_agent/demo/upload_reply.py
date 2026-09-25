@@ -32,7 +32,7 @@ from agentscope.tool import ToolResponse
 from agentscope.types import ReplyFinishedReason
 
 from cnlc_agent.demo.tools import RUN_TOOL_NAME, RunWellInterpretationTool
-from cnlc_agent.demo.uploads import UploadError, parse_upload
+from cnlc_agent.demo.uploads import UploadError, has_attachment, parse_upload
 from cnlc_agent.domain.models import JsonObject
 from cnlc_agent.infrastructure.telemetry import event_observer
 
@@ -74,11 +74,14 @@ class UploadInterpretationReply(MiddlewareBase):
     ) -> AsyncGenerator[AgentEvent | Msg, None]:
         """构造并持久化完整 AssistantMsg，同时逐事件推送给前端。"""
 
-        del next_handler
         inputs = input_kwargs.get("inputs")
         messages = (
             [inputs] if isinstance(inputs, Msg) else inputs if isinstance(inputs, list) else []
         )
+        if not has_attachment(messages):
+            async for event in next_handler(**input_kwargs):
+                yield event
+            return
         reply_id, block_id = uuid4().hex, uuid4().hex
         agent.state.reply_id = reply_id
         reply = AssistantMsg(id=reply_id, name=agent.name, content=[])

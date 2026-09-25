@@ -1,4 +1,6 @@
-"""Demo 服务向 AgentScope 暴露的唯一高层业务 Tool。"""
+"""兼容原 Demo 解释入口；会话内后续操作由任务级工具承接。"""
+
+from __future__ import annotations
 
 import asyncio
 import json
@@ -7,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.permission import PermissionBehavior, PermissionDecision
@@ -21,7 +23,11 @@ from cnlc_agent.demo.presentation import DemoStep, present_steps
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
+
+if TYPE_CHECKING:
+    from cnlc_agent.demo.task_tools import TaskCommandRunner
 
 RUN_TOOL_NAME = "run_well_interpretation"
 
@@ -36,6 +42,11 @@ class DemoToolResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    command: Literal["START"] = "START"
+    effective_override: InterpretationOverride
+    input_version_id: str | None
+    execution_id: str
+    execution_sequence: int = 1
     status: StepStatus
     task_id: str
     well_id: str
@@ -77,6 +88,11 @@ class InterpretationToolRunner:
             )
         return _demo_result(state, report_markdown)
 
+    async def start_uploaded(self, fixture: MockFixture, instruction: str) -> DemoToolResult:
+        """旧注入 Runner 保持上传兼容，新会话 Runner 提供共享状态实现。"""
+
+        return await run_uploaded_well(fixture, instruction)
+
     async def run_uploaded(
         self,
         fixture: MockFixture,
@@ -98,6 +114,9 @@ def _demo_result(state: InterpretationState, report_markdown: str) -> DemoToolRe
     """旧入口和上传入口共用相同的可视化结果投影。"""
 
     return DemoToolResult(
+        effective_override=state.effective_override.model_copy(deep=True),
+        input_version_id=state.input_version_id,
+        execution_id=state.workflow_execution_id,
         status=state.status,
         task_id=state.task.task_id,
         well_id=state.task.well_id,
@@ -150,9 +169,6 @@ def _summary(state: InterpretationState) -> str:
     return f"井 {state.task.well_id} 解释任务状态为 {state.status.value}；已完成步骤：{completed}。"
 
 
-_default_runner = InterpretationToolRunner()
-
-
 async def run_well_interpretation(well_id: str) -> dict[str, object]:
     """对指定井执行现有 W01-W10 解释流程并返回摘要和 Markdown 报告。
 
@@ -160,14 +176,14 @@ async def run_well_interpretation(well_id: str) -> dict[str, object]:
         well_id: 井标识，例如 ``WELL_MOCK_001``。
     """
 
-    result = await _default_runner.run(well_id)
+    result = await InterpretationToolRunner().run(well_id)
     return result.model_dump(mode="json")
 
 
 def build_interpretation_tool(
-    runner: InterpretationToolRunner | None = None,
+    runner: InterpretationToolRunner | TaskCommandRunner | None = None,
 ) -> ToolBase:
-    """构造 AgentScope 服务注册的唯一业务 Tool。"""
+    """构造兼容的首轮解释 Tool；完整任务工具集由 build_task_tools 装配。"""
 
     return RunWellInterpretationTool(runner)
 
@@ -195,8 +211,12 @@ class RunWellInterpretationTool(ToolBase):
     is_concurrency_safe = True
     is_read_only = False
 
-    def __init__(self, runner: InterpretationToolRunner | None = None) -> None:
+    def __init__(self, runner: InterpretationToolRunner | TaskCommandRunner | None = None) -> None:
         super().__init__()
+        if runner is None:
+            from cnlc_agent.demo.task_tools import TaskCommandRunner
+
+            runner = TaskCommandRunner()
         self._runner = runner
         self.upload: tuple[MockFixture, str] | None = None
 
@@ -224,7 +244,7 @@ class RunWellInterpretationTool(ToolBase):
     async def _call(self, *args: Any, **kwargs: Any) -> ToolChunk:
         """选择上传 Fixture、默认 Runner 或测试注入 Runner，并统一结果外壳。"""
 
-        if args:
+        if args or set(kwargs) != {"well_id"}:
             raise TypeError("run_well_interpretation 只接受关键字参数")
         well_id = cast(str, kwargs["well_id"])
         if self.upload is not None:
@@ -232,10 +252,8 @@ class RunWellInterpretationTool(ToolBase):
             fixture, instruction = self.upload
             if fixture.well.well_id != well_id:
                 raise ValueError("上传井与任务井标识不一致")
-            result = await run_uploaded_well(fixture, instruction)
+            result = await self._runner.start_uploaded(fixture, instruction)
             payload = result.model_dump(mode="json")
-        elif self._runner is None:
-            payload = await run_well_interpretation(well_id)
         else:
             result = await self._runner.run(well_id)
             payload = result.model_dump(mode="json")

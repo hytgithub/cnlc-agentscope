@@ -2,6 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote, urlsplit
 
 import uvicorn
@@ -16,7 +17,7 @@ from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.storage import RedisStorage, StorageBase
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.credential import DashScopeCredential
-from agentscope.tool import ToolBase
+from agentscope.tool import ToolBase, Toolkit
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +25,7 @@ from redis.asyncio.connection import SSLConnection
 
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
-from cnlc_agent.demo.tools import build_interpretation_tool
+from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
 
 BACKEND_MODEL_CREDENTIAL_ID = "cnlc-backend-model"
 BACKEND_MODEL_OWNER_ID = "__cnlc_backend_model__"
@@ -66,10 +67,49 @@ async def demo_agent_tools(
     agent_id: str,
     session_id: str,
 ) -> list[ToolBase]:
-    """为每个 AgentScope 会话只注册一个高层测井解释业务 Tool。"""
+    """独立调用时创建一组隔离任务工具；HTTP 使用下方应用级会话工厂。"""
 
     del user_id, agent_id, session_id
-    return [build_interpretation_tool()]
+    return build_task_tools()
+
+
+class SessionTaskToolFactory:
+    """应用实例内按完整会话身份隔离 runner，跨 HTTP 请求保留内存任务。"""
+
+    def __init__(self) -> None:
+        self.runners: dict[tuple[str, str, str], TaskCommandRunner] = {}
+
+    async def __call__(self, user_id: str, agent_id: str, session_id: str) -> list[ToolBase]:
+        """工具可每轮重建，只有当前会话的任务仓库被复用。"""
+
+        key = (user_id, agent_id, session_id)
+        if key not in self.runners:
+            self.runners[key] = TaskCommandRunner()
+        return build_task_tools(self.runners[key])
+
+
+class AgentScopeServiceAdapter(LoggingInterpretationDemoAgent):
+    """移除官方服务自动注入的通用工具，再进入严格任务工具校验。"""
+
+    def __init__(self, *, toolkit: Toolkit | None = None, **kwargs: Any) -> None:
+        # 上游 get_toolkit 无开关，固定注入工作区/调度/团队工具；它们不进入业务 Agent。
+        # 只识别上游已知类，其他自定义、MCP 或专业工具必须由父类拒绝。
+        if toolkit and any(
+            group.mcps or group.skills_or_loaders for group in toolkit.tool_groups
+        ):
+            raise ValueError("Demo Agent 不允许注册 MCP 或技能工具")
+        builtins = {
+            "Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "TaskCreate", "TaskGet",
+            "TaskList", "TaskUpdate", "ToolStop", "ScheduleCreate", "ScheduleView",
+            "ScheduleDelete", "ScheduleList", "TeamCreate", "TeamDelete", "TeamSay",
+            "AgentCreate", "AgentInvite",
+        }
+        tools = [
+            tool for group in (toolkit.tool_groups if toolkit else []) for tool in group.tools
+            if not (type(tool).__module__.startswith("agentscope.")
+                    and type(tool).__name__ in builtins)
+        ]
+        super().__init__(toolkit=Toolkit(tools=tools), **kwargs)
 
 
 def _redis_storage(connections: ConnectionSettings) -> RedisStorage:
@@ -138,8 +178,8 @@ def create_demo_app(
         storage=storage,
         message_bus=InMemoryMessageBus(),
         workspace_manager=LocalWorkspaceManager(basedir=str(workspace_dir)),
-        extra_agent_tools=demo_agent_tools,
-        custom_agent_cls=LoggingInterpretationDemoAgent,
+        extra_agent_tools=SessionTaskToolFactory(),
+        custom_agent_cls=AgentScopeServiceAdapter,
         resource_access_policy=BackendModelAccessPolicy(
             enabled=backend_credential is not None,
         ),
