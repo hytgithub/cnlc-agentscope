@@ -19,11 +19,13 @@ from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.models import MockFixture, TaskRequest
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
+from cnlc_agent.domain.tool_run import ToolExecutionMode, ToolRun, ToolRunStatus
 from cnlc_agent.infrastructure.database import (
     ExecutionRow,
     InputVersionRow,
     PostgreSQLTaskRepository,
     TaskRow,
+    ToolRunRow,
 )
 from cnlc_agent.infrastructure.redis_store import RedisInterpretationStateStore
 
@@ -34,6 +36,57 @@ pytestmark = pytest.mark.skipif(
     not (DB_URL and REDIS_URL),
     reason="Set CNLC_TEST_DATABASE_URL and CNLC_TEST_REDIS_URL for real services",
 )
+
+
+async def test_real_tool_run_and_report_survive_new_repository(migrated):
+    """真实 PostgreSQL 上验证 ToolRun 外键、终态、历史报告和新会话读回。"""
+
+    request = TaskRequest(well_id="WELL_MOCK_001")
+    state = InterpretationState(task=request)
+    engine = create_async_engine(DB_URL)
+    new_engine = create_async_engine(DB_URL)
+    try:
+        repository = PostgreSQLTaskRepository(engine)
+        await repository.create(state)
+        record = await repository.create_tool_run(ToolRun(
+            task_id=request.task_id, execution_id=state.workflow_execution_id,
+            step_id="W01", tool_code="get_well_data", execution_mode=ToolExecutionMode.MOCK,
+            source="mock:fixture", input_snapshot={"well_id": request.well_id},
+        ))
+        await repository.finish_tool_run(
+            record.tool_run_id, status=ToolRunStatus.SUCCESS, source="fixture:test",
+            output_snapshot={"status": "SUCCESS", "data_keys": ["well", "raw_data"]},
+        )
+        state.status = StepStatus.SUCCESS
+        await repository.save(state, "first report")
+        second = InterpretationState(task=request)
+        await repository.create_execution(second)
+        second.status = StepStatus.SUCCESS
+        await repository.save(second, "second report")
+        reopened = PostgreSQLTaskRepository(new_engine)
+        runs = await reopened.list_tool_runs(state.workflow_execution_id)
+        assert len(runs) == 1
+        assert runs[0].tool_run_id == record.tool_run_id
+        assert runs[0].status == ToolRunStatus.SUCCESS
+        assert await reopened.get_tool_run(record.tool_run_id) == runs[0]
+        assert await reopened.list_tool_runs(second.workflow_execution_id) == []
+        assert await reopened.get_execution_report(state.workflow_execution_id) == "first report"
+        assert await reopened.get_report(request.task_id) == "second report"
+        assert {fk.column.table.name for fk in ToolRunRow.__table__.foreign_keys} == {
+            "interpretation_task", "interpretation_execution"
+        }
+        with pytest.raises(InfrastructureError) as caught:
+            await reopened.create_tool_run(ToolRun(
+                task_id="other-task", execution_id=state.workflow_execution_id,
+                step_id="W01", tool_code="bad", execution_mode=ToolExecutionMode.MOCK,
+                source="mock:test",
+            ))
+        assert caught.value.code == "TOOL_RUN_EXECUTION_MISMATCH"
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
+        await engine.dispose()
+        await new_engine.dispose()
 
 
 @pytest.fixture(scope="module")

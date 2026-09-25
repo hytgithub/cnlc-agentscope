@@ -19,6 +19,7 @@ from cnlc_agent.domain.inputs import (
 from cnlc_agent.domain.models import JsonObject, MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
+from cnlc_agent.domain.tool_run import ToolRun, ToolRunStatus
 
 
 class FixtureRepository(Protocol):
@@ -98,6 +99,8 @@ class InMemoryTaskRepository:
         self._executions: dict[str, Execution] = {}
         self._task_executions: dict[str, list[str]] = {}
         self._inputs: dict[str, InterpretationInputVersion] = {}
+        self._tool_runs: dict[str, ToolRun] = {}
+        self._execution_tool_runs: dict[str, list[str]] = {}
         self._task_inputs: dict[str, list[str]] = {}
         self._states: dict[str, InterpretationState] = {}
         self.reports: dict[str, str] = {}
@@ -227,6 +230,70 @@ class InMemoryTaskRepository:
             self._executions[item].model_copy(deep=True)
             for item in self._task_executions.get(task_id, [])
         ]
+
+    async def create_tool_run(self, run: ToolRun) -> ToolRun:
+        """只接受已创建 Execution 的真实调用，返回与历史存储隔离的副本。"""
+
+        async with self._lock:
+            run = ToolRun.model_validate(run.model_dump(mode="python"))
+            execution = self._executions.get(run.execution_id)
+            if execution is None or execution.task_id != run.task_id:
+                raise InfrastructureError("TOOL_RUN_EXECUTION_MISMATCH", "工具调用不属于该执行")
+            if run.status != ToolRunStatus.RUNNING:
+                raise InfrastructureError("TOOL_RUN_INVALID_STATUS", "工具调用必须以运行态创建")
+            if run.tool_run_id in self._tool_runs:
+                raise InfrastructureError("TOOL_RUN_EXISTS", "工具调用标识已存在")
+            self._tool_runs[run.tool_run_id] = run.model_copy(deep=True)
+            self._execution_tool_runs.setdefault(run.execution_id, []).append(run.tool_run_id)
+            return run.model_copy(deep=True)
+
+    async def finish_tool_run(
+        self,
+        tool_run_id: str,
+        *,
+        status: ToolRunStatus,
+        source: str,
+        output_snapshot: JsonObject,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> ToolRun:
+        """终态只写一次，不允许改写历史调用结果。"""
+
+        async with self._lock:
+            current = self._tool_runs.get(tool_run_id)
+            if current is None:
+                raise InfrastructureError("TOOL_RUN_NOT_FOUND", "工具调用不存在")
+            if current.status != ToolRunStatus.RUNNING:
+                raise InfrastructureError("TOOL_RUN_ALREADY_FINISHED", "工具调用已结束")
+            if status == ToolRunStatus.RUNNING:
+                raise InfrastructureError("TOOL_RUN_INVALID_STATUS", "结束调用必须使用终态")
+            finished = ToolRun.model_validate({
+                **current.model_dump(mode="python"),
+                "status": status,
+                "source": source,
+                "output_snapshot": output_snapshot,
+                "finished_at": utc_now(),
+                "error_code": error_code,
+                "error_message": error_message,
+            })
+            self._tool_runs[tool_run_id] = finished
+            return finished.model_copy(deep=True)
+
+    async def get_tool_run(self, tool_run_id: str) -> ToolRun | None:
+        run = self._tool_runs.get(tool_run_id)
+        return run.model_copy(deep=True) if run is not None else None
+
+    async def list_tool_runs(self, execution_id: str) -> list[ToolRun]:
+        """创建顺序是本次 Workflow Tool 调用的稳定顺序。"""
+
+        runs = (self._tool_runs[item] for item in self._execution_tool_runs.get(execution_id, []))
+        return [run.model_copy(deep=True) for run in sorted(
+            runs, key=lambda item: (item.started_at, item.tool_run_id)
+        )]
+
+    async def get_execution_report(self, execution_id: str) -> str | None:
+        execution = self._executions.get(execution_id)
+        return execution.markdown if execution is not None else None
 
     async def save_execution_state(self, state: InterpretationState) -> None:
         """仅当前执行可写；后续运行不会改写旧版本。"""

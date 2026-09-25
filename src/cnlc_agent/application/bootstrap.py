@@ -35,7 +35,8 @@ def build_application(
     # 所有 Mock Tool 仍遵循正式 Tool Contract，未来可按名称替换为真实实现。
     repository = MockWellRepository(settings.mock_data_dir)
     telemetry = LoggingTelemetry()
-    caller = ToolCaller(telemetry, settings.tool_timeout_seconds)
+    active_tasks = task_repository if task_repository is not None else InMemoryTaskRepository()
+    caller = ToolCaller(telemetry, settings.tool_timeout_seconds, active_tasks)
     tools: dict[str, Tool] = {"get_well_data": GetWellDataTool(repository)}
     prediction = MockPredictionProvider()
     for name, key in {
@@ -71,7 +72,7 @@ def build_application(
     )
     return InterpretationTaskService(
         MainAgent(workflow, telemetry),
-        task_repository if task_repository is not None else InMemoryTaskRepository(),
+        active_tasks,
         ReportAssembler(settings.report_style),
         telemetry,
         mode=settings.mode,

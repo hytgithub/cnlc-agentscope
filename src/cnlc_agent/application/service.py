@@ -11,6 +11,7 @@ from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import ErrorDetail, MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState, StateChange
+from cnlc_agent.domain.tool_run import ToolRun
 from cnlc_agent.reports.assembler import ReportAssembler
 
 
@@ -32,6 +33,25 @@ class InterpretationTaskService:
         self.telemetry = telemetry
         self.mode = mode
         self.close_callbacks = close_callbacks or []
+
+    async def get_execution_report(self, task_id: str, execution_id: str) -> str:
+        """按所属任务读取历史 Execution 报告，拒绝跨任务访问和未完成版本。"""
+
+        execution = await self.repository.get_execution(execution_id)
+        if execution is None or execution.task_id != task_id:
+            raise InfrastructureError("EXECUTION_NOT_FOUND", "指定执行不属于当前任务")
+        markdown = await self.repository.get_execution_report(execution_id)
+        if not markdown:
+            raise DataError("REPORT_NOT_READY", "执行报告尚未完成")
+        return markdown
+
+    async def list_tool_runs(self, task_id: str, execution_id: str) -> list[ToolRun]:
+        """任务归属在应用层核对，业务查询不依赖聊天上下文。"""
+
+        execution = await self.repository.get_execution(execution_id)
+        if execution is None or execution.task_id != task_id:
+            raise InfrastructureError("EXECUTION_NOT_FOUND", "指定执行不属于当前任务")
+        return await self.repository.list_tool_runs(execution_id)
 
     async def run(self, request: TaskRequest) -> tuple[InterpretationState, str]:
         """创建持续任务及首个执行，保持现有入口返回契约。"""

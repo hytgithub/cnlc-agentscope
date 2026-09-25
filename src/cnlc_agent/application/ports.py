@@ -8,6 +8,7 @@ from cnlc_agent.domain.inputs import InputSource, InterpretationInputVersion
 from cnlc_agent.domain.models import Contract, JsonObject, MockFixture, WellData, WellId
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
+from cnlc_agent.domain.tool_run import ToolRun, ToolRunStatus
 
 
 class WellRepository(Protocol):
@@ -45,6 +46,25 @@ class TaskRepository(Protocol):
     async def get_execution(self, execution_id: str) -> Execution | None: ...
 
     async def list_executions(self, task_id: str) -> list[Execution]: ...
+
+    async def create_tool_run(self, run: ToolRun) -> ToolRun: ...
+
+    async def finish_tool_run(
+        self,
+        tool_run_id: str,
+        *,
+        status: ToolRunStatus,
+        source: str,
+        output_snapshot: JsonObject,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> ToolRun: ...
+
+    async def get_tool_run(self, tool_run_id: str) -> ToolRun | None: ...
+
+    async def list_tool_runs(self, execution_id: str) -> list[ToolRun]: ...
+
+    async def get_execution_report(self, execution_id: str) -> str | None: ...
 
     async def save_execution_state(self, state: InterpretationState) -> None: ...
 

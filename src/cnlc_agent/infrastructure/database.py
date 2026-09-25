@@ -20,6 +20,7 @@ from cnlc_agent.domain.inputs import (
 from cnlc_agent.domain.models import JsonObject, MockFixture, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
+from cnlc_agent.domain.tool_run import ToolExecutionMode, ToolRun, ToolRunStatus
 
 
 class Base(DeclarativeBase):
@@ -96,6 +97,57 @@ class ExecutionRow(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ToolRunRow(Base):
+    """单次 Execution 的专业工具审计行，索引支持按执行顺序查询。"""
+
+    __tablename__ = "interpretation_tool_run"
+
+    tool_run_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("interpretation_task.task_id", ondelete="CASCADE"), nullable=False
+    )
+    execution_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("interpretation_execution.execution_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    step_id: Mapped[str] = mapped_column(String(8), nullable=False)
+    tool_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    input_snapshot: Mapped[JsonObject] = mapped_column(JSONB, nullable=False)
+    output_snapshot: Mapped[JsonObject] = mapped_column(JSONB, nullable=False)
+    source_external_call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+def _as_tool_run(row: ToolRunRow) -> ToolRun:
+    """读回持久审计时重新校验生命周期与字段。"""
+
+    return ToolRun(
+        tool_run_id=row.tool_run_id,
+        task_id=row.task_id,
+        execution_id=row.execution_id,
+        step_id=row.step_id,  # type: ignore[arg-type]
+        tool_code=row.tool_code,
+        status=ToolRunStatus(row.status),
+        execution_mode=ToolExecutionMode(row.execution_mode),
+        source=row.source,
+        input_snapshot=row.input_snapshot,
+        output_snapshot=row.output_snapshot,
+        source_external_call_id=row.source_external_call_id,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+        error_code=row.error_code,
+        error_message=row.error_message,
+    )
+
+
 def _as_execution(row: ExecutionRow) -> Execution:
     """读回时重新校验持久化快照与执行标识的一致性。"""
 
@@ -134,6 +186,121 @@ class PostgreSQLTaskRepository:
 
     def __init__(self, engine: AsyncEngine) -> None:
         self.sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def create_tool_run(self, run: ToolRun) -> ToolRun:
+        """核对执行与任务归属，在单事务中创建 RUNNING 审计行。"""
+
+        try:
+            run = ToolRun.model_validate(run.model_dump(mode="python"))
+            if run.status != ToolRunStatus.RUNNING:
+                raise InfrastructureError("TOOL_RUN_INVALID_STATUS", "工具调用必须以运行态创建")
+            async with self.sessions.begin() as session:
+                execution = await session.get(ExecutionRow, run.execution_id)
+                if execution is None or execution.task_id != run.task_id:
+                    raise InfrastructureError("TOOL_RUN_EXECUTION_MISMATCH", "工具调用不属于该执行")
+                session.add(ToolRunRow(
+                    tool_run_id=run.tool_run_id,
+                    task_id=run.task_id,
+                    execution_id=run.execution_id,
+                    step_id=run.step_id.value,
+                    tool_code=run.tool_code,
+                    status=run.status.value,
+                    execution_mode=run.execution_mode.value,
+                    source=run.source,
+                    input_snapshot=run.input_snapshot,
+                    output_snapshot=run.output_snapshot,
+                    source_external_call_id=run.source_external_call_id,
+                    started_at=run.started_at,
+                    finished_at=None,
+                    error_code=None,
+                    error_message=None,
+                ))
+            return run.model_copy(deep=True)
+        except IntegrityError:
+            raise InfrastructureError("TOOL_RUN_EXISTS", "工具调用标识已存在") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库工具审计创建失败") from None
+
+    async def finish_tool_run(
+        self,
+        tool_run_id: str,
+        *,
+        status: ToolRunStatus,
+        source: str,
+        output_snapshot: JsonObject,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> ToolRun:
+        """行锁保障一次终结；审计记录的身份、起点和输入不可改写。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                row = await session.scalar(
+                    select(ToolRunRow)
+                    .where(ToolRunRow.tool_run_id == tool_run_id)
+                    .with_for_update()
+                )
+                if row is None:
+                    raise InfrastructureError("TOOL_RUN_NOT_FOUND", "工具调用不存在")
+                if row.status != ToolRunStatus.RUNNING.value:
+                    raise InfrastructureError("TOOL_RUN_ALREADY_FINISHED", "工具调用已结束")
+                if status == ToolRunStatus.RUNNING:
+                    raise InfrastructureError("TOOL_RUN_INVALID_STATUS", "结束调用必须使用终态")
+                finished = ToolRun.model_validate({
+                    **_as_tool_run(row).model_dump(mode="python"),
+                    "status": status,
+                    "source": source,
+                    "output_snapshot": output_snapshot,
+                    "finished_at": utc_now(),
+                    "error_code": error_code,
+                    "error_message": error_message,
+                })
+                row.status = finished.status.value
+                row.source = finished.source
+                row.output_snapshot = finished.output_snapshot
+                row.finished_at = finished.finished_at
+                row.error_code = finished.error_code
+                row.error_message = finished.error_message
+            return finished
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库工具审计结束失败") from None
+
+    async def get_tool_run(self, tool_run_id: str) -> ToolRun | None:
+        try:
+            async with self.sessions() as session:
+                row = await session.get(ToolRunRow, tool_run_id)
+                return _as_tool_run(row) if row is not None else None
+        except (ValidationError, ValueError):
+            raise InfrastructureError("INVALID_STORED_TOOL_RUN", "数据库工具审计结构无效") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_READ_FAILED", "数据库工具审计读取失败") from None
+
+    async def list_tool_runs(self, execution_id: str) -> list[ToolRun]:
+        try:
+            async with self.sessions() as session:
+                rows = (await session.scalars(
+                    select(ToolRunRow).where(ToolRunRow.execution_id == execution_id)
+                    .order_by(ToolRunRow.started_at, ToolRunRow.tool_run_id)
+                )).all()
+                return [_as_tool_run(row) for row in rows]
+        except (ValidationError, ValueError):
+            raise InfrastructureError("INVALID_STORED_TOOL_RUN", "数据库工具审计结构无效") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError(
+                "DATABASE_READ_FAILED", "数据库工具审计列表读取失败"
+            ) from None
+
+    async def get_execution_report(self, execution_id: str) -> str | None:
+        """历史报告直接读取 Execution.markdown，不依赖当前任务视图。"""
+
+        try:
+            async with self.sessions() as session:
+                result = await session.scalar(
+                    select(ExecutionRow.markdown).where(ExecutionRow.execution_id == execution_id)
+                )
+                return str(result) if result is not None else None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_READ_FAILED", "数据库执行报告读取失败") from None
 
     async def create_task(self, state: InterpretationState) -> None:
         """创建持续任务，保留旧版非空快照列。"""

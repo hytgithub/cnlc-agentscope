@@ -6,6 +6,7 @@ from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import ToolError
 from cnlc_agent.domain.models import JsonObject
 from cnlc_agent.domain.override import ExecutionContext
+from cnlc_agent.domain.tool_run import ToolExecutionMode
 from cnlc_agent.infrastructure.mock import FixtureRepository
 from cnlc_agent.tools.contracts import ToolInput, ToolOutput
 
@@ -14,6 +15,8 @@ class GetWellDataTool:
     """W01 井资料加载 Tool 的 Mock 实现。"""
 
     name = "get_well_data"
+    execution_mode = ToolExecutionMode.MOCK
+    source = "mock:fixture"
 
     def __init__(self, repository: WellRepository) -> None:
         self.repository = repository
@@ -35,6 +38,9 @@ class GetWellDataTool:
 
 class MockResultTool:
     """一个实例对应一个命名能力和一个 Fixture 结果键。"""
+
+    execution_mode = ToolExecutionMode.MOCK
+    source = "mock:fixture"
 
     def __init__(
         self,

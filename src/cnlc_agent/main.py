@@ -26,9 +26,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="测井解释 Mock 业务运行与历史查询")
     parser.add_argument("--well-id", default="WELL_MOCK_001")
     parser.add_argument("--task-id", help="查询历史任务及报告，不重新执行")
+    parser.add_argument("--execution-id", help="与 --task-id 同用，读取指定历史执行版本")
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    if args.execution_id and not args.task_id:
+        parser.error("--execution-id requires --task-id")
     try:
         overrides = {}
         if args.data_dir is not None:
@@ -50,6 +53,13 @@ def main() -> int:
 
             async with application_runtime(settings) as app:
                 if args.task_id:
+                    if args.execution_id:
+                        execution = await app.repository.get_execution(args.execution_id)
+                        historical_report = await app.get_execution_report(
+                            args.task_id, args.execution_id
+                        )
+                        assert execution is not None
+                        return execution.state_snapshot, historical_report
                     stored = await app.repository.get(args.task_id)
                     if stored is None:
                         raise ApplicationError("TASK_NOT_FOUND", "找不到历史任务")
@@ -61,10 +71,14 @@ def main() -> int:
 
         state, markdown = asyncio.run(execute())
         # 非安全任务标识使用散列目录名，避免路径穿越和非法文件名。
+        raw_output_name = (
+            f"{state.task.task_id}-{state.workflow_execution_id}"
+            if args.execution_id else state.task.task_id
+        )
         output_name = (
-            state.task.task_id
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", state.task.task_id)
-            else sha256(state.task.task_id.encode()).hexdigest()
+            raw_output_name
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", raw_output_name)
+            else sha256(raw_output_name.encode()).hexdigest()
         )
         output = settings.output_dir / output_name
         output.mkdir(parents=True, exist_ok=False)
