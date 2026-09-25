@@ -3,6 +3,7 @@
 from contextlib import AbstractContextManager
 from typing import Protocol
 
+from cnlc_agent.domain.execution import Execution, ExecutionTrigger, InterpretationTask
 from cnlc_agent.domain.models import Contract, JsonObject, WellData, WellId
 from cnlc_agent.domain.state import InterpretationState
 
@@ -14,8 +15,30 @@ class WellRepository(Protocol):
 
 
 class TaskRepository(Protocol):
-    """解释任务及最终报告的长期存储端口。"""
+    """持续任务、版本化执行与旧版当前快照读取的长期存储端口。"""
 
+    async def create_task(self, state: InterpretationState) -> None: ...
+
+    async def get_task(self, task_id: str) -> InterpretationTask | None: ...
+
+    async def create_execution(
+        self,
+        state: InterpretationState,
+        trigger_type: ExecutionTrigger = "RERUN",
+        sequence: int | None = None,
+    ) -> Execution: ...
+
+    async def get_execution(self, execution_id: str) -> Execution | None: ...
+
+    async def list_executions(self, task_id: str) -> list[Execution]: ...
+
+    async def save_execution_state(self, state: InterpretationState) -> None: ...
+
+    async def save_execution_report(self, execution_id: str, markdown: str) -> None: ...
+
+    async def set_current_execution(self, task_id: str, execution_id: str) -> None: ...
+
+    # 旧接口保持 CLI、CheckpointStore 和 run_well_interpretation 的当前版本语义。
     async def create(self, state: InterpretationState) -> None: ...
 
     async def get_report(self, task_id: str) -> str | None: ...

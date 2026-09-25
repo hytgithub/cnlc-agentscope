@@ -8,8 +8,10 @@ from typing import Protocol
 from pydantic import ValidationError as SchemaError
 
 from cnlc_agent.application.ports import ModelRequest
+from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import DataError, InfrastructureError, ModelError
-from cnlc_agent.domain.models import JsonObject, MockFixture, TaskRequest
+from cnlc_agent.domain.execution import Execution, ExecutionTrigger, InterpretationTask
+from cnlc_agent.domain.models import JsonObject, MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.state import InterpretationState
 
 
@@ -82,23 +84,204 @@ class InMemoryStateStore:
 
 
 class InMemoryTaskRepository:
-    """仅供 Demo/测试；进程退出后任务状态和报告全部丢失。"""
+    """仅供 Demo/测试；与 PostgreSQL 使用相同的 Task/Execution 版本语义。"""
 
     def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._tasks: dict[str, InterpretationTask] = {}
+        self._executions: dict[str, Execution] = {}
+        self._task_executions: dict[str, list[str]] = {}
         self._states: dict[str, InterpretationState] = {}
         self.reports: dict[str, str] = {}
 
+    async def create_task(self, state: InterpretationState) -> None:
+        """保留旧当前快照读接口，同时建立持续任务。"""
+
+        async with self._lock:
+            task_id = state.task.task_id
+            if task_id in self._tasks:
+                raise InfrastructureError("TASK_EXISTS", "任务标识已存在，请创建新任务")
+            self._tasks[task_id] = InterpretationTask(
+                task_id=task_id,
+                well_id=state.task.well_id,
+                created_at=state.created_at,
+                updated_at=state.updated_at,
+            )
+            self._states[task_id] = state.model_copy(deep=True)
+            self.reports[task_id] = ""
+            self._task_executions[task_id] = []
+
+    async def get_task(self, task_id: str) -> InterpretationTask | None:
+        task = self._tasks.get(task_id)
+        return task.model_copy(deep=True) if task is not None else None
+
+    async def create_execution(
+        self,
+        state: InterpretationState,
+        trigger_type: ExecutionTrigger = "RERUN",
+        sequence: int | None = None,
+    ) -> Execution:
+        """锁内分配序号并创建执行，随后才移动当前指针。"""
+
+        async with self._lock:
+            task_id = state.task.task_id
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+            if task.well_id != state.task.well_id:
+                raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+            execution_id = state.workflow_execution_id
+            if execution_id in self._executions:
+                raise InfrastructureError("EXECUTION_EXISTS", "执行标识已存在")
+            existing = [self._executions[item].sequence for item in self._task_executions[task_id]]
+            next_sequence = max(existing, default=0) + 1 if sequence is None else sequence
+            if next_sequence < 1 or next_sequence in existing:
+                raise InfrastructureError("EXECUTION_SEQUENCE_EXISTS", "任务执行序号已存在或无效")
+            now = utc_now()
+            execution = Execution(
+                execution_id=execution_id,
+                task_id=task_id,
+                sequence=next_sequence,
+                status=state.status,
+                state_snapshot=state.model_copy(deep=True),
+                trigger_type=trigger_type,
+                created_at=now,
+                updated_at=now,
+            )
+            self._executions[execution_id] = execution
+            self._task_executions[task_id].append(execution_id)
+            task.current_execution_id = execution_id
+            task.updated_at = now
+            self._states[task_id] = state.model_copy(deep=True)
+            self.reports[task_id] = ""
+            return execution.model_copy(deep=True)
+
+    async def get_execution(self, execution_id: str) -> Execution | None:
+        execution = self._executions.get(execution_id)
+        return execution.model_copy(deep=True) if execution is not None else None
+
+    async def list_executions(self, task_id: str) -> list[Execution]:
+        return [
+            self._executions[item].model_copy(deep=True)
+            for item in self._task_executions.get(task_id, [])
+        ]
+
+    async def save_execution_state(self, state: InterpretationState) -> None:
+        """仅当前执行可写；后续运行不会改写旧版本。"""
+
+        async with self._lock:
+            task_id = state.task.task_id
+            execution_id = state.workflow_execution_id
+            task = self._tasks.get(task_id)
+            execution = self._executions.get(execution_id)
+            if task is None or execution is None or execution.task_id != task_id:
+                raise InfrastructureError("EXECUTION_NOT_FOUND", "执行尚未创建")
+            if task.current_execution_id != execution_id:
+                raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不可写入当前快照")
+            if task.well_id != state.task.well_id:
+                raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+            execution.state_snapshot = state.model_copy(deep=True)
+            execution.status = state.status
+            execution.updated_at = utc_now()
+            self._states[task_id] = state.model_copy(deep=True)
+            task.updated_at = execution.updated_at
+
+    async def save_execution_report(self, execution_id: str, markdown: str) -> None:
+        """报告写入当前 Execution，成功指针只在报告形成后移动。"""
+
+        async with self._lock:
+            execution = self._executions.get(execution_id)
+            if execution is None:
+                raise InfrastructureError("EXECUTION_NOT_FOUND", "执行尚未创建")
+            task = self._tasks[execution.task_id]
+            if task.current_execution_id != execution_id:
+                raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不可改写报告")
+            execution.markdown = markdown
+            execution.updated_at = utc_now()
+            self.reports[execution.task_id] = markdown
+            task.updated_at = execution.updated_at
+            if markdown and execution.status in {StepStatus.SUCCESS, StepStatus.WARNING}:
+                task.latest_successful_execution_id = execution_id
+
+    async def set_current_execution(self, task_id: str, execution_id: str) -> None:
+        """仅允许切换到属于该任务的已存在版本。"""
+
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            execution = self._executions.get(execution_id)
+            if task is None:
+                raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+            if execution is None or execution.task_id != task_id:
+                raise InfrastructureError("EXECUTION_NOT_FOUND", "执行尚未创建")
+            current = self._executions.get(task.current_execution_id or "")
+            if current is not None and execution.sequence < current.sequence:
+                raise InfrastructureError("EXECUTION_NOT_LATEST", "不能将历史执行设为当前版本")
+            task.current_execution_id = execution_id
+            task.updated_at = utc_now()
+            self._states[task_id] = execution.state_snapshot.model_copy(deep=True)
+            self.reports[task_id] = execution.markdown
+
     async def create(self, state: InterpretationState) -> None:
-        if state.task.task_id in self._states:
-            raise InfrastructureError("TASK_EXISTS", "任务标识已存在，请创建新任务")
-        await self.save(state, "")
+        """首个任务与执行一起建立，避免部分创建。"""
+
+        async with self._lock:
+            task_id = state.task.task_id
+            execution_id = state.workflow_execution_id
+            if task_id in self._tasks:
+                raise InfrastructureError("TASK_EXISTS", "任务标识已存在，请创建新任务")
+            if execution_id in self._executions:
+                raise InfrastructureError("EXECUTION_EXISTS", "执行标识已存在")
+            now = utc_now()
+            task = InterpretationTask(
+                task_id=task_id,
+                well_id=state.task.well_id,
+                current_execution_id=execution_id,
+                created_at=state.created_at,
+                updated_at=now,
+            )
+            execution = Execution(
+                execution_id=execution_id,
+                task_id=task_id,
+                sequence=1,
+                status=state.status,
+                state_snapshot=state.model_copy(deep=True),
+                trigger_type="INITIAL",
+                created_at=state.created_at,
+                updated_at=now,
+            )
+            self._tasks[task_id] = task
+            self._executions[execution_id] = execution
+            self._task_executions[task_id] = [execution_id]
+            self._states[task_id] = state.model_copy(deep=True)
+            self.reports[task_id] = ""
 
     async def get_report(self, task_id: str) -> str | None:
         return self.reports.get(task_id)
 
     async def save(self, state: InterpretationState, markdown: str) -> None:
-        self._states[state.task.task_id] = state.model_copy(deep=True)
-        self.reports[state.task.task_id] = markdown
+        """与数据库适配器一样原子更新当前执行及兼容视图。"""
+
+        async with self._lock:
+            task_id = state.task.task_id
+            execution_id = state.workflow_execution_id
+            task = self._tasks.get(task_id)
+            execution = self._executions.get(execution_id)
+            if task is None or execution is None or execution.task_id != task_id:
+                raise InfrastructureError("EXECUTION_NOT_FOUND", "执行尚未创建")
+            if task.current_execution_id != execution_id:
+                raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不可写入当前快照")
+            if task.well_id != state.task.well_id:
+                raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+            now = utc_now()
+            execution.state_snapshot = state.model_copy(deep=True)
+            execution.status = state.status
+            execution.markdown = markdown
+            execution.updated_at = now
+            self._states[task_id] = state.model_copy(deep=True)
+            self.reports[task_id] = markdown
+            task.updated_at = now
+            if markdown and state.status in {StepStatus.SUCCESS, StepStatus.WARNING}:
+                task.latest_successful_execution_id = execution_id
 
     async def get(self, task_id: str) -> InterpretationState | None:
         state = self._states.get(task_id)

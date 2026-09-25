@@ -30,7 +30,7 @@ class InterpretationTaskService:
         self.close_callbacks = close_callbacks or []
 
     async def run(self, request: TaskRequest) -> tuple[InterpretationState, str]:
-        """创建任务、执行主流程，并持久化最终状态和 Markdown 报告。"""
+        """创建持续任务及首个执行，保持现有入口返回契约。"""
 
         state = InterpretationState(task=request, mode=self.mode)
         with self.telemetry.span(
@@ -41,6 +41,25 @@ class InterpretationTaskService:
             },
         ):
             await self.repository.create(state)
+        return await self._run_execution(request, state)
+
+    async def rerun(self, request: TaskRequest) -> tuple[InterpretationState, str]:
+        """在已有任务下创建新执行；Task 01 仍完整运行 W01～W10。"""
+
+        task = await self.repository.get_task(request.task_id)
+        if task is None:
+            raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+        if task.well_id != request.well_id:
+            raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+        state = InterpretationState(task=request, mode=self.mode)
+        await self.repository.create_execution(state, "RERUN")
+        return await self._run_execution(request, state)
+
+    async def _run_execution(
+        self, request: TaskRequest, state: InterpretationState
+    ) -> tuple[InterpretationState, str]:
+        """共用原有业务主链；状态与报告由仓库按 Execution ID 保存。"""
+
         try:
             state = await self.main_agent.run(request, state=state)
         except InfrastructureError as exc:
@@ -53,7 +72,8 @@ class InterpretationTaskService:
                     "code": exc.code,
                 },
             )
-            state = await self.repository.get(request.task_id) or state
+            execution = await self.repository.get_execution(state.workflow_execution_id)
+            state = execution.state_snapshot if execution is not None else state
             previous_status = state.status
             state.status = StepStatus.FAILED
             state.updated_at = utc_now()

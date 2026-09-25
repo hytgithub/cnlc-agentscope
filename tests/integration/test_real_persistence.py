@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
+from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.models import TaskRequest
 from cnlc_agent.domain.state import InterpretationState
@@ -148,4 +149,53 @@ async def test_real_failed_workflow_report_is_durable(migrated):
         async with engine.begin() as connection:
             await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
         await client.aclose()
+        await engine.dispose()
+
+
+async def test_postgresql_execution_versions_match_memory_semantics(migrated):
+    """真实 PostgreSQL 验证内存仓库相同的多版本、指针及冲突契约。"""
+
+    request = TaskRequest(well_id="WELL_1")
+    engine = create_async_engine(DB_URL)
+    repository = PostgreSQLTaskRepository(engine)
+    first = InterpretationState(task=request)
+    try:
+        with pytest.raises(InfrastructureError) as caught:
+            await repository.create_execution(first)
+        assert caught.value.code == "TASK_NOT_FOUND"
+        await repository.create(first)
+        first.status = StepStatus.SUCCESS
+        first.warnings.append("first")
+        await repository.save(first, "report one")
+        with pytest.raises(InfrastructureError) as caught:
+            await repository.create_execution(first)
+        assert caught.value.code == "EXECUTION_EXISTS"
+
+        second = InterpretationState(task=request)
+        with pytest.raises(InfrastructureError) as caught:
+            await repository.create_execution(second, sequence=1)
+        assert caught.value.code == "EXECUTION_SEQUENCE_EXISTS"
+        created = await repository.create_execution(second)
+        assert created.sequence == 2
+        second.status = StepStatus.FAILED
+        second.warnings.append("second")
+        await repository.save(second, "report two")
+        versions = await repository.list_executions(request.task_id)
+        assert [item.sequence for item in versions] == [1, 2]
+        assert versions[0].state_snapshot.warnings == ["first"]
+        assert versions[0].markdown == "report one"
+        assert versions[1].state_snapshot.warnings == ["second"]
+        assert versions[1].markdown == "report two"
+        task = await repository.get_task(request.task_id)
+        assert task is not None
+        assert task.current_execution_id == second.workflow_execution_id
+        assert task.latest_successful_execution_id == first.workflow_execution_id
+        with pytest.raises(InfrastructureError) as caught:
+            await repository.set_current_execution(request.task_id, first.workflow_execution_id)
+        assert caught.value.code == "EXECUTION_NOT_LATEST"
+        assert await repository.get(request.task_id) == second
+        assert await repository.get_report(request.task_id) == "report two"
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
         await engine.dispose()

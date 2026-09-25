@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -106,6 +107,102 @@ async def test_duplicate_task_is_rejected_without_overwriting(data_dir):
     assert caught.value.code == "TASK_EXISTS"
     assert await app.repository.get(request.task_id) == state
     assert await app.repository.get_report(request.task_id) == report
+
+
+async def test_execution_versions_keep_independent_state_and_report():
+    repository = InMemoryTaskRepository()
+    request = TaskRequest(well_id="WELL_1")
+    first = InterpretationState(task=request)
+    await repository.create(first)
+    first.status = StepStatus.SUCCESS
+    first.warnings.append("first version")
+    await repository.save(first, "report one")
+    first_saved = await repository.get_execution(first.workflow_execution_id)
+    assert first_saved is not None
+
+    second = InterpretationState(task=request)
+    created = await repository.create_execution(second, "RERUN")
+    assert created.sequence == 2
+    task = await repository.get_task(request.task_id)
+    assert task is not None
+    assert task.current_execution_id == second.workflow_execution_id
+    assert task.latest_successful_execution_id == first.workflow_execution_id
+    second.status = StepStatus.FAILED
+    second.warnings.append("second version")
+    await repository.save(second, "report two")
+
+    versions = await repository.list_executions(request.task_id)
+    assert [item.sequence for item in versions] == [1, 2]
+    assert [item.trigger_type for item in versions] == ["INITIAL", "RERUN"]
+    assert versions[0] == first_saved
+    assert versions[0].state_snapshot.warnings == ["first version"]
+    assert versions[0].markdown == "report one"
+    assert versions[1].state_snapshot.warnings == ["second version"]
+    assert versions[1].markdown == "report two"
+    with pytest.raises(InfrastructureError) as caught:
+        await repository.save(first, "overwrite")
+    assert caught.value.code == "EXECUTION_NOT_CURRENT"
+    with pytest.raises(InfrastructureError) as caught:
+        await repository.set_current_execution(request.task_id, first.workflow_execution_id)
+    assert caught.value.code == "EXECUTION_NOT_LATEST"
+    assert (await repository.get_execution(first.workflow_execution_id)) == first_saved
+    assert await repository.get(request.task_id) == second
+    assert await repository.get_report(request.task_id) == "report two"
+    task = await repository.get_task(request.task_id)
+    assert task is not None
+    assert task.latest_successful_execution_id == first.workflow_execution_id
+
+
+async def test_execution_creation_conflicts_and_missing_task():
+    repository = InMemoryTaskRepository()
+    request = TaskRequest(well_id="WELL_1")
+    first = InterpretationState(task=request)
+    with pytest.raises(InfrastructureError) as caught:
+        await repository.create_execution(first)
+    assert caught.value.code == "TASK_NOT_FOUND"
+
+    await repository.create(first)
+    with pytest.raises(InfrastructureError) as caught:
+        await repository.create_execution(first)
+    assert caught.value.code == "EXECUTION_EXISTS"
+
+    second = InterpretationState(task=request)
+    with pytest.raises(InfrastructureError) as caught:
+        await repository.create_execution(second, sequence=1)
+    assert caught.value.code == "EXECUTION_SEQUENCE_EXISTS"
+    task = await repository.get_task(request.task_id)
+    assert task is not None
+    assert task.current_execution_id == first.workflow_execution_id
+    assert len(await repository.list_executions(request.task_id)) == 1
+
+
+async def test_concurrent_execution_creation_allocates_distinct_sequences():
+    repository = InMemoryTaskRepository()
+    request = TaskRequest(well_id="WELL_1")
+    await repository.create(InterpretationState(task=request))
+    states = [InterpretationState(task=request) for _ in range(10)]
+    created = await asyncio.gather(*(repository.create_execution(state) for state in states))
+    assert sorted(item.sequence for item in created) == list(range(2, 12))
+    assert len({item.execution_id for item in created}) == 10
+
+
+async def test_service_rerun_creates_new_complete_execution(data_dir):
+    app = build_application(AppSettings(mock_data_dir=data_dir, _env_file=None))
+    request = TaskRequest(well_id="WELL_MOCK_001")
+    first_state, first_report = await app.run(request)
+    second_state, second_report = await app.rerun(request)
+    assert first_state.workflow_execution_id != second_state.workflow_execution_id
+    assert len(first_state.completed_steps) == len(second_state.completed_steps) == 10
+    versions = await app.repository.list_executions(request.task_id)
+    assert [item.sequence for item in versions] == [1, 2]
+    assert versions[0].state_snapshot == first_state
+    assert versions[0].markdown == first_report
+    assert versions[1].state_snapshot == second_state
+    assert versions[1].markdown == second_report
+    task = await app.repository.get_task(request.task_id)
+    assert task is not None
+    assert task.current_execution_id == second_state.workflow_execution_id
+    assert task.latest_successful_execution_id == second_state.workflow_execution_id
 
 
 async def test_sql_errors_are_sanitized():
