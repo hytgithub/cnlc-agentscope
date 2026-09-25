@@ -18,14 +18,14 @@ class MockPredictionProvider:
     """只回显有效参数和来源，不按模型 ID 人为改变 Fixture 的专业数值。"""
 
     async def describe(self, context: ExecutionContext) -> JsonObject:
-        """返回独立元数据副本，明确参数已传播而专业结果未复算。"""
+        """返回预测上下文来源；专业结果来源由读取 Fixture 的 Tool 声明。"""
 
         return {
             "execution_id": context.execution_id,
             "input_version_id": context.input_version_id,
             "effective_parameters": context.effective_override.model_dump(mode="json"),
             "prediction_model": context.effective_override.prediction_model,
-            "source": "mock:prediction",
+            "prediction_source": "mock:prediction",
             "is_mock": True,
             "parameter_propagated": True,
             "professionally_recalculated": False,

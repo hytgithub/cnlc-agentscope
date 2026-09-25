@@ -84,6 +84,9 @@ async def test_multiround_parameters_reach_tools_models_and_metadata(data_dir, m
             assert output.metadata["execution_id"] == state.workflow_execution_id
             assert output.metadata["effective_parameters"] == expected.model_dump(mode="json")
             assert output.metadata["prediction_model"] == expected.prediction_model
+            assert output.metadata["source"] == "mock:fixture"
+            assert output.metadata["prediction_source"] == "mock:prediction"
+            assert output.metadata["parameter_propagated"] is True
             assert output.metadata["is_mock"] is True
             assert output.metadata["professionally_recalculated"] is False
             assert output.data["is_mock"] is True

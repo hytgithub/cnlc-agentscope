@@ -94,6 +94,33 @@ async def test_planned_executions_persist_only_physically_called_tools(data_dir)
     assert await app.repository.get_report(request.task_id) == report
 
 
+async def test_prediction_context_does_not_replace_fixture_provenance(data_dir):
+    """默认及切换模型后的审计同时保留结果来源、预测来源与未复算标记。"""
+
+    app, request, initial, _, materialize = await seeded(data_dir)
+    changed, _ = await app.rerun_planned(
+        request, changes=InterpretationOverride(prediction_model="prediction-v2"),
+        materialize=materialize,
+    )
+    for state, expected_model in [(initial, None), (changed, "prediction-v2")]:
+        runs = await app.list_tool_runs(request.task_id, state.workflow_execution_id)
+        expected_tools = ALL_TOOLS if state is initial else INTERPRET_TOOLS
+        assert [run.tool_code for run in runs] == expected_tools
+        for run in runs:
+            if run.tool_code == "get_well_data":
+                continue
+            assert run.execution_mode == ToolExecutionMode.MOCK
+            assert run.source == "mock:fixture"
+            metadata = run.output_snapshot["metadata"]
+            assert metadata["source"] == run.source
+            assert metadata["fixture_source"]
+            assert metadata["prediction_source"] == "mock:prediction"
+            assert metadata["prediction_model"] == expected_model
+            assert metadata["parameter_propagated"] is True
+            assert metadata["professionally_recalculated"] is False
+            assert metadata["is_mock"] is True
+
+
 async def test_workflow_tool_failure_persists_failed_run_without_changing_business_error(
     data_dir, fixture_data
 ):

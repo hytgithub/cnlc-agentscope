@@ -22,7 +22,7 @@ BULK_FIELDS = {
 }
 METADATA_KEYS = {
     "is_mock", "source", "fixture_source", "execution_id", "input_version_id",
-    "prediction_model", "effective_parameters", "parameter_propagated",
+    "prediction_model", "prediction_source", "effective_parameters", "parameter_propagated",
     "professionally_recalculated", "preprocessing",
 }
 
@@ -81,7 +81,9 @@ def tool_output_snapshot(
         "data_keys": bounded(list(data)),
         "result_keys": bounded(list(result)) if isinstance(result, dict) else [],
         "warnings": bounded(warnings),
-        "metadata": bounded(
-            {key: value for key, value in metadata.items() if key in METADATA_KEYS}
-        ),
+        # 顶层字段由固定白名单限界，避免来源和未复算标记因插入顺序被截断。
+        # 字段值从深度 1 开始处理，沿用原有脱敏、长度及嵌套深度限制。
+        "metadata": {
+            key: bounded(value, 1) for key, value in metadata.items() if key in METADATA_KEYS
+        },
     }

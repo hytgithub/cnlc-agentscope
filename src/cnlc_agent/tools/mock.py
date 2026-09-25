@@ -63,6 +63,8 @@ class MockResultTool:
             raise ToolError("MOCK_TOOL_RESULT_MISSING", f"缺少演示工具结果：{self.result_key}")
         context = ExecutionContext.model_validate(request.parameters)
         metadata = await self.prediction.describe(context)
+        # 专业数值实际来自 Fixture，预测上下文不能覆盖结果来源。
+        metadata["source"] = self.source
         metadata["fixture_source"] = result.source
         # 修改返回副本的来源标签；预设物性、Sw、岩性、层段数值保持原样。
         result = result.model_copy(deep=True)
