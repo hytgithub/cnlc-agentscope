@@ -2,6 +2,7 @@ from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from cnlc_agent.agents.main_agent import MainAgent
+from cnlc_agent.application.planning import DependencyResolver, ExecutionPlan
 from cnlc_agent.application.ports import TaskRepository, Telemetry
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import DataError, InfrastructureError
@@ -109,6 +110,61 @@ class InterpretationTaskService:
             override_snapshot=override,
         )
         return await self._run_execution(request, state)
+
+    async def plan_rerun(
+        self,
+        request: TaskRequest,
+        *,
+        input_version_id: str | None = None,
+        changes: InterpretationOverride | None = None,
+        force_full_rerun: bool = False,
+    ) -> ExecutionPlan:
+        """只读取历史事实并生成计划；不创建 Execution 或运行 Workflow。"""
+
+        task = await self.repository.get_task(request.task_id)
+        if task is None:
+            raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+        if task.well_id != request.well_id:
+            raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+        current = (
+            await self.repository.get_execution(task.current_execution_id)
+            if task.current_execution_id is not None
+            else None
+        )
+        source = (
+            await self.repository.get_execution(task.latest_successful_execution_id)
+            if task.latest_successful_execution_id is not None
+            else None
+        )
+        selected_id = (
+            input_version_id
+            or task.current_input_version_id
+            or (current.input_version_id if current is not None else None)
+            or (source.input_version_id if source is not None else None)
+        )
+        selected = (
+            await self.repository.get_input_version(selected_id)
+            if selected_id is not None
+            else None
+        )
+        if selected_id is not None and selected is None:
+            raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "选中输入版本不存在")
+        if selected is not None and selected.task_id != request.task_id:
+            raise InfrastructureError("INPUT_VERSION_TASK_MISMATCH", "输入版本不属于此任务")
+        source_input = (
+            await self.repository.get_input_version(source.input_version_id)
+            if source is not None and source.input_version_id is not None
+            else None
+        )
+        return DependencyResolver().plan(
+            task_id=request.task_id,
+            selected_input=selected,
+            source_execution=source,
+            source_input=source_input,
+            current_execution=current,
+            requested_changes=changes,
+            force_full_rerun=force_full_rerun,
+        )
 
     async def _run_execution(
         self, request: TaskRequest, state: InterpretationState
