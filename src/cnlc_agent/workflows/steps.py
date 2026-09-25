@@ -18,6 +18,7 @@ def tool_request(state: InterpretationState, step: StepId) -> ToolInput:
         trace_id=state.trace_id,
         well_id=state.task.well_id,
         step_id=step,
+        parameters=state.execution_context().model_dump(mode="json"),
     )
 
 
@@ -30,12 +31,18 @@ def model_request(state: InterpretationState, purpose: str) -> ModelRequest:
         "qc_result",
         "lithology_result",
         "petrophysics_result",
-        "processed_data",
         "fluid_result",
         "layer_classification",
         "interval_result",
     }
     context = state.model_dump(mode="json", include=fields)
+    if state.processed_data is not None:
+        # 模型依据结构化专业结果综合，不随执行上下文传递逐点敏感曲线。
+        context["processed_data_summary"] = {
+            "depth_count": len(state.processed_data.depths),
+            "curve_names": list(state.processed_data.curves),
+        }
+    context.update(state.execution_context().model_dump(mode="json"))
     context["response_contract"] = {
         "status": "SUCCESS or WARNING",
         "result": "JSON object containing the requested interpretation result",
@@ -53,6 +60,9 @@ def model_request(state: InterpretationState, purpose: str) -> ModelRequest:
         "Write all human-readable result, evidence, conflict, missing-evidence, warning, "
         "and recommended-action text in Simplified Chinese; preserve identifiers, units, "
         "field names, and source values as supplied."
+        " effective_override contains user-requested conditions, not professionally recalculated "
+        "measurements. prediction_model selects a future professional provider, not this LLM. "
+        "Do not invent formulas or alter measured/fixture values from these overrides."
     )
     context["execution_mode"] = state.mode
     return ModelRequest(

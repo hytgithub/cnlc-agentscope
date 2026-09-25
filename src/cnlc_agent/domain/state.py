@@ -20,6 +20,7 @@ from cnlc_agent.domain.models import (
     Well,
     utc_now,
 )
+from cnlc_agent.domain.override import ExecutionContext, InterpretationOverride
 
 
 class StatePatch(Contract):
@@ -91,6 +92,8 @@ class InterpretationState(StatePatch):
     task: TaskRequest
     workflow_execution_id: str = Field(default_factory=lambda: str(uuid4()))
     trace_id: str = Field(default_factory=lambda: uuid4().hex)
+    input_version_id: str | None = Field(default=None, min_length=1)
+    effective_override: InterpretationOverride = Field(default_factory=InterpretationOverride)
     status: StepStatus = StepStatus.PENDING
     current_step: StepId | None = None
     completed_steps: list[StepId] = Field(default_factory=list)
@@ -104,6 +107,15 @@ class InterpretationState(StatePatch):
     rollback_count: int = 0
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    def execution_context(self) -> ExecutionContext:
+        """从本次状态构造参数副本，不携带曲线、指令、报告或执行历史。"""
+
+        return ExecutionContext(
+            execution_id=self.workflow_execution_id,
+            input_version_id=self.input_version_id,
+            effective_override=self.effective_override.model_copy(deep=True),
+        )
 
     def completed_status(self) -> StepStatus:
         """完整有效链的终态同时考虑本次执行与复用步骤的告警。"""

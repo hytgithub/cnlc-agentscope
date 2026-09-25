@@ -62,6 +62,69 @@
       "title": "ErrorDetail",
       "type": "object"
     },
+    "InterpretationOverride": {
+      "additionalProperties": false,
+      "description": "严格校验的解释条件；PERM 正式单位与专业规则尚待确认。",
+      "properties": {
+        "perm": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Perm"
+        },
+        "por": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Por"
+        },
+        "prediction_model": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prediction Model"
+        },
+        "sampling_interval": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sampling Interval"
+        }
+      },
+      "title": "InterpretationOverride",
+      "type": "object"
+    },
     "JsonValue": {},
     "LogCurve": {
       "additionalProperties": false,
@@ -625,6 +688,9 @@
       ],
       "default": null
     },
+    "effective_override": {
+      "$ref": "#/$defs/InterpretationOverride"
+    },
     "errors": {
       "items": {
         "$ref": "#/$defs/ErrorDetail"
@@ -660,6 +726,19 @@
         }
       ],
       "default": null
+    },
+    "input_version_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Version Id"
     },
     "interval_result": {
       "anyOf": [

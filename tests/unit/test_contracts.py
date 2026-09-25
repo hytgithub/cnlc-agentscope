@@ -107,6 +107,20 @@ async def test_store_keeps_isolated_snapshots():
     assert (await store.get(state.task.task_id)).warnings == []
 
 
+def test_execution_context_defaults_validation_and_isolation():
+    first = InterpretationState(task=TaskRequest(well_id="WELL_MOCK_001"))
+    second = InterpretationState(task=TaskRequest(well_id="WELL_MOCK_001"))
+    assert first.effective_override == InterpretationOverride()
+    first.effective_override.por = 0.16
+    context = first.execution_context()
+    context.effective_override.por = 0.2
+    assert first.effective_override.por == 0.16
+    assert second.effective_override.por is None
+    assert context.execution_id == first.workflow_execution_id
+    with pytest.raises(ValidationError):
+        InterpretationState.model_validate({"task": first.task, "effective_override": {"por": 2}})
+
+
 async def test_loader_rejects_path_traversal(data_dir):
     with pytest.raises(DataError) as caught:
         await MockWellRepository(data_dir).load("../../outside")

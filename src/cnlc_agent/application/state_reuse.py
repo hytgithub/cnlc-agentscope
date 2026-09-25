@@ -73,7 +73,12 @@ class StateReuseAssembler:
         ):
             raise WorkflowError("INPUT_VERSION_TASK_MISMATCH", "输入版本不属于当前任务或井")
 
-        state = InterpretationState(task=request.model_copy(deep=True), mode=mode)
+        state = InterpretationState(
+            task=request.model_copy(deep=True),
+            mode=mode,
+            input_version_id=plan.selected_input_version_id,
+            effective_override=plan.effective_override.model_copy(deep=True),
+        )
         reused = [item for item in plan.stage_plans if item.action == PlanAction.REUSE]
         if not reused:
             return state

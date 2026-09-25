@@ -69,6 +69,7 @@ class InterpretationTaskService:
             if saved is None:
                 raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "输入版本保存后无法读取")
             await materialize(saved)
+            state.input_version_id = saved.input_version_id
             await self.repository.create_execution(
                 state, "INITIAL", input_version_id=saved.input_version_id
             )
@@ -103,7 +104,12 @@ class InterpretationTaskService:
                     "INPUT_MATERIALIZER_REQUIRED", "上传输入重跑需要受控物化适配器"
                 )
             await materialize(selected_input)
-        state = InterpretationState(task=request, mode=self.mode)
+        state = InterpretationState(
+            task=request,
+            mode=self.mode,
+            input_version_id=selected_input_id,
+            effective_override=(override or InterpretationOverride()).model_copy(deep=True),
+        )
         await self.repository.create_execution(
             state,
             "RERUN",

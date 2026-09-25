@@ -3,6 +3,7 @@ from pydantic import ValidationError as SchemaError
 from cnlc_agent.application.ports import ModelGateway, ModelRequest, Telemetry
 from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.models import JsonObject, StageResult
+from cnlc_agent.domain.override import ExecutionContext
 from cnlc_agent.tools.contracts import Tool, ToolCaller, ToolInput
 
 
@@ -40,7 +41,14 @@ class InterpretationAgent:
                         trace_id=request.trace_id,
                         well_id=request.well_id,
                         step_id=StepId.W06,
-                        parameters=request.context,
+                        # Sw Tool 只收受控执行参数，不透传完整模型上下文或曲线。
+                        parameters=ExecutionContext.model_validate(
+                            {
+                                key: request.context[key]
+                                for key in ExecutionContext.model_fields
+                                if key in request.context
+                            }
+                        ).model_dump(mode="json"),
                     ),
                 )
                 request = request.model_copy(deep=True)

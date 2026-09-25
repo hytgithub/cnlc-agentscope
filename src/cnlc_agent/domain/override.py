@@ -22,3 +22,12 @@ class InterpretationOverride(Contract):
         """空快照只用于默认执行，不能冒充用户修改命令。"""
 
         return any(value is not None for value in self.model_dump().values())
+
+
+class ExecutionContext(Contract):
+    """Tool/模型之间传递的最小上下文；参数仍只有 InterpretationOverride 一套契约。"""
+
+    # None 仅兼容旧的独立 Tool 调用，不为它伪造 Execution ID。
+    execution_id: str | None = Field(default=None, min_length=1)
+    input_version_id: str | None = Field(default=None, min_length=1)
+    effective_override: InterpretationOverride = Field(default_factory=InterpretationOverride)

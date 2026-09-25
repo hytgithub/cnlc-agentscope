@@ -6,6 +6,7 @@ from cnlc_agent.agents.interpretation_agent import InterpretationAgent
 from cnlc_agent.agents.main_agent import MainAgent
 from cnlc_agent.agents.validation_agent import ValidationAgent
 from cnlc_agent.application.ports import InterpretationStateStore, ModelGateway, TaskRepository
+from cnlc_agent.application.prediction import MockPredictionProvider
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings
 from cnlc_agent.infrastructure.mock import (
@@ -36,6 +37,7 @@ def build_application(
     telemetry = LoggingTelemetry()
     caller = ToolCaller(telemetry, settings.tool_timeout_seconds)
     tools: dict[str, Tool] = {"get_well_data": GetWellDataTool(repository)}
+    prediction = MockPredictionProvider()
     for name, key in {
         "check_curve_quality": "qc",
         "identify_lithology": "lithology",
@@ -43,7 +45,7 @@ def build_application(
         "calculate_sw": "sw",
         "merge_intervals": "intervals",
     }.items():
-        tools[name] = MockResultTool(name, key, repository)
+        tools[name] = MockResultTool(name, key, repository, prediction)
     close_callbacks: list[Callable[[], Awaitable[None]]] = []
     gateway: ModelGateway
     if settings.model_provider == "mock":
