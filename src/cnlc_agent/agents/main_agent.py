@@ -1,4 +1,5 @@
 from cnlc_agent.application.ports import Telemetry
+from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.models import TaskRequest
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.workflows.interpretation_workflow import InterpretationWorkflow
@@ -12,9 +13,13 @@ class MainAgent:
         self.telemetry = telemetry
 
     async def run(
-        self, request: TaskRequest, *, state: InterpretationState | None = None
+        self,
+        request: TaskRequest,
+        *,
+        state: InterpretationState | None = None,
+        start_step: StepId = StepId.W01,
     ) -> InterpretationState:
-        """使用已有状态或创建新状态，执行一次完整 W01-W10 流程。"""
+        """透传应用层已确定的执行起点，不在 Agent 内判断参数依赖。"""
 
         state = state if state is not None else InterpretationState(task=request)
         with self.telemetry.span(
@@ -25,4 +30,4 @@ class MainAgent:
                 "trace_id": state.trace_id,
             },
         ):
-            return await self.workflow.run(state)
+            return await self.workflow.run(state, start_step=start_step)

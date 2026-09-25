@@ -4,11 +4,15 @@ import logging
 import pytest
 
 from cnlc_agent.application.bootstrap import build_application
+from cnlc_agent.application.planning import ExecutionPlan, ExecutionStage, PlanAction
 from cnlc_agent.config.settings import AppSettings
 from cnlc_agent.domain.enums import StepId, StepStatus
-from cnlc_agent.domain.models import TaskRequest
+from cnlc_agent.domain.errors import WorkflowError
+from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.infrastructure.mock import MockModelGateway
+from cnlc_agent.workflows.node import WorkflowNode
 
 
 def write_fixture(data_dir, data):
@@ -248,3 +252,176 @@ async def test_malformed_tool_output_stops_workflow(data_dir, monkeypatch):
     assert state.qc_result is None
     assert state.final_check is None
     assert "诊断摘要" in report
+
+
+async def seed_versioned_task(data_dir):
+    """使用真实应用链生成可复用来源，避免手工伪造成功业务字段。"""
+
+    app = build_application(AppSettings(mock_data_dir=data_dir, _env_file=None))
+    fixture = MockFixture.model_validate_json((data_dir / "WELL_MOCK_001.json").read_text())
+    request = TaskRequest(well_id=fixture.well.well_id)
+
+    async def materialize(version):
+        (data_dir / f"{version.well_id}.json").write_text(version.payload.model_dump_json())
+
+    state, _ = await app.run_with_input(request, fixture, materialize)
+    source = await app.repository.get_execution(state.workflow_execution_id)
+    return app, request, source, materialize
+
+
+@pytest.mark.parametrize(
+    "changes,start",
+    [
+        (InterpretationOverride(sampling_interval=0.1), StepId.W02),
+        (InterpretationOverride(por=0.16), StepId.W04),
+        (InterpretationOverride(perm=0.16), StepId.W04),
+        (InterpretationOverride(prediction_model="prediction-v2"), StepId.W04),
+    ],
+)
+async def test_planned_rerun_executes_only_expected_suffix(data_dir, monkeypatch, changes, start):
+    app, request, source, materialize = await seed_versioned_task(data_dir)
+    before = source.model_dump_json()
+    called = []
+    original = WorkflowNode.execute
+
+    async def recording_execute(node, state):
+        called.append(node.step_id)
+        if node.step_id == start:
+            assert state.well is not None and state.raw_data is not None
+            assert state.data_requirements is not None
+            assert state.lithology_result is None and state.petrophysics_result is None
+            if start == StepId.W04:
+                assert state.processed_data is not None and state.qc_result is not None
+            else:
+                assert state.processed_data is None and state.qc_result is None
+        return await original(node, state)
+
+    monkeypatch.setattr(WorkflowNode, "execute", recording_execute)
+    state, report = await app.rerun_planned(request, changes=changes, materialize=materialize)
+    index = list(StepId).index(start)
+    assert called == list(StepId)[index:]
+    assert [item.step_id for item in state.executions] == called
+    assert [item.step_id for item in state.reused_steps] == list(StepId)[:index]
+    assert all(item.source_execution_id == source.execution_id for item in state.reused_steps)
+    assert state.completed_steps == list(StepId)
+    assert state.final_check.result["structural_check_passed"] is True
+    assert state.status == StepStatus.SUCCESS
+    assert state.workflow_execution_id != source.execution_id
+    assert state.trace_id != source.state_snapshot.trace_id
+    saved = await app.repository.get_execution(state.workflow_execution_id)
+    assert saved.override_snapshot == changes
+    assert saved.input_version_id == source.input_version_id
+    assert saved.markdown == report
+    assert saved.state_snapshot == state
+    assert InterpretationState.model_validate_json(state.model_dump_json()) == state
+    assert (await app.repository.get_execution(source.execution_id)).model_dump_json() == before
+
+
+async def test_planned_full_rerun_keeps_override_and_executes_all_nodes(data_dir, monkeypatch):
+    app, request, source, materialize = await seed_versioned_task(data_dir)
+    previous, _ = await app.rerun_planned(
+        request,
+        changes=InterpretationOverride(por=0.16, prediction_model="prediction-v2"),
+        materialize=materialize,
+    )
+    called = []
+    original = WorkflowNode.execute
+
+    async def recording_execute(node, state):
+        called.append(node.step_id)
+        return await original(node, state)
+
+    monkeypatch.setattr(WorkflowNode, "execute", recording_execute)
+    state, _ = await app.rerun_planned(request, force_full_rerun=True, materialize=materialize)
+    assert called == list(StepId)
+    assert [item.step_id for item in state.executions] == list(StepId)
+    assert state.reused_steps == []
+    saved = await app.repository.get_execution(state.workflow_execution_id)
+    assert saved.override_snapshot == InterpretationOverride(
+        por=0.16, prediction_model="prediction-v2"
+    )
+    assert saved.input_version_id == source.input_version_id
+    assert saved.execution_id != previous.workflow_execution_id
+
+
+async def test_report_only_creates_new_report_without_entering_workflow(data_dir, monkeypatch):
+    app, request, source, materialize = await seed_versioned_task(data_dir)
+    # 来源本身是局部重跑，验证多轮复用引用仍可解析。
+    partial, _ = await app.rerun_planned(
+        request, changes=InterpretationOverride(por=0.16), materialize=materialize
+    )
+    source = await app.repository.get_execution(partial.workflow_execution_id)
+    before = source.model_dump_json()
+    base = await app.plan_rerun(request, force_full_rerun=True)
+    payload = base.model_dump(mode="python")
+    payload["planning_reason"] = "REPORT_ONLY"
+    for stage in payload["stage_plans"]:
+        if stage["stage"] != ExecutionStage.REPORT:
+            stage["action"] = PlanAction.REUSE
+    plan = ExecutionPlan.model_validate(payload)
+
+    async def unexpected_workflow(*args, **kwargs):
+        pytest.fail("REPORT_ONLY must not enter MainAgent / Workflow")
+
+    monkeypatch.setattr(app.main_agent, "run", unexpected_workflow)
+    state, report = await app.execute_rerun_plan(request, plan)
+    assert state.executions == []
+    assert state.current_step is None
+    assert state.completed_steps == list(StepId)
+    assert [item.step_id for item in state.reused_steps] == list(StepId)
+    assert all(item.source_execution_id == source.execution_id for item in state.reused_steps)
+    assert state.status == StepStatus.SUCCESS
+    assert state.workflow_execution_id != source.execution_id
+    saved = await app.repository.get_execution(state.workflow_execution_id)
+    assert saved.markdown == report and report
+    assert saved.state_snapshot == state
+    assert saved.override_snapshot == source.override_snapshot
+    assert (await app.repository.get_execution(source.execution_id)).model_dump_json() == before
+
+
+async def test_reused_warning_survives_multiple_partial_executions(data_dir, fixture_data):
+    del fixture_data["raw_data"]["auxiliary"]["core"]
+    write_fixture(data_dir, fixture_data)
+    app, request, source, materialize = await seed_versioned_task(data_dir)
+    assert source.status == StepStatus.WARNING
+    for changes in (InterpretationOverride(por=0.16), InterpretationOverride(perm=0.16)):
+        state, _ = await app.rerun_planned(request, changes=changes, materialize=materialize)
+        assert state.status == StepStatus.WARNING
+        reused_w02 = next(item for item in state.reused_steps if item.step_id == StepId.W02)
+        assert reused_w02.source_status == StepStatus.WARNING
+        assert reused_w02.warnings
+        assert state.warnings == []  # 全局旧告警未复制，告警来源保留在 reused_steps。
+        assert all(item.status == StepStatus.SUCCESS for item in state.executions)
+
+
+@pytest.mark.parametrize("prefix", [[], [StepId.W01], list(StepId)[:3]])
+async def test_workflow_rejects_incomplete_or_unproven_prefix(data_dir, prefix):
+    app = build_application(AppSettings(mock_data_dir=data_dir, _env_file=None))
+    state = InterpretationState(task=TaskRequest(well_id="WELL_MOCK_001"), completed_steps=prefix)
+    with pytest.raises(WorkflowError, match="完整连续") as caught:
+        await app.main_agent.workflow.run(state, start_step=StepId.W04)
+    assert caught.value.code == "INVALID_REUSE_PREFIX"
+    assert state.executions == []
+
+
+@pytest.mark.parametrize("same_content", [True, False])
+async def test_planned_execution_binds_selected_input_and_honors_digest(data_dir, same_content):
+    app, request, source, materialize = await seed_versioned_task(data_dir)
+    original = await app.repository.get_input_version(source.input_version_id)
+    payload = original.payload.model_copy(deep=True)
+    if not same_content:
+        payload.well.name = "新的输入版本井名"
+    selected = await app.repository.create_input_version(request.task_id, payload)
+    state, _ = await app.rerun_planned(
+        request,
+        input_version_id=selected.input_version_id,
+        changes=InterpretationOverride(por=0.16),
+        materialize=materialize,
+    )
+    expected = list(StepId)[3:] if same_content else list(StepId)
+    assert [item.step_id for item in state.executions] == expected
+    assert state.well.name == payload.well.name
+    saved = await app.repository.get_execution(state.workflow_execution_id)
+    assert saved.input_version_id == selected.input_version_id
+    assert saved.input_version_id != source.input_version_id
+    assert await app.repository.get_execution(source.execution_id) == source

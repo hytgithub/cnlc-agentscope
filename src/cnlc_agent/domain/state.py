@@ -1,4 +1,4 @@
-"""由 Workflow 独占修改的核心状态，与 AgentScope、SQLAlchemy 和 Redis 解耦。"""
+"""应用层装配、Workflow 推进的单次执行状态，与框架和存储实现解耦。"""
 
 from datetime import datetime
 from typing import Literal
@@ -74,6 +74,15 @@ class StepExecution(Contract):
     retry_count: int = 0
 
 
+class ReusedStep(Contract):
+    """有效前置步骤的来源引用；不冒充本 Execution 的真实步骤执行。"""
+
+    step_id: StepId
+    source_execution_id: str = Field(min_length=1)
+    source_status: Literal[StepStatus.SUCCESS, StepStatus.WARNING]
+    warnings: list[str] = Field(default_factory=list)
+
+
 class InterpretationState(StatePatch):
     """单井解释任务唯一可信状态，汇总 W01-W10 的全部阶段结果。"""
 
@@ -86,6 +95,7 @@ class InterpretationState(StatePatch):
     current_step: StepId | None = None
     completed_steps: list[StepId] = Field(default_factory=list)
     executions: list[StepExecution] = Field(default_factory=list)
+    reused_steps: list[ReusedStep] = Field(default_factory=list)
     changes: list[StateChange] = Field(default_factory=list)
     missing_data: list[MissingData] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -94,3 +104,18 @@ class InterpretationState(StatePatch):
     rollback_count: int = 0
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    def completed_status(self) -> StepStatus:
+        """完整有效链的终态同时考虑本次执行与复用步骤的告警。"""
+
+        if self.completed_steps != list(StepId):
+            raise ValueError("only a complete business chain has a completion status")
+        warned = (
+            bool(self.warnings)
+            or any(item.status == StepStatus.WARNING for item in self.executions)
+            or any(
+                item.source_status == StepStatus.WARNING or item.warnings
+                for item in self.reused_steps
+            )
+        )
+        return StepStatus.WARNING if warned else StepStatus.SUCCESS

@@ -26,7 +26,7 @@ class InterpretationTask(Contract):
 
 
 class Execution(Contract):
-    """一次完整 Workflow 运行及其独立快照、报告。"""
+    """一次完整或局部重跑及其独立状态快照、复用来源和报告。"""
 
     execution_id: str
     task_id: str

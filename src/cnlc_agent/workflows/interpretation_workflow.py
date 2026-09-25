@@ -353,14 +353,29 @@ class InterpretationWorkflow:
         self.store = store
         self.telemetry = telemetry
 
-    async def run(self, state: InterpretationState) -> InterpretationState:
-        """从 PENDING 状态执行一次完整流程，遇到非完成终态立即停止。"""
+    async def run(
+        self, state: InterpretationState, *, start_step: StepId = StepId.W01
+    ) -> InterpretationState:
+        """从已校验的连续前缀之后执行，保留完整节点定义与原有终止分支。"""
 
         if state.status != StepStatus.PENDING:
             raise WorkflowError("TASK_ALREADY_STARTED", "骨架暂不支持恢复已有任务，请创建新任务")
+        if start_step not in {StepId.W01, StepId.W02, StepId.W04}:
+            raise WorkflowError("INVALID_START_STEP", "只允许从业务阶段边界启动")
+        start_index = list(StepId).index(start_step)
+        prefix = list(StepId)[:start_index]
+        if (
+            state.completed_steps != prefix
+            or [item.step_id for item in state.reused_steps] != prefix
+            or state.executions
+            or state.current_step is not None
+        ):
+            raise WorkflowError("INVALID_REUSE_PREFIX", "执行起点需要完整连续的复用前缀和新状态")
         attributes: JsonObject = {"task_id": state.task.task_id, "trace_id": state.trace_id}
         with self.telemetry.span("workflow", attributes):
-            for node in self.nodes:
+            for index, node in enumerate(self.nodes):
+                if index < start_index:
+                    continue
                 # 在执行节点前先记录 RUNNING 快照，确保崩溃时仍能定位当前步骤。
                 state.current_step = node.step_id
                 state.status = StepStatus.RUNNING
@@ -486,12 +501,7 @@ class InterpretationWorkflow:
                     break
             if len(state.completed_steps) == len(StepId):
                 # 所有步骤完成后，任一步骤告警都会提升最终任务状态为 WARNING。
-                state.status = (
-                    StepStatus.WARNING
-                    if state.warnings
-                    or any(item.status == StepStatus.WARNING for item in state.executions)
-                    else StepStatus.SUCCESS
-                )
+                state.status = state.completed_status()
             state.updated_at = utc_now()
             await self.store.save(state)
             self.telemetry.event("workflow.result", {**attributes, "status": state.status.value})

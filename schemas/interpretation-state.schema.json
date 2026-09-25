@@ -175,6 +175,42 @@
       "title": "RawData",
       "type": "object"
     },
+    "ReusedStep": {
+      "additionalProperties": false,
+      "description": "有效前置步骤的来源引用；不冒充本 Execution 的真实步骤执行。",
+      "properties": {
+        "source_execution_id": {
+          "minLength": 1,
+          "title": "Source Execution Id",
+          "type": "string"
+        },
+        "source_status": {
+          "enum": [
+            "SUCCESS",
+            "WARNING"
+          ],
+          "title": "Source Status",
+          "type": "string"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "step_id",
+        "source_execution_id",
+        "source_status"
+      ],
+      "title": "ReusedStep",
+      "type": "object"
+    },
     "StageResult": {
       "additionalProperties": false,
       "description": "各专业阶段共享的结构化结果外壳。",
@@ -717,6 +753,13 @@
         }
       ],
       "default": null
+    },
+    "reused_steps": {
+      "items": {
+        "$ref": "#/$defs/ReusedStep"
+      },
+      "title": "Reused Steps",
+      "type": "array"
     },
     "review_required": {
       "default": false,

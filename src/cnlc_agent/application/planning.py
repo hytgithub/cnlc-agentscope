@@ -64,10 +64,12 @@ class StagePlan(Contract):
 
 
 class ExecutionPlan(Contract):
-    """可审查的只读规划结果；Task 04 才会创建并按计划运行 Execution。"""
+    """可审查的只读规划结果；执行边界重新校验后创建独立 Execution。"""
 
     task_id: str = Field(min_length=1)
     source_execution_id: str | None = None
+    # 在实际执行边界核对来源绑定，避免读取到与计划不一致的输入版本。
+    source_input_version_id: str | None = None
     selected_input_version_id: str | None = None
     effective_override: InterpretationOverride
     changed_fields: tuple[str, ...]
@@ -86,6 +88,9 @@ class ExecutionPlan(Contract):
             raise ValueError("stage-to-step mapping must remain fixed")
         if self.stage_plans[-1].action != PlanAction.RUN:
             raise ValueError("report must run for every new execution")
+        actions = [item.action for item in self.stage_plans]
+        if PlanAction.REUSE in actions[actions.index(PlanAction.RUN) :]:
+            raise ValueError("reused stages must form a contiguous prefix")
         return self
 
     def action_for(self, stage: ExecutionStage) -> PlanAction:
@@ -205,6 +210,7 @@ class DependencyResolver:
         return ExecutionPlan(
             task_id=task_id,
             source_execution_id=source.execution_id if source is not None else None,
+            source_input_version_id=source.input_version_id if source is not None else None,
             selected_input_version_id=(
                 selected_input.input_version_id if selected_input is not None else None
             ),

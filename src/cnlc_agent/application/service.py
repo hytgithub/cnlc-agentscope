@@ -4,7 +4,8 @@ from typing import Literal
 from cnlc_agent.agents.main_agent import MainAgent
 from cnlc_agent.application.planning import DependencyResolver, ExecutionPlan
 from cnlc_agent.application.ports import TaskRepository, Telemetry
-from cnlc_agent.domain.enums import StepStatus
+from cnlc_agent.application.state_reuse import StateReuseAssembler, planned_start_step
+from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import DataError, InfrastructureError
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import ErrorDetail, MockFixture, TaskRequest, utc_now
@@ -166,13 +167,95 @@ class InterpretationTaskService:
             force_full_rerun=force_full_rerun,
         )
 
+    async def rerun_planned(
+        self,
+        request: TaskRequest,
+        *,
+        input_version_id: str | None = None,
+        changes: InterpretationOverride | None = None,
+        force_full_rerun: bool = False,
+        materialize: Callable[[InterpretationInputVersion], Awaitable[None]] | None = None,
+    ) -> tuple[InterpretationState, str]:
+        """生成确定性计划并执行局部重跑；旧 rerun 继续作为全流程兼容入口。"""
+
+        plan = await self.plan_rerun(
+            request,
+            input_version_id=input_version_id,
+            changes=changes,
+            force_full_rerun=force_full_rerun,
+        )
+        return await self.execute_rerun_plan(request, plan, materialize=materialize)
+
+    async def execute_rerun_plan(
+        self,
+        request: TaskRequest,
+        plan: ExecutionPlan,
+        *,
+        materialize: Callable[[InterpretationInputVersion], Awaitable[None]] | None = None,
+    ) -> tuple[InterpretationState, str]:
+        """重新读取并校验计划来源，装配新状态后才创建 Execution 和执行。"""
+
+        plan = ExecutionPlan.model_validate(plan.model_dump(mode="python"))
+        task = await self.repository.get_task(request.task_id)
+        if task is None:
+            raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+        if task.well_id != request.well_id:
+            raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+        source = (
+            await self.repository.get_execution(plan.source_execution_id)
+            if plan.source_execution_id is not None
+            else None
+        )
+        selected = (
+            await self.repository.get_input_version(plan.selected_input_version_id)
+            if plan.selected_input_version_id is not None
+            else None
+        )
+        source_input = (
+            await self.repository.get_input_version(plan.source_input_version_id)
+            if plan.source_input_version_id is not None
+            else None
+        )
+        state = StateReuseAssembler().assemble(
+            plan,
+            source,
+            request,
+            selected_input=selected,
+            source_input=source_input,
+            mode=self.mode,
+        )
+        start_step = planned_start_step(plan)
+        # 现有 Mock 在 W03/W04 等步骤也读取 Fixture；REPORT_ONLY 完全不需要物化。
+        if selected is not None and start_step is not None:
+            if materialize is None:
+                raise InfrastructureError(
+                    "INPUT_MATERIALIZER_REQUIRED", "输入重跑需要受控物化适配器"
+                )
+            await materialize(selected)
+        await self.repository.create_execution(
+            state,
+            "RERUN",
+            input_version_id=plan.selected_input_version_id,
+            override_snapshot=plan.effective_override,
+        )
+        return await self._run_execution(request, state, start_step=start_step)
+
     async def _run_execution(
-        self, request: TaskRequest, state: InterpretationState
+        self,
+        request: TaskRequest,
+        state: InterpretationState,
+        *,
+        start_step: StepId | None = StepId.W01,
     ) -> tuple[InterpretationState, str]:
         """共用原有业务主链；状态与报告由仓库按 Execution ID 保存。"""
 
         try:
-            state = await self.main_agent.run(request, state=state)
+            if start_step is None:
+                # 仅重生成报告时，状态来自已校验的完整复用链，不进入业务节点。
+                state.status = state.completed_status()
+                state.updated_at = utc_now()
+            else:
+                state = await self.main_agent.run(request, state=state, start_step=start_step)
         except InfrastructureError as exc:
             # 持久化故障不能伪装成业务成功；尽量从长期存储恢复最近快照并形成诊断报告。
             self.telemetry.event(
