@@ -129,6 +129,29 @@ async def test_unhandled_worker_exception_marks_failed(data_dir, monkeypatch):
         await session.dispatcher.shutdown()
 
 
+async def test_failure_before_claim_does_not_leave_execution_queued(data_dir, monkeypatch):
+    """服务入口异常时，Worker 仍可认领未开始的版本并写入明确失败。"""
+
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError("failed before claim")
+
+    monkeypatch.setattr(InterpretationTaskService, "execute_prepared", broken)
+    session = TaskCommandRunner(
+        AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),
+        PersistenceSettings(persistence="memory", _env_file=None),
+    )
+    submitted = await session.run("WELL_MOCK_001")
+    try:
+        with pytest.raises(RuntimeError):
+            await session.dispatcher.wait(submitted.execution_id)
+        execution = await session.repository.get_execution(submitted.execution_id)
+        assert execution.status == ExecutionStatus.FAILED
+        assert execution.error_code == "BACKGROUND_EXECUTION_FAILED"
+        assert execution.started_at is not None and execution.finished_at is not None
+    finally:
+        await session.dispatcher.shutdown()
+
+
 async def test_postgres_factory_polls_recovery_and_closes_context(monkeypatch):
     """应用级 Worker 定期查过期租约，并在关闭时回收持有的连接。"""
 

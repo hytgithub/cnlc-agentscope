@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -24,13 +25,14 @@ from cnlc_agent.application.commands import (
     TaskCommands,
 )
 from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispatcher
+from cnlc_agent.application.ports import TaskRepository
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
-from cnlc_agent.domain.errors import ApplicationError
-from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES
+from cnlc_agent.domain.errors import ApplicationError, InfrastructureError
+from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, ExecutionStatus
 from cnlc_agent.domain.inputs import InterpretationInputVersion
-from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.infrastructure.mock import (
     InMemoryStateStore,
@@ -112,17 +114,56 @@ class TaskCommandRunner:
         """每个后台 Worker 自建服务与临时输入目录，避免跨请求复用连接。"""
 
         async def execute(worker_id: str) -> None:
-            with TemporaryDirectory(prefix="cnlc-worker-") as directory:
-                root = Path(directory)
-                async with self.context(root) as service:
-                    await service.execute_prepared(
-                        execution_id,
-                        worker_id=worker_id,
-                        materialize=self.materializer(root),
-                        lease_seconds=self.persistence.execution_lease_seconds,
-                    )
+            repository: TaskRepository | None = None
+            try:
+                with TemporaryDirectory(prefix="cnlc-worker-") as directory:
+                    root = Path(directory)
+                    async with self.context(root) as service:
+                        repository = service.repository
+                        await service.execute_prepared(
+                            execution_id,
+                            worker_id=worker_id,
+                            materialize=self.materializer(root),
+                            lease_seconds=self.persistence.execution_lease_seconds,
+                        )
+            except Exception:
+                # Service 在 claim 前异常时仍需终结 QUEUED；已进入 RUNNING 时也尝试
+                # 用原 Worker 身份失败终结。仓库不可用时保留持久事实，后续 lease 扫描处理。
+                if repository is None and self.persistence.persistence == "memory":
+                    repository = self.repository
+                if repository is not None:
+                    await self._fail_worker_exception(repository, execution_id, worker_id)
+                raise
 
         return execute
+
+    async def _fail_worker_exception(
+        self, repository: TaskRepository, execution_id: str, worker_id: str
+    ) -> None:
+        """幂等补偿 claim 前异常；不覆盖其他 Worker 的终态或 lease。"""
+
+        try:
+            await repository.finish_execution(
+                execution_id, worker_id, ExecutionStatus.FAILED,
+                error_code="BACKGROUND_EXECUTION_FAILED",
+            )
+            return
+        except InfrastructureError:
+            pass
+        try:
+            claimed = await repository.claim_execution(
+                execution_id, worker_id,
+                utc_now() + timedelta(seconds=self.persistence.execution_lease_seconds),
+            )
+            if claimed:
+                await repository.finish_execution(
+                    execution_id, worker_id, ExecutionStatus.FAILED,
+                    error_code="BACKGROUND_EXECUTION_FAILED",
+                )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Background failure could not be persisted: type=%s", type(exc).__name__
+            )
 
     @staticmethod
     def materializer(root: Path) -> Callable[[InterpretationInputVersion], Awaitable[None]]:
