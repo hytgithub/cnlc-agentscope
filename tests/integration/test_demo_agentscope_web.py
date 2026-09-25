@@ -106,7 +106,14 @@ async def test_demo_agent_registers_and_calls_only_interpretation_tool(data_dir)
     assert "report_markdown" in payload
 
 
-async def test_agent_service_adapter_constructs_offline(tmp_path):
+async def test_agent_service_adapter_constructs_offline(tmp_path, monkeypatch):
+    redis = FakeRedis(decode_responses=True)
+    monkeypatch.setattr(
+        "cnlc_agent.demo.agentscope_app._redis_storage",
+        lambda _: RedisStorage(connection_pool=redis.connection_pool),
+    )
+    monkeypatch.setenv("CNLC_PERSISTENCE", "memory")
+    monkeypatch.setenv("CNLC_MODEL_PROVIDER", "mock")
     secret = "agent-service-test-password"
     app = create_demo_app(
         connections=ConnectionSettings(
@@ -129,6 +136,7 @@ async def test_agent_service_adapter_constructs_offline(tmp_path):
     assert response.json()["status"] == "ok"
     assert secret not in json.dumps(app.openapi())
     assert secret not in response.text
+    await redis.aclose()
 
 
 async def test_backend_model_is_shared_without_exposing_api_key(tmp_path, monkeypatch):
@@ -137,6 +145,8 @@ async def test_backend_model_is_shared_without_exposing_api_key(tmp_path, monkey
         "cnlc_agent.demo.agentscope_app._redis_storage",
         lambda _: RedisStorage(connection_pool=redis.connection_pool),
     )
+    monkeypatch.setenv("CNLC_PERSISTENCE", "memory")
+    monkeypatch.setenv("CNLC_MODEL_PROVIDER", "openai_compatible")
     api_key = "sk-backend-only-test"
     app = create_demo_app(
         connections=ConnectionSettings(

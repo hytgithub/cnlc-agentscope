@@ -10,7 +10,11 @@ from agentscope.event import EventType
 from fakeredis.aioredis import FakeRedis
 from test_task_react import ScriptedTaskModel
 
-from cnlc_agent.demo.agentscope_app import create_demo_app
+from cnlc_agent.demo.agentscope_app import (
+    BACKEND_MODEL_CREDENTIAL_ID,
+    BACKEND_MODEL_OWNER_ID,
+    create_demo_app,
+)
 
 
 async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, monkeypatch):
@@ -35,26 +39,22 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
             response = await client.post("/agent/", json={"name": "Upload demo"})
             assert response.status_code == 201, response.text
             agent_id = response.json()["agent_id"]
-            response = await client.post(
-                "/credential/",
-                json={
-                    "data": {
-                        "type": "dashscope_credential",
-                        "name": "offline",
-                        "api_key": "sk-offline-test-only",
-                    }
-                },
+            # Mock provider 由后端发布无密钥的本地模型，Web 不应要求用户配置公网凭证。
+            credential = await app.state.storage.get_credential(
+                BACKEND_MODEL_OWNER_ID,
+                BACKEND_MODEL_CREDENTIAL_ID,
             )
-            assert response.status_code == 201, response.text
-            credential_id = response.json()["credential_id"]
+            assert credential is not None
+            assert credential.data["type"] == "cnlc_mock_shell_credential"
+            assert "api_key" not in credential.data
             response = await client.post(
                 "/sessions/",
                 json={
                     "agent_id": agent_id,
                     "name": "Upload integration test",
                     "chat_model_config": {
-                        "type": "dashscope_chat_model",
-                        "credential_id": credential_id,
+                        "type": "cnlc_mock_shell_model",
+                        "credential_id": BACKEND_MODEL_CREDENTIAL_ID,
                         "model": "qwen-plus",
                         "parameters": {},
                     },
@@ -135,9 +135,7 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                 result = next(e for e in events if e["type"] == EventType.TOOL_RESULT_END)
                 first = result["metadata"]["result"]
                 assert first["execution_status"] == "QUEUED"
-                runner = app.state.cnlc_task_tools.runners[
-                    ("upload-test", agent_id, session_id)
-                ]
+                runner = app.state.cnlc_task_tools.runners[("upload-test", agent_id, session_id)]
                 completed = await runner.wait_for_completion(
                     first["task_id"], first["execution_id"]
                 )
@@ -147,7 +145,7 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                     e["delta"] for e in events if e["type"] == EventType.TEXT_BLOCK_DELTA
                 ]
                 assert "解释任务已提交" in "".join(report_chunks)
-                assert "sk-offline-test-only" not in json.dumps(events)
+                assert "api_key" not in json.dumps(events)
                 # The service persists the same projected Assistant message after REPLY_END.
                 async with asyncio.timeout(5):
                     while True:
@@ -167,13 +165,18 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                     previous_count = sum(m.role == "assistant" for m in messages)
                     events.clear()
                     finished.clear()
-                    response = await client.post("/chat/", json={
-                        "agent_id": agent_id, "session_id": session_id,
-                        "input": {
-                            "name": "user", "role": "user",
-                            "content": [{"type": "text", "text": text}],
+                    response = await client.post(
+                        "/chat/",
+                        json={
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "input": {
+                                "name": "user",
+                                "role": "user",
+                                "content": [{"type": "text", "text": text}],
+                            },
                         },
-                    })
+                    )
                     assert response.status_code == 200, response.text
                     await asyncio.wait_for(finished.wait(), 10)
                     tool_results = [e for e in events if e["type"] == EventType.TOOL_RESULT_END]

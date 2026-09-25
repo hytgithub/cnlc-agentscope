@@ -1,11 +1,21 @@
 """现有测井解释应用服务的 AgentScope 对话外壳。"""
 
+import builtins
+import json
+import re
+from typing import Any, Literal
+from uuid import uuid4
+
 from agentscope.agent import Agent, ContextConfig, ModelConfig, ReActConfig
+from agentscope.credential import CredentialBase, CredentialFactory
+from agentscope.formatter import DashScopeChatFormatter
+from agentscope.message import Msg, TextBlock, ToolCallBlock, ToolResultBlock
 from agentscope.middleware import MiddlewareBase
-from agentscope.model import ChatModelBase
+from agentscope.model import ChatModelBase, ChatResponse, ModelCard, StructuredResponse
 from agentscope.state import AgentState
-from agentscope.tool import Toolkit
+from agentscope.tool import ToolChoice, Toolkit
 from agentscope.workspace import Offloader
+from pydantic import BaseModel, ConfigDict
 
 from cnlc_agent.demo.tools import RUN_TOOL_NAME, RunWellInterpretationTool
 from cnlc_agent.demo.upload_reply import UploadInterpretationReply
@@ -32,6 +42,213 @@ Tool 错误按安全文案解释，不自动改成全量重跑。Demo/Mock 专�
 """
 
 
+class MockTaskShellCredential(CredentialBase):
+    """只在 Mock 联调环境发布 qwen-plus 外观，不保存密钥或访问公网。"""
+
+    model_config = ConfigDict(title="CNLC Mock Shell")
+    type: Literal["cnlc_mock_shell_credential"] = "cnlc_mock_shell_credential"
+
+    @classmethod
+    def get_chat_model_class(cls) -> builtins.type[ChatModelBase]:
+        """让 AgentScope 会话装配和自动命名都使用确定性本地模型。"""
+
+        return MockTaskShellModel
+
+
+class MockTaskShellModel(ChatModelBase):
+    """Mock 环境的确定性 ReAct 外壳，供真实 Web 联调时免公网模型运行。
+
+    它只识别 Demo 已公开的任务级意图，并始终从历史 Tool Result 取得 task_id；
+    专业计算仍由 Workflow、专业 Tool 和 MockModelGateway 完成。
+    """
+
+    def __init__(
+        self,
+        credential: CredentialBase | None = None,
+        model: str = "qwen-plus",
+        parameters: ChatModelBase.Parameters | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(
+            credential=credential or MockTaskShellCredential(name="CNLC Mock Shell"),
+            model=model,
+            parameters=parameters or self.Parameters(),
+            stream=False,
+            **kwargs,
+        )
+        self.formatter = DashScopeChatFormatter()
+
+    @classmethod
+    def list_models(cls, custom_yaml_dir: str | None = None) -> list[ModelCard]:
+        """向官方 Web 模型选择器暴露唯一受支持的 qwen-plus 标识。"""
+
+        del custom_yaml_dir
+        return [
+            ModelCard(
+                name="qwen-plus",
+                label="qwen-plus",
+                status="active",
+                context_size=131_072,
+                output_size=8_192,
+                parameter_schema=cls.Parameters.model_json_schema(),
+                parameters_overrides={},
+            ),
+        ]
+
+    async def generate_structured_output(
+        self,
+        messages: list[Msg],
+        structured_model: type[BaseModel] | dict[Any, Any],
+        **kwargs: Any,
+    ) -> StructuredResponse:
+        """本地完成 AgentScope 会话标题生成，避免 Mock 凭证触发外网请求。"""
+
+        del structured_model, kwargs
+        candidates = [message.get_text_content() or "" for message in reversed(messages)]
+        text = next(
+            (candidate.strip() for candidate in candidates if candidate.strip()),
+            "CNLC 测井解释",
+        )
+        title = "CNLC 测井解释" if "title" in text.lower() else text[:80]
+        return StructuredResponse(content={"title": title})
+
+    async def _call_api(
+        self,
+        model_name: str,
+        messages: list[Msg],
+        tools: list[dict[Any, Any]] | None = None,
+        tool_choice: ToolChoice | None = None,
+        **kwargs: Any,
+    ) -> ChatResponse:
+        """根据受控中文指令选择任务级 Tool，不发起任何网络请求。"""
+
+        del tools, tool_choice, kwargs
+        if model_name != "qwen-plus":
+            raise ValueError("Mock Demo 外壳只允许 qwen-plus 模型标识")
+        last_user = max(
+            (index for index, message in enumerate(messages) if message.role == "user"),
+            default=-1,
+        )
+        instruction = (
+            (messages[last_user].get_text_content() or "").strip() if last_user >= 0 else ""
+        )
+        current_results = [
+            block
+            for message in messages[last_user + 1 :]
+            for block in message.content
+            if isinstance(block, ToolResultBlock)
+        ]
+        if current_results:
+            return ChatResponse(
+                content=[TextBlock(text=self._render_result(current_results[-1]))],
+                is_last=True,
+            )
+        historical_results = [
+            block
+            for message in messages
+            for block in message.content
+            if isinstance(block, ToolResultBlock)
+        ]
+        task_id = self._latest_task_id(historical_results)
+        if task_id is None:
+            return ChatResponse(
+                content=[TextBlock(text="请先上传井资料或开始一次解释任务。")],
+                is_last=True,
+            )
+        name, parameters = self._command(instruction)
+        if name is None:
+            return ChatResponse(
+                content=[TextBlock(text="当前 Agent 只处理单井常规测井解释及相关任务操作。")],
+                is_last=True,
+            )
+        return ChatResponse(
+            content=[
+                ToolCallBlock(
+                    id=uuid4().hex,
+                    name=name,
+                    input=json.dumps({"task_id": task_id, **parameters}, ensure_ascii=False),
+                )
+            ],
+            is_last=True,
+        )
+
+    @staticmethod
+    def _payload(block: ToolResultBlock) -> dict[str, Any]:
+        """优先读取 Tool metadata，兼容只保留文本输出的历史消息。"""
+
+        result = block.metadata.get("result")
+        if isinstance(result, dict):
+            return result
+        output = block.output
+        text = (
+            output
+            if isinstance(output, str)
+            else next(
+                (item.text for item in output if isinstance(item, TextBlock)),
+                "{}",
+            )
+        )
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+
+    @classmethod
+    def _latest_task_id(cls, blocks: list[ToolResultBlock]) -> str | None:
+        """从最近可信 Tool Result 读取 task_id，禁止从自然语言猜测。"""
+
+        for block in reversed(blocks):
+            task_id = cls._payload(block).get("task_id")
+            if isinstance(task_id, str) and task_id:
+                return task_id
+        return None
+
+    @staticmethod
+    def _command(instruction: str) -> tuple[str | None, dict[str, Any]]:
+        """把 Mock 联调指令映射到现有五个任务级 Tool。"""
+
+        if "上一版" in instruction and "报告" in instruction:
+            return "get_interpretation_report", {"selector": "PREVIOUS"}
+        if "报告" in instruction:
+            return "get_interpretation_report", {"selector": "CURRENT"}
+        if "全部" in instruction and ("重跑" in instruction or "重新跑" in instruction):
+            return "rerun_well_interpretation", {}
+        if "处理到哪里" in instruction or "状态" in instruction or "进度" in instruction:
+            return "get_interpretation_status", {}
+        if "重新解释" in instruction or "修改" in instruction or "改成" in instruction:
+            changes: dict[str, Any] = {}
+            value = re.search(r"(?:0?\.\d+|\d+(?:\.\d+)?%)", instruction)
+            if value:
+                raw = value.group(0)
+                number = float(raw.rstrip("%")) / (100 if raw.endswith("%") else 1)
+                if "孔隙度" in instruction:
+                    changes["por"] = number
+                if "渗透率" in instruction:
+                    changes["perm"] = number
+            if changes:
+                return "modify_well_interpretation", changes
+        return None, {}
+
+    @classmethod
+    def _render_result(cls, block: ToolResultBlock) -> str:
+        """回复只复述 Tool 的持久事实，不推断专业结果。"""
+
+        payload = cls._payload(block)
+        if report := payload.get("report_markdown"):
+            return str(report)
+        sequence = payload.get("execution_sequence")
+        status = payload.get("execution_status")
+        current = payload.get("current_step") or "暂无运行步骤"
+        completed = "、".join(payload.get("completed_steps") or []) or "无"
+        if payload.get("command") == "STATUS":
+            return (
+                f"Execution #{sequence} 状态为 {status}；当前步骤：{current}；已完成：{completed}。"
+            )
+        return f"解释任务已提交：Execution #{sequence}，状态 {status}。"
+
+
+# AgentScope 从持久化的 discriminator 还原凭证，因此必须在应用创建前注册。
+CredentialFactory.register_credential(MockTaskShellCredential)
+
+
 class LoggingInterpretationDemoAgent(Agent):
     """只暴露高层解释 Tool 的 AgentScope Agent，禁止绕过 Workflow 自行解释。"""
 
@@ -55,9 +272,7 @@ class LoggingInterpretationDemoAgent(Agent):
             raise ValueError("AgentScope Demo Agent 只允许使用 qwen-plus")
         from cnlc_agent.demo.task_tools import ALLOWED_TASK_TOOLS, TaskCommandTool
 
-        if toolkit and any(
-            group.mcps or group.skills_or_loaders for group in toolkit.tool_groups
-        ):
+        if toolkit and any(group.mcps or group.skills_or_loaders for group in toolkit.tool_groups):
             raise ValueError("Demo Agent 不允许注册 MCP 或技能工具")
         tools = [tool for group in (toolkit.tool_groups if toolkit else []) for tool in group.tools]
         names = [tool.name for tool in tools]

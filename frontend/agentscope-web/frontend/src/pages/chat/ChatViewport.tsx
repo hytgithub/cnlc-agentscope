@@ -52,6 +52,7 @@ import {
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { useAvailableModels } from '@/hooks/useAvailableModels';
 import {
+	findLatestInterpretationRefreshKey,
 	findLatestInterpretationTaskId,
 	useInterpretationTask,
 } from '@/hooks/useInterpretationTask';
@@ -272,11 +273,25 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		() => findLatestInterpretationTaskId(msgs),
 		[msgs],
 	);
+	const interpretationRefreshKey = useMemo(
+		() => findLatestInterpretationRefreshKey(msgs),
+		[msgs],
+	);
 	const interpretationTask = useInterpretationTask(
 		agentId,
 		sessionId,
 		interpretationTaskId,
 	);
+	const refetchInterpretationTask = interpretationTask.refetch;
+	// 同一 Task 的新 Tool Result 不会改变 query key；主动刷新一次，使新的
+	// QUEUED Execution 立即进入 Panel，后续再由终态感知 polling 接管。
+	const interpretationRefreshKeyRef = useRef<string | null>(null);
+	useEffect(() => {
+		if (!interpretationRefreshKey) return;
+		if (interpretationRefreshKeyRef.current === interpretationRefreshKey) return;
+		interpretationRefreshKeyRef.current = interpretationRefreshKey;
+		refetchInterpretationTask();
+	}, [interpretationRefreshKey, refetchInterpretationTask]);
 	// 每个 Session 首次收到可信任务结果时自动打开一次；关闭后轮询不会重开。
 	const interpretationPanelOpenedForRef = useRef<string | null>(null);
 	useEffect(() => {

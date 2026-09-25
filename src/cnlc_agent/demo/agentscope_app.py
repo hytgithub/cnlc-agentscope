@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,7 +22,7 @@ from agentscope.app.storage import RedisStorage, StorageBase
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.credential import DashScopeCredential
 from agentscope.tool import ToolBase, Toolkit
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio.connection import SSLConnection
@@ -30,7 +30,11 @@ from redis.asyncio.connection import SSLConnection
 from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispatcher
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
-from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
+from cnlc_agent.demo.demo_agent import (
+    LoggingInterpretationDemoAgent,
+    MockTaskShellCredential,
+    MockTaskShellModel,
+)
 from cnlc_agent.demo.read_models import (
     InterpretationExecutionView,
     InterpretationTaskView,
@@ -82,11 +86,15 @@ async def demo_agent_tools(
 ) -> list[ToolBase]:
     """独立调用时创建一组隔离任务工具；HTTP 使用下方应用级会话工厂。"""
 
-    return build_task_tools(TaskCommandRunner(session_identity=TaskSessionIdentity(
-        user_id=user_id,
-        agent_id=agent_id,
-        session_id=session_id,
-    )))
+    return build_task_tools(
+        TaskCommandRunner(
+            session_identity=TaskSessionIdentity(
+                user_id=user_id,
+                agent_id=agent_id,
+                session_id=session_id,
+            )
+        )
+    )
 
 
 class SessionTaskToolFactory:
@@ -120,9 +128,7 @@ class SessionTaskToolFactory:
                 self.runners[key] = runner
         return build_task_tools(self.runners[key])
 
-    def _new_runner(
-        self, user_id: str, agent_id: str, session_id: str
-    ) -> TaskCommandRunner:
+    def _new_runner(self, user_id: str, agent_id: str, session_id: str) -> TaskCommandRunner:
         """集中构造携带完整 Session identity 的 runner。"""
 
         return TaskCommandRunner(
@@ -172,9 +178,9 @@ class SessionTaskToolFactory:
             return
         stack = AsyncExitStack()
         try:
-            service = await stack.enter_async_context(application_runtime(
-                self.settings, self.persistence, self.connections
-            ))
+            service = await stack.enter_async_context(
+                application_runtime(self.settings, self.persistence, self.connections)
+            )
             await self.dispatcher.recover(service.repository)
         except BaseException:
             await stack.aclose()
@@ -217,21 +223,43 @@ class AgentScopeServiceAdapter(LoggingInterpretationDemoAgent):
     def __init__(self, *, toolkit: Toolkit | None = None, **kwargs: Any) -> None:
         # 上游 get_toolkit 无开关，固定注入工作区/调度/团队工具；它们不进入业务 Agent。
         # 只识别上游已知类，其他自定义、MCP 或专业工具必须由父类拒绝。
-        if toolkit and any(
-            group.mcps or group.skills_or_loaders for group in toolkit.tool_groups
-        ):
+        if toolkit and any(group.mcps or group.skills_or_loaders for group in toolkit.tool_groups):
             raise ValueError("Demo Agent 不允许注册 MCP 或技能工具")
         builtins = {
-            "Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "TaskCreate", "TaskGet",
-            "TaskList", "TaskUpdate", "ToolStop", "ScheduleCreate", "ScheduleView",
-            "ScheduleDelete", "ScheduleList", "TeamCreate", "TeamDelete", "TeamSay",
-            "AgentCreate", "AgentInvite",
+            "Bash",
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "LS",
+            "TaskCreate",
+            "TaskGet",
+            "TaskList",
+            "TaskUpdate",
+            "ToolStop",
+            "ScheduleCreate",
+            "ScheduleView",
+            "ScheduleDelete",
+            "ScheduleList",
+            "TeamCreate",
+            "TeamDelete",
+            "TeamSay",
+            "AgentCreate",
+            "AgentInvite",
         }
         tools = [
-            tool for group in (toolkit.tool_groups if toolkit else []) for tool in group.tools
-            if not (type(tool).__module__.startswith("agentscope.")
-                    and type(tool).__name__ in builtins)
+            tool
+            for group in (toolkit.tool_groups if toolkit else [])
+            for tool in group.tools
+            if not (
+                type(tool).__module__.startswith("agentscope.") and type(tool).__name__ in builtins
+            )
         ]
+        # Mock provider 下替换 AgentScope 外层模型，避免 UI 联调依赖公网密钥；
+        # 前端仍使用固定 qwen-plus 标识，专业 Workflow 的模型边界保持不变。
+        if AppSettings().model_provider == "mock":
+            kwargs["model"] = MockTaskShellModel()
         super().__init__(toolkit=Toolkit(tools=tools), **kwargs)
 
 
@@ -287,7 +315,12 @@ def create_demo_app(
     base_url = connections.model_base_url
     # 只有后端模型配置完整且名称受支持时，才向前端发布只读模型选项。
     backend_credential = (
-        DashScopeCredential(
+        MockTaskShellCredential(
+            id=BACKEND_MODEL_CREDENTIAL_ID,
+            name="CNLC Mock Shell",
+        )
+        if settings.model_provider == "mock"
+        else DashScopeCredential(
             id=BACKEND_MODEL_CREDENTIAL_ID,
             name="CNLC Backend Model",
             api_key=api_key,
@@ -330,9 +363,14 @@ def create_demo_app(
 
     @asynccontextmanager
     async def execution_lifespan(application: FastAPI) -> AsyncIterator[None]:
-        """在官方 lifespan 内加入租约恢复和后台任务清理。"""
+        """在官方 lifespan 内发布模型凭证，并加入租约恢复与后台清理。"""
 
         async with original_lifespan(application):
+            if backend_credential is not None:
+                await storage.upsert_credential(
+                    BACKEND_MODEL_OWNER_ID,
+                    backend_credential,
+                )
             await task_tools.start()
             try:
                 yield
@@ -340,20 +378,6 @@ def create_demo_app(
                 await task_tools.shutdown()
 
     app.router.lifespan_context = execution_lifespan
-
-    @app.middleware("http")
-    async def provision_backend_model(
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
-        """确保每次请求前后端托管凭证已存在，前端无需配置 API Key。"""
-
-        if backend_credential is not None:
-            await storage.upsert_credential(
-                BACKEND_MODEL_OWNER_ID,
-                backend_credential,
-            )
-        return await call_next(request)
 
     async def owned_runner(
         request: Request, agent_id: str, session_id: str, task_id: str
