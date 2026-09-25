@@ -16,9 +16,15 @@ from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import InfrastructureError
-from cnlc_agent.domain.models import TaskRequest
+from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
-from cnlc_agent.infrastructure.database import PostgreSQLTaskRepository, TaskRow
+from cnlc_agent.infrastructure.database import (
+    ExecutionRow,
+    InputVersionRow,
+    PostgreSQLTaskRepository,
+    TaskRow,
+)
 from cnlc_agent.infrastructure.redis_store import RedisInterpretationStateStore
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -198,4 +204,79 @@ async def test_postgresql_execution_versions_match_memory_semantics(migrated):
     finally:
         async with engine.begin() as connection:
             await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
+        await engine.dispose()
+
+
+async def test_postgresql_input_version_and_override_survive_new_repository(migrated):
+    """真实数据库跨仓库实例读回输入快照，且不允许跨任务绑定。"""
+
+    fixture = MockFixture.model_validate_json((ROOT / "mock_data/WELL_MOCK_001.json").read_text())
+    request = TaskRequest(well_id=fixture.well.well_id)
+    other_request = TaskRequest(well_id=fixture.well.well_id)
+    engine = create_async_engine(DB_URL)
+    repository = PostgreSQLTaskRepository(engine)
+    first = InterpretationState(task=request)
+    try:
+        await repository.create_task(first)
+        input_one = await repository.create_input_version(request.task_id, fixture)
+        await repository.create_execution(
+            first, "INITIAL", input_version_id=input_one.input_version_id
+        )
+        first.status = StepStatus.SUCCESS
+        await repository.save(first, "report one")
+        changed = fixture.model_copy(deep=True)
+        changed.well.name = "第二份上传输入"
+        input_two = await repository.create_input_version(request.task_id, changed)
+        assert input_two.sequence == 2
+
+        second = InterpretationState(task=request)
+        override = InterpretationOverride(
+            sampling_interval=0.1, por=0.16, perm=0.16, prediction_model="prediction-v2"
+        )
+        await repository.create_execution(
+            second, input_version_id=input_one.input_version_id, override_snapshot=override
+        )
+        second.status = StepStatus.FAILED
+        await repository.save(second, "report two")
+
+        reloaded = PostgreSQLTaskRepository(engine)
+        assert (await reloaded.get_input_version(input_one.input_version_id)) == input_one
+        assert [item.sequence for item in await reloaded.list_input_versions(request.task_id)] == [
+            1,
+            2,
+        ]
+        versions = await reloaded.list_executions(request.task_id)
+        assert [item.input_version_id for item in versions] == [
+            input_one.input_version_id,
+            input_one.input_version_id,
+        ]
+        assert versions[0].override_snapshot == InterpretationOverride()
+        assert versions[1].override_snapshot == override
+        assert versions[0].markdown == "report one"
+        assert versions[1].markdown == "report two"
+        assert input_one.payload.raw_data == fixture.raw_data
+        task = await reloaded.get_task(request.task_id)
+        assert task is not None
+        assert task.current_input_version_id == input_two.input_version_id
+        assert task.current_execution_id == second.workflow_execution_id
+        assert task.latest_successful_execution_id == first.workflow_execution_id
+
+        await repository.create_task(InterpretationState(task=other_request))
+        with pytest.raises(InfrastructureError) as caught:
+            await repository.create_execution(
+                InterpretationState(task=other_request),
+                input_version_id=input_one.input_version_id,
+            )
+        assert caught.value.code == "INPUT_VERSION_TASK_MISMATCH"
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                delete(ExecutionRow).where(ExecutionRow.task_id == request.task_id)
+            )
+            await connection.execute(
+                delete(InputVersionRow).where(InputVersionRow.task_id == request.task_id)
+            )
+            await connection.execute(
+                delete(TaskRow).where(TaskRow.task_id.in_([request.task_id, other_request.task_id]))
+            )
         await engine.dispose()

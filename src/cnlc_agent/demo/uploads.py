@@ -2,8 +2,8 @@
 
 import base64
 import binascii
+import hashlib
 import json
-from uuid import uuid4
 
 from agentscope.message import Base64Source, DataBlock, Msg, TextBlock
 from pydantic import ValidationError
@@ -50,9 +50,14 @@ def parse_upload(messages: list[Msg]) -> tuple[MockFixture, str]:
         data = json.loads(content)
         if not isinstance(data, dict) or not isinstance(data.get("well"), dict):
             raise ValueError("missing well")
-        # 附件名绝不用于构造本地路径；缺少业务井号时生成受控标识。
+        # 缺少业务井号时从规范化 JSON 生成稳定标识，避免随机 ID 进入内容摘要。
         if not data["well"].get("well_id"):
-            data["well"]["well_id"] = f"UPLOAD_{uuid4().hex}"
+            canonical = json.dumps(
+                data, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+            )
+            data["well"]["well_id"] = (
+                f"UPLOAD_{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:24].upper()}"
+            )
         try:
             fixture = MockFixture.model_validate(data)
         except ValidationError:

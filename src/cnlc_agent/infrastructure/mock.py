@@ -11,7 +11,13 @@ from cnlc_agent.application.ports import ModelRequest
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import DataError, InfrastructureError, ModelError
 from cnlc_agent.domain.execution import Execution, ExecutionTrigger, InterpretationTask
+from cnlc_agent.domain.inputs import (
+    InputSource,
+    InterpretationInputVersion,
+    fixture_digest,
+)
 from cnlc_agent.domain.models import JsonObject, MockFixture, TaskRequest, utc_now
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 
 
@@ -91,6 +97,8 @@ class InMemoryTaskRepository:
         self._tasks: dict[str, InterpretationTask] = {}
         self._executions: dict[str, Execution] = {}
         self._task_executions: dict[str, list[str]] = {}
+        self._inputs: dict[str, InterpretationInputVersion] = {}
+        self._task_inputs: dict[str, list[str]] = {}
         self._states: dict[str, InterpretationState] = {}
         self.reports: dict[str, str] = {}
 
@@ -110,16 +118,60 @@ class InMemoryTaskRepository:
             self._states[task_id] = state.model_copy(deep=True)
             self.reports[task_id] = ""
             self._task_executions[task_id] = []
+            self._task_inputs[task_id] = []
 
     async def get_task(self, task_id: str) -> InterpretationTask | None:
         task = self._tasks.get(task_id)
         return task.model_copy(deep=True) if task is not None else None
+
+    async def create_input_version(
+        self, task_id: str, fixture: MockFixture, source_type: InputSource = "UPLOAD"
+    ) -> InterpretationInputVersion:
+        """锁内分配序号；快照创建成功后才移动任务输入指针。"""
+
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+            if task.well_id != fixture.well.well_id:
+                raise InfrastructureError("TASK_WELL_MISMATCH", "输入井号与任务不一致")
+            sequence = max(
+                (self._inputs[item].sequence for item in self._task_inputs[task_id]), default=0
+            ) + 1
+            version = InterpretationInputVersion(
+                task_id=task_id,
+                well_id=task.well_id,
+                sequence=sequence,
+                source_type=source_type,
+                content_sha256=fixture_digest(fixture),
+                payload=fixture.model_copy(deep=True),
+            )
+            self._inputs[version.input_version_id] = version
+            self._task_inputs[task_id].append(version.input_version_id)
+            task.current_input_version_id = version.input_version_id
+            task.updated_at = utc_now()
+            return version.model_copy(deep=True)
+
+    async def get_input_version(self, input_version_id: str) -> InterpretationInputVersion | None:
+        """返回输入快照副本，调用方不能改写仓库中的历史版本。"""
+
+        version = self._inputs.get(input_version_id)
+        return version.model_copy(deep=True) if version is not None else None
+
+    async def list_input_versions(self, task_id: str) -> list[InterpretationInputVersion]:
+        """按创建顺序列出当前任务的输入版本。"""
+
+        return [
+            self._inputs[item].model_copy(deep=True) for item in self._task_inputs.get(task_id, [])
+        ]
 
     async def create_execution(
         self,
         state: InterpretationState,
         trigger_type: ExecutionTrigger = "RERUN",
         sequence: int | None = None,
+        input_version_id: str | None = None,
+        override_snapshot: InterpretationOverride | None = None,
     ) -> Execution:
         """锁内分配序号并创建执行，随后才移动当前指针。"""
 
@@ -130,6 +182,12 @@ class InMemoryTaskRepository:
                 raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
             if task.well_id != state.task.well_id:
                 raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+            if input_version_id is not None:
+                input_version = self._inputs.get(input_version_id)
+                if input_version is None:
+                    raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "输入版本不存在")
+                if input_version.task_id != task_id:
+                    raise InfrastructureError("INPUT_VERSION_TASK_MISMATCH", "输入版本不属于此任务")
             execution_id = state.workflow_execution_id
             if execution_id in self._executions:
                 raise InfrastructureError("EXECUTION_EXISTS", "执行标识已存在")
@@ -145,6 +203,10 @@ class InMemoryTaskRepository:
                 status=state.status,
                 state_snapshot=state.model_copy(deep=True),
                 trigger_type=trigger_type,
+                input_version_id=input_version_id,
+                override_snapshot=(override_snapshot or InterpretationOverride()).model_copy(
+                    deep=True
+                ),
                 created_at=now,
                 updated_at=now,
             )
@@ -252,6 +314,7 @@ class InMemoryTaskRepository:
             self._tasks[task_id] = task
             self._executions[execution_id] = execution
             self._task_executions[task_id] = [execution_id]
+            self._task_inputs[task_id] = []
             self._states[task_id] = state.model_copy(deep=True)
             self.reports[task_id] = ""
 

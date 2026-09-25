@@ -1,4 +1,6 @@
 import asyncio
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,8 +13,10 @@ from cnlc_agent.application.checkpoints import CheckpointStore
 from cnlc_agent.application.runtime import application_runtime, database_url
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.domain.enums import StepStatus
-from cnlc_agent.domain.errors import InfrastructureError
-from cnlc_agent.domain.models import TaskRequest
+from cnlc_agent.domain.errors import DataError, InfrastructureError
+from cnlc_agent.domain.inputs import fixture_digest
+from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.infrastructure.database import PostgreSQLTaskRepository
 from cnlc_agent.infrastructure.mock import InMemoryTaskRepository
@@ -203,6 +207,129 @@ async def test_service_rerun_creates_new_complete_execution(data_dir):
     assert task is not None
     assert task.current_execution_id == second_state.workflow_execution_id
     assert task.latest_successful_execution_id == second_state.workflow_execution_id
+
+
+async def test_uploaded_input_survives_temporary_directory_and_reruns(data_dir):
+    fixture = MockFixture.model_validate_json((data_dir / "WELL_MOCK_001.json").read_text())
+    original_raw_data = fixture.raw_data.model_copy(deep=True)
+    repository = InMemoryTaskRepository()
+    request = TaskRequest(well_id=fixture.well.well_id)
+
+    with TemporaryDirectory(prefix="cnlc-test-input-") as directory:
+        root = Path(directory)
+        app = build_application(
+            AppSettings(mock_data_dir=root, _env_file=None), task_repository=repository
+        )
+
+        async def materialize(version):
+            (root / f"{version.well_id}.json").write_text(version.payload.model_dump_json())
+
+        first_state, first_report = await app.run_with_input(request, fixture, materialize)
+        assert (root / f"{fixture.well.well_id}.json").exists()
+    assert not await asyncio.to_thread(root.exists)
+
+    inputs = await repository.list_input_versions(request.task_id)
+    assert len(inputs) == 1
+    first_input = inputs[0]
+    assert first_input.task_id == request.task_id
+    assert first_input.well_id == fixture.well.well_id
+    assert first_input.sequence == 1
+    assert first_input.source_type == "UPLOAD"
+    assert first_input.payload == fixture
+    assert first_input.content_sha256 == fixture_digest(fixture)
+    assert (await repository.get_input_version(first_input.input_version_id)).payload == fixture
+    first_execution = await repository.get_execution(first_state.workflow_execution_id)
+    assert first_execution is not None
+    assert first_execution.input_version_id == first_input.input_version_id
+    assert first_execution.override_snapshot == InterpretationOverride()
+    assert first_execution.markdown == first_report
+
+    changed = fixture.model_copy(deep=True)
+    changed.well.name = "第二份规范化输入"
+    second_input = await repository.create_input_version(request.task_id, changed)
+    assert second_input.sequence == 2
+    assert second_input.input_version_id != first_input.input_version_id
+    assert second_input.content_sha256 != first_input.content_sha256
+    assert (await repository.get_input_version(first_input.input_version_id)) == first_input
+    task = await repository.get_task(request.task_id)
+    assert task is not None
+    assert task.current_input_version_id == second_input.input_version_id
+
+    with TemporaryDirectory(prefix="cnlc-test-rerun-") as directory:
+        root = Path(directory)
+        app = build_application(
+            AppSettings(mock_data_dir=root, _env_file=None), task_repository=repository
+        )
+
+        async def materialize_old(version):
+            (root / f"{version.well_id}.json").write_text(version.payload.model_dump_json())
+
+        second_state, _ = await app.rerun(
+            request,
+            input_version_id=first_input.input_version_id,
+            override=InterpretationOverride(por=0.16, perm=0.16),
+            materialize=materialize_old,
+        )
+        third_state, _ = await app.rerun(
+            request,
+            input_version_id=first_input.input_version_id,
+            override=InterpretationOverride(
+                sampling_interval=0.1, por=0.18, prediction_model="prediction-v2"
+            ),
+            materialize=materialize_old,
+        )
+
+    executions = await repository.list_executions(request.task_id)
+    assert [item.sequence for item in executions] == [1, 2, 3]
+    assert all(item.input_version_id == first_input.input_version_id for item in executions)
+    assert [item.override_snapshot.por for item in executions] == [None, 0.16, 0.18]
+    assert executions[1].override_snapshot.perm == 0.16
+    assert executions[2].override_snapshot.sampling_interval == 0.1
+    assert executions[2].override_snapshot.prediction_model == "prediction-v2"
+    assert executions[0].markdown == first_report
+    assert executions[0].state_snapshot == first_state
+    assert executions[1].state_snapshot == second_state
+    assert executions[2].state_snapshot == third_state
+    assert fixture.raw_data == original_raw_data
+    assert (await repository.get_input_version(first_input.input_version_id)) == first_input
+    assert all(item.state_snapshot.raw_data == original_raw_data for item in executions)
+    assert all(len(item.state_snapshot.completed_steps) == 10 for item in executions)
+
+
+async def test_input_version_cannot_cross_task_or_fake_empty_override(data_dir):
+    fixture = MockFixture.model_validate_json((data_dir / "WELL_MOCK_001.json").read_text())
+    repository = InMemoryTaskRepository()
+    first_request = TaskRequest(well_id=fixture.well.well_id)
+    second_request = TaskRequest(well_id=fixture.well.well_id)
+    await repository.create(InterpretationState(task=first_request))
+    await repository.create(InterpretationState(task=second_request))
+    first_input = await repository.create_input_version(first_request.task_id, fixture)
+    with pytest.raises(InfrastructureError) as caught:
+        await repository.create_execution(
+            InterpretationState(task=second_request), input_version_id=first_input.input_version_id
+        )
+    assert caught.value.code == "INPUT_VERSION_TASK_MISMATCH"
+    assert len(await repository.list_executions(second_request.task_id)) == 1
+
+    app = build_application(
+        AppSettings(mock_data_dir=data_dir, _env_file=None), task_repository=repository
+    )
+    with pytest.raises(DataError) as caught:
+        await app.rerun(first_request, override=InterpretationOverride())
+    assert caught.value.code == "EMPTY_OVERRIDE"
+
+
+async def test_rejected_input_does_not_move_task_pointer(data_dir):
+    fixture = MockFixture.model_validate_json((data_dir / "WELL_MOCK_001.json").read_text())
+    repository = InMemoryTaskRepository()
+    request = TaskRequest(well_id="OTHER_WELL")
+    await repository.create_task(InterpretationState(task=request))
+    with pytest.raises(InfrastructureError) as caught:
+        await repository.create_input_version(request.task_id, fixture)
+    assert caught.value.code == "TASK_WELL_MISMATCH"
+    task = await repository.get_task(request.task_id)
+    assert task is not None and task.current_input_version_id is None
+    assert await repository.list_input_versions(request.task_id) == []
 
 
 async def test_sql_errors_are_sanitized():

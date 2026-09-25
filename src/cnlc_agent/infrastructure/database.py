@@ -12,7 +12,13 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.execution import Execution, ExecutionTrigger, InterpretationTask
-from cnlc_agent.domain.models import JsonObject, utc_now
+from cnlc_agent.domain.inputs import (
+    InputSource,
+    InterpretationInputVersion,
+    fixture_digest,
+)
+from cnlc_agent.domain.models import JsonObject, MockFixture, utc_now
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 
 
@@ -33,9 +39,33 @@ class TaskRow(Base):
     snapshot: Mapped[JsonObject] = mapped_column(JSONB)
     markdown: Mapped[str] = mapped_column(Text)
     current_execution_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_input_version_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     latest_successful_execution_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class InputVersionRow(Base):
+    """已校验井资料的持久版本；不保存原始浏览器附件或临时文件路径。"""
+
+    __tablename__ = "interpretation_input_version"
+    __table_args__ = (
+        UniqueConstraint("task_id", "sequence", name="uq_input_version_task_sequence"),
+    )
+
+    input_version_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("interpretation_task.task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    well_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    sequence: Mapped[int] = mapped_column(nullable=False)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[JsonObject] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ExecutionRow(Base):
@@ -56,6 +86,12 @@ class ExecutionRow(Base):
     state_snapshot: Mapped[JsonObject] = mapped_column(JSONB, nullable=False)
     markdown: Mapped[str] = mapped_column(Text, nullable=False)
     trigger_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_version_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("interpretation_input_version.input_version_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    override_snapshot: Mapped[JsonObject] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -71,8 +107,25 @@ def _as_execution(row: ExecutionRow) -> Execution:
         state_snapshot=InterpretationState.model_validate(row.state_snapshot),
         markdown=row.markdown,
         trigger_type=row.trigger_type,  # type: ignore[arg-type]
+        input_version_id=row.input_version_id,
+        override_snapshot=InterpretationOverride.model_validate(row.override_snapshot),
         created_at=row.created_at,
         updated_at=row.updated_at,
+    )
+
+
+def _as_input_version(row: InputVersionRow) -> InterpretationInputVersion:
+    """反序列化时重新验证规范化输入及内容摘要。"""
+
+    return InterpretationInputVersion(
+        input_version_id=row.input_version_id,
+        task_id=row.task_id,
+        well_id=row.well_id,
+        sequence=row.sequence,
+        source_type=row.source_type,  # type: ignore[arg-type]
+        content_sha256=row.content_sha256,
+        payload=MockFixture.model_validate(row.payload),
+        created_at=row.created_at,
     )
 
 
@@ -115,6 +168,7 @@ class PostgreSQLTaskRepository:
                     task_id=row.task_id,
                     well_id=row.well_id,
                     current_execution_id=row.current_execution_id,
+                    current_input_version_id=row.current_input_version_id,
                     latest_successful_execution_id=row.latest_successful_execution_id,
                     created_at=row.created_at,
                     updated_at=row.updated_at,
@@ -124,11 +178,92 @@ class PostgreSQLTaskRepository:
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError("DATABASE_READ_FAILED", "数据库任务读取失败") from None
 
+    async def create_input_version(
+        self, task_id: str, fixture: MockFixture, source_type: InputSource = "UPLOAD"
+    ) -> InterpretationInputVersion:
+        """任务行锁内分配版本号；输入插入成功后移动当前输入指针。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                task = await session.scalar(
+                    select(TaskRow).where(TaskRow.task_id == task_id).with_for_update()
+                )
+                if task is None:
+                    raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+                if task.well_id != fixture.well.well_id:
+                    raise InfrastructureError("TASK_WELL_MISMATCH", "输入井号与任务不一致")
+                last_sequence = await session.scalar(
+                    select(func.max(InputVersionRow.sequence)).where(
+                        InputVersionRow.task_id == task_id
+                    )
+                )
+                version = InterpretationInputVersion(
+                    task_id=task_id,
+                    well_id=task.well_id,
+                    sequence=(last_sequence or 0) + 1,
+                    source_type=source_type,
+                    content_sha256=fixture_digest(fixture),
+                    payload=fixture,
+                )
+                row = InputVersionRow(
+                    input_version_id=version.input_version_id,
+                    task_id=task_id,
+                    well_id=task.well_id,
+                    sequence=version.sequence,
+                    source_type=version.source_type,
+                    content_sha256=version.content_sha256,
+                    payload=fixture.model_dump(mode="json"),
+                    created_at=version.created_at,
+                )
+                session.add(row)
+                await session.flush()
+                task.current_input_version_id = row.input_version_id
+                task.updated_at = utc_now()
+            return version.model_copy(deep=True)
+        except IntegrityError:
+            raise InfrastructureError(
+                "INPUT_VERSION_CONFLICT", "输入版本标识或序号已存在"
+            ) from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库输入版本创建失败") from None
+
+    async def get_input_version(self, input_version_id: str) -> InterpretationInputVersion | None:
+        """读取并校验持久化输入快照及摘要。"""
+
+        try:
+            async with self.sessions() as session:
+                row = await session.get(InputVersionRow, input_version_id)
+                return _as_input_version(row) if row is not None else None
+        except (ValidationError, ValueError):
+            raise InfrastructureError("INVALID_STORED_INPUT", "数据库输入版本结构无效") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_READ_FAILED", "数据库输入版本读取失败") from None
+
+    async def list_input_versions(self, task_id: str) -> list[InterpretationInputVersion]:
+        """按序号返回任务的全部历史输入版本。"""
+
+        try:
+            async with self.sessions() as session:
+                rows = (await session.scalars(
+                    select(InputVersionRow)
+                    .where(InputVersionRow.task_id == task_id)
+                    .order_by(InputVersionRow.sequence)
+                )).all()
+                return [_as_input_version(row) for row in rows]
+        except (ValidationError, ValueError):
+            raise InfrastructureError("INVALID_STORED_INPUT", "数据库输入版本结构无效") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError(
+                "DATABASE_READ_FAILED", "数据库输入版本列表读取失败"
+            ) from None
+
     async def create_execution(
         self,
         state: InterpretationState,
         trigger_type: ExecutionTrigger = "RERUN",
         sequence: int | None = None,
+        input_version_id: str | None = None,
+        override_snapshot: InterpretationOverride | None = None,
     ) -> Execution:
         """任务行加锁后分配序号；插入成功才更新当前指针。"""
 
@@ -141,6 +276,14 @@ class PostgreSQLTaskRepository:
                     raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
                 if task.well_id != state.task.well_id:
                     raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+                if input_version_id is not None:
+                    input_row = await session.get(InputVersionRow, input_version_id)
+                    if input_row is None:
+                        raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "输入版本不存在")
+                    if input_row.task_id != state.task.task_id:
+                        raise InfrastructureError(
+                            "INPUT_VERSION_TASK_MISMATCH", "输入版本不属于此任务"
+                        )
                 if await session.get(ExecutionRow, state.workflow_execution_id) is not None:
                     raise InfrastructureError("EXECUTION_EXISTS", "执行标识已存在")
                 last_sequence = await session.scalar(
@@ -171,6 +314,10 @@ class PostgreSQLTaskRepository:
                     state_snapshot=state.model_dump(mode="json"),
                     markdown="",
                     trigger_type=trigger_type,
+                    input_version_id=input_version_id,
+                    override_snapshot=(override_snapshot or InterpretationOverride()).model_dump(
+                        mode="json"
+                    ),
                     created_at=now,
                     updated_at=now,
                 )
@@ -319,6 +466,8 @@ class PostgreSQLTaskRepository:
                         state_snapshot=payload,
                         markdown="",
                         trigger_type="INITIAL",
+                        input_version_id=None,
+                        override_snapshot={},
                         created_at=state.created_at,
                         updated_at=state.updated_at,
                     )

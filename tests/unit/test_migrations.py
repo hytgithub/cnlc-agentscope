@@ -23,6 +23,11 @@ def test_initial_migration_generates_postgresql_sql():
     assert "current_execution_id" in result.stdout
     assert "latest_successful_execution_id" in result.stdout
     assert "INSERT INTO interpretation_execution" in result.stdout
+    assert "CREATE TABLE interpretation_input_version" in result.stdout
+    assert "uq_input_version_task_sequence" in result.stdout
+    assert "current_input_version_id" in result.stdout
+    assert "input_version_id" in result.stdout
+    assert "override_snapshot" in result.stdout
 
 
 def test_versioned_execution_migration_downgrades_to_0001():
@@ -37,3 +42,17 @@ def test_versioned_execution_migration_downgrades_to_0001():
     assert result.returncode == 0, result.stderr
     assert "DROP TABLE interpretation_execution" in result.stdout
     assert "DROP COLUMN current_execution_id" in result.stdout
+
+
+def test_versioned_input_migration_downgrades_to_0002():
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "0003:0002", "--sql"],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "DATABASE_URL": "postgresql+asyncpg://localhost/cnlc"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "DROP TABLE interpretation_input_version" in result.stdout
+    assert "DROP COLUMN input_version_id" in result.stdout

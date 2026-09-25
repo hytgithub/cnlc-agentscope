@@ -3,6 +3,8 @@
 import asyncio
 import base64
 import json
+from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -19,10 +21,12 @@ from agentscope.message import AssistantMsg, Msg, TextBlock, UserMsg
 from agentscope.model import ChatModelBase
 from agentscope.tool import Toolkit
 
+from cnlc_agent.application.bootstrap import build_application
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
 from cnlc_agent.demo.tools import RunWellInterpretationTool
 from cnlc_agent.demo.uploads import MAX_UPLOAD_BYTES, UploadError, parse_upload
-from cnlc_agent.infrastructure.mock import MockModelGateway
+from cnlc_agent.domain.inputs import fixture_digest
+from cnlc_agent.infrastructure.mock import InMemoryTaskRepository, MockModelGateway
 from cnlc_agent.infrastructure.telemetry import event_observer
 
 
@@ -126,6 +130,46 @@ async def test_upload_runs_all_steps_and_streams_unmodified_report(data_dir):
     assert w06_start < w06_end < events.index(result_event)
     assert isinstance(events[-1], ReplyEndEvent)
     assert event_observer.get() is None
+
+
+async def test_upload_persists_normalized_input_before_temporary_file_is_removed(
+    data_dir, monkeypatch
+):
+    repository = InMemoryTaskRepository()
+    roots: list[Path] = []
+
+    @asynccontextmanager
+    async def shared_runtime(settings, _persistence, _connections):
+        roots.append(settings.mock_data_dir)
+        app = build_application(settings, task_repository=repository)
+        try:
+            yield app
+        finally:
+            await app.close()
+
+    monkeypatch.setattr("cnlc_agent.demo.tools.application_runtime", shared_runtime)
+    data = json.loads((data_dir / "WELL_MOCK_001.json").read_bytes())
+    del data["well"]["well_id"]
+    upload = json.dumps(data).encode()
+    events, reply = await collect_reply(uploaded_message(upload))
+    assert "测井解释" in reply.get_text_content()
+    result_event = next(e for e in events if isinstance(e, ToolResultEndEvent))
+    task_id = result_event.metadata["result"]["task_id"]
+    versions = await repository.list_input_versions(task_id)
+    assert len(versions) == 1
+    version = versions[0]
+    expected_fixture, _ = parse_upload([uploaded_message(upload)])
+    assert version.payload == expected_fixture
+    assert version.well_id.startswith("UPLOAD_")
+    assert version.source_type == "UPLOAD"
+    assert version.content_sha256 == fixture_digest(expected_fixture)
+    assert roots and not roots[0].exists()
+    restored = await repository.get_input_version(version.input_version_id)
+    assert restored is not None and restored.payload == expected_fixture
+    execution = (await repository.list_executions(task_id))[0]
+    assert execution.input_version_id == version.input_version_id
+    task = await repository.get_task(task_id)
+    assert task is not None and task.current_input_version_id == version.input_version_id
 
 
 async def test_synthetic_interpretation_context_is_adapted_and_runs():

@@ -1,8 +1,9 @@
 """Demo 服务向 AgentScope 暴露的唯一高层业务 Tool。"""
 
+import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,6 +19,7 @@ from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.demo.presentation import DemoStep, present_steps
 from cnlc_agent.domain.enums import StepId, StepStatus
+from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import MockFixture, TaskRequest
 from cnlc_agent.domain.state import InterpretationState
 
@@ -73,27 +75,56 @@ class InterpretationToolRunner:
             state, report_markdown = await service.run(
                 TaskRequest(well_id=well_id, instruction=instruction)
             )
-        return DemoToolResult(
-            status=state.status,
-            task_id=state.task.task_id,
-            well_id=state.task.well_id,
-            completed_steps=state.completed_steps,
-            step_statuses=_step_statuses(state),
-            steps=present_steps(state),
-            summary=_summary(state),
-            report_markdown=report_markdown,
-        )
+        return _demo_result(state, report_markdown)
+
+    async def run_uploaded(
+        self,
+        fixture: MockFixture,
+        instruction: str,
+        materialize: Callable[[InterpretationInputVersion], Awaitable[None]],
+    ) -> DemoToolResult:
+        """上传先落为 InputVersion，再执行现有 W01～W10。"""
+
+        async with self._service_context() as service:
+            state, report_markdown = await service.run_with_input(
+                TaskRequest(well_id=fixture.well.well_id, instruction=instruction),
+                fixture,
+                materialize,
+            )
+        return _demo_result(state, report_markdown)
+
+
+def _demo_result(state: InterpretationState, report_markdown: str) -> DemoToolResult:
+    """旧入口和上传入口共用相同的可视化结果投影。"""
+
+    return DemoToolResult(
+        status=state.status,
+        task_id=state.task.task_id,
+        well_id=state.task.well_id,
+        completed_steps=state.completed_steps,
+        step_statuses=_step_statuses(state),
+        steps=present_steps(state),
+        summary=_summary(state),
+        report_markdown=report_markdown,
+    )
 
 
 async def run_uploaded_well(fixture: MockFixture, instruction: str) -> DemoToolResult:
-    """在临时目录暂存本次上传，绝不覆盖仓库内置 Fixture。"""
+    """InputVersion 是事实来源；临时目录仅适配现有 W01 Fixture 读取。"""
 
-    # 临时目录在调用结束后自动删除，附件文件名不参与任何路径拼接。
+    # 临时目录在调用结束后删除，上传文件名不参与路径拼接。
     with TemporaryDirectory(prefix="cnlc-upload-") as directory:
         root = Path(directory)
-        (root / f"{fixture.well.well_id}.json").write_text(
-            fixture.model_dump_json(), encoding="utf-8"
-        )
+
+        async def materialize(version: InterpretationInputVersion) -> None:
+            """只从仓库读回的规范化快照生成本次执行的临时 Fixture。"""
+
+            await asyncio.to_thread(
+                (root / f"{version.well_id}.json").write_text,
+                version.payload.model_dump_json(),
+                encoding="utf-8",
+            )
+
         settings = AppSettings(mode="demo", mock_data_dir=root)
         connections = ConnectionSettings()
         if settings.model_provider != "mock" and connections.model_name != "qwen-plus":
@@ -101,7 +132,7 @@ async def run_uploaded_well(fixture: MockFixture, instruction: str) -> DemoToolR
         runner = InterpretationToolRunner(
             lambda: application_runtime(settings, PersistenceSettings(), connections)
         )
-        return await runner.run(fixture.well.well_id, instruction)
+        return await runner.run_uploaded(fixture, instruction, materialize)
 
 
 def _step_statuses(state: InterpretationState) -> dict[StepId, StepStatus]:

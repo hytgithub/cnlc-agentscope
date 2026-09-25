@@ -6,7 +6,9 @@ from pydantic import ValidationError
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import DataError, ToolError
+from cnlc_agent.domain.inputs import InterpretationInputVersion, fixture_digest
 from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.infrastructure.mock import InMemoryStateStore, MockWellRepository
 from cnlc_agent.infrastructure.telemetry import LoggingTelemetry
@@ -21,6 +23,56 @@ def test_schema_rejects_misaligned_curves_and_non_mock_fixture(fixture_data):
     fixture_data["outputs"]["fluid"]["is_mock"] = False
     with pytest.raises(ValidationError, match="is_mock"):
         MockFixture.model_validate(fixture_data)
+
+
+def test_normalized_fixture_digest_is_stable(fixture_data):
+    fixture = MockFixture.model_validate(fixture_data)
+    reordered = {key: fixture_data[key] for key in reversed(fixture_data)}
+    assert fixture_digest(fixture) == fixture_digest(MockFixture.model_validate(reordered))
+    assert len(fixture_digest(fixture)) == 64
+    with pytest.raises(ValidationError, match="digest"):
+        InterpretationInputVersion(
+            task_id="task-1",
+            well_id=fixture.well.well_id,
+            sequence=1,
+            source_type="UPLOAD",
+            content_sha256="0" * 64,
+            payload=fixture,
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"sampling_interval": 0},
+        {"sampling_interval": -0.1},
+        {"por": -0.01},
+        {"por": 1.01},
+        {"por": 16},
+        {"perm": -1},
+        {"prediction_model": ""},
+        {"prediction_model": "  "},
+        {"prediction_model": "x" * 65},
+        {"unknown": 1},
+    ],
+)
+def test_interpretation_override_rejects_invalid_values(changes):
+    with pytest.raises(ValidationError):
+        InterpretationOverride.model_validate(changes)
+
+
+def test_interpretation_override_preserves_all_supported_values():
+    override = InterpretationOverride(
+        sampling_interval=0.1, por=0.16, perm=0.16, prediction_model="prediction-v2"
+    )
+    assert override.has_changes()
+    assert override.model_dump(exclude_none=True) == {
+        "sampling_interval": 0.1,
+        "por": 0.16,
+        "perm": 0.16,
+        "prediction_model": "prediction-v2",
+    }
+    assert not InterpretationOverride().has_changes()
 
 
 @pytest.mark.parametrize(

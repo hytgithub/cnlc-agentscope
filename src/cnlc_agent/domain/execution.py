@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.models import Contract, WellId, utc_now
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 
 ExecutionTrigger = Literal["INITIAL", "RERUN"]
@@ -18,6 +19,7 @@ class InterpretationTask(Contract):
     task_id: str
     well_id: WellId
     current_execution_id: str | None = None
+    current_input_version_id: str | None = Field(default=None, min_length=1)
     latest_successful_execution_id: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -33,6 +35,8 @@ class Execution(Contract):
     state_snapshot: InterpretationState
     markdown: str = ""
     trigger_type: ExecutionTrigger
+    input_version_id: str | None = Field(default=None, min_length=1)
+    override_snapshot: InterpretationOverride = Field(default_factory=InterpretationOverride)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

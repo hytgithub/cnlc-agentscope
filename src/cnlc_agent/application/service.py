@@ -4,8 +4,10 @@ from typing import Literal
 from cnlc_agent.agents.main_agent import MainAgent
 from cnlc_agent.application.ports import TaskRepository, Telemetry
 from cnlc_agent.domain.enums import StepStatus
-from cnlc_agent.domain.errors import InfrastructureError
-from cnlc_agent.domain.models import ErrorDetail, TaskRequest, utc_now
+from cnlc_agent.domain.errors import DataError, InfrastructureError
+from cnlc_agent.domain.inputs import InterpretationInputVersion
+from cnlc_agent.domain.models import ErrorDetail, MockFixture, TaskRequest, utc_now
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState, StateChange
 from cnlc_agent.reports.assembler import ReportAssembler
 
@@ -43,16 +45,69 @@ class InterpretationTaskService:
             await self.repository.create(state)
         return await self._run_execution(request, state)
 
-    async def rerun(self, request: TaskRequest) -> tuple[InterpretationState, str]:
-        """在已有任务下创建新执行；Task 01 仍完整运行 W01～W10。"""
+    async def run_with_input(
+        self,
+        request: TaskRequest,
+        fixture: MockFixture,
+        materialize: Callable[[InterpretationInputVersion], Awaitable[None]],
+    ) -> tuple[InterpretationState, str]:
+        """保存上传的规范化输入，再由 Demo 适配器物化它并运行完整流程。"""
+
+        if fixture.well.well_id != request.well_id:
+            raise DataError("TASK_WELL_MISMATCH", "上传井号与任务井号不一致")
+        state = InterpretationState(task=request, mode=self.mode)
+        with self.telemetry.span(
+            "task.create",
+            {"task_id": request.task_id, "trace_id": state.trace_id},
+        ):
+            await self.repository.create_task(state)
+            version = await self.repository.create_input_version(request.task_id, fixture)
+            # 使用仓库读回的版本作为当前 W01 临时文件的唯一来源。
+            saved = await self.repository.get_input_version(version.input_version_id)
+            if saved is None:
+                raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "输入版本保存后无法读取")
+            await materialize(saved)
+            await self.repository.create_execution(
+                state, "INITIAL", input_version_id=saved.input_version_id
+            )
+        return await self._run_execution(request, state)
+
+    async def rerun(
+        self,
+        request: TaskRequest,
+        *,
+        input_version_id: str | None = None,
+        override: InterpretationOverride | None = None,
+        materialize: Callable[[InterpretationInputVersion], Awaitable[None]] | None = None,
+    ) -> tuple[InterpretationState, str]:
+        """创建绑定输入/Override 的新执行；本阶段仍完整运行 W01～W10。"""
 
         task = await self.repository.get_task(request.task_id)
         if task is None:
             raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
         if task.well_id != request.well_id:
             raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
+        if override is not None and not override.has_changes():
+            raise DataError("EMPTY_OVERRIDE", "参数修改命令至少需要一个变化")
+        selected_input_id = input_version_id or task.current_input_version_id
+        if selected_input_id is not None:
+            selected_input = await self.repository.get_input_version(selected_input_id)
+            if selected_input is None:
+                raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "输入版本不存在")
+            if selected_input.task_id != request.task_id:
+                raise InfrastructureError("INPUT_VERSION_TASK_MISMATCH", "输入版本不属于此任务")
+            if materialize is None:
+                raise InfrastructureError(
+                    "INPUT_MATERIALIZER_REQUIRED", "上传输入重跑需要受控物化适配器"
+                )
+            await materialize(selected_input)
         state = InterpretationState(task=request, mode=self.mode)
-        await self.repository.create_execution(state, "RERUN")
+        await self.repository.create_execution(
+            state,
+            "RERUN",
+            input_version_id=selected_input_id,
+            override_snapshot=override,
+        )
         return await self._run_execution(request, state)
 
     async def _run_execution(

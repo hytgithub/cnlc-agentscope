@@ -4,7 +4,9 @@ from contextlib import AbstractContextManager
 from typing import Protocol
 
 from cnlc_agent.domain.execution import Execution, ExecutionTrigger, InterpretationTask
-from cnlc_agent.domain.models import Contract, JsonObject, WellData, WellId
+from cnlc_agent.domain.inputs import InputSource, InterpretationInputVersion
+from cnlc_agent.domain.models import Contract, JsonObject, MockFixture, WellData, WellId
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 
 
@@ -21,11 +23,23 @@ class TaskRepository(Protocol):
 
     async def get_task(self, task_id: str) -> InterpretationTask | None: ...
 
+    async def create_input_version(
+        self, task_id: str, fixture: MockFixture, source_type: InputSource = "UPLOAD"
+    ) -> InterpretationInputVersion: ...
+
+    async def get_input_version(
+        self, input_version_id: str
+    ) -> InterpretationInputVersion | None: ...
+
+    async def list_input_versions(self, task_id: str) -> list[InterpretationInputVersion]: ...
+
     async def create_execution(
         self,
         state: InterpretationState,
         trigger_type: ExecutionTrigger = "RERUN",
         sequence: int | None = None,
+        input_version_id: str | None = None,
+        override_snapshot: InterpretationOverride | None = None,
     ) -> Execution: ...
 
     async def get_execution(self, execution_id: str) -> Execution | None: ...
