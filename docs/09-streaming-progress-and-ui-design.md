@@ -1,6 +1,6 @@
 # 测井解释过程流式展示与前端职责设计
 
-本文记录 Task 10.1 后的首次上传行为。旧实现只在 `run_well_interpretation` 返回 `QUEUED` 后显示“任务已提交”并发送 `ReplyEnd`；Worker 虽在后台继续，用户看不到 W01～W10 和报告过程。当前实现保持同一条 AgentScope SSE 回复，直到本轮 Execution 的最终报告已读取并发送。
+本文记录 Task 10.2 后的统一执行型交互。旧实现只有首次上传会保持 SSE；MODIFY 和 FULL_RERUN 在返回 `QUEUED` 后立即结束。当前 START、MODIFY 和 FULL_RERUN 都复用 `ExecutionReplyStreamer`，保持同一条 AgentScope SSE 回复，直到本轮 Execution 的最终报告已读取并发送。
 
 ## 1. 当前首次解释时序
 
@@ -34,9 +34,9 @@ sequenceDiagram
     MW-->>UI: ReplyEnd
 ```
 
-`ToolResultEnd` 表示任务提交完成并提供面板打开所需的可信标识，**不表示 Workflow 已完成**。`ReplyEnd` 表示这次首次上传回复已经包含最终进度和报告，或者已经形成明确失败/阻塞/复核结果。
+`ToolResultEnd` 表示任务提交完成并提供面板打开所需的可信标识，**不表示 Workflow 已完成**。`ReplyEnd` 表示本次创建型交互已经包含最终进度和报告，或者已经形成明确失败/阻塞/复核结果。
 
-后台语义没有改变：Tool 很快提交 Execution，`InProcessExecutionDispatcher` 持有 Worker；HTTP/SSE 观察者等待完成不等于把业务 Workflow 改成同步执行。其他修改、全量重跑和查询命令仍按任务级 Tool 契约工作。
+后台语义没有改变：Tool 很快提交 Execution，`InProcessExecutionDispatcher` 持有 Worker；HTTP/SSE 观察者等待完成不等于把业务 Workflow 改成同步执行。STATUS 和 GET_REPORT 不创建 Execution，仍按任务级只读 Tool 契约工作。
 
 ## 2. 事件来源和安全投影
 
@@ -122,6 +122,8 @@ sequenceDiagram
 
 报告按 Markdown 一级到三级标题切成多个 `TextBlockDelta`。`CNLC_STREAM_REPORT_CHUNK_DELAY_SECONDS` 当前默认 `0.12` 秒，只让相邻章节进入不同渲染帧，不改变持久化报告。
 
+MODIFY 开头展示 ToolResult 中非空的有效 override；`reused_steps` 来自该 Execution 的状态快照，按静态步骤元数据展示为“已复用”，不会伪装成重新执行。FULL_RERUN 的计划不含复用步骤，W01～W10 全部依照真实 Telemetry 展示。最终报告始终通过本轮 ToolResult 返回的明确 `execution_id` 读取。
+
 ## 6. SSE 断开与重新打开
 
 ```mermaid
@@ -138,7 +140,7 @@ flowchart TD
 
 ## 7. 页面职责
 
-- **聊天区**：自然语言、首次上传的实时 Thinking、最终报告和任务级 Tool 调用。
+- **聊天区**：自然语言、START/MODIFY/FULL_RERUN 的实时 Thinking、最终报告和任务级 Tool 调用。
 - **Interpretation Panel**：当前/历史 Execution、W01～W10 状态、四阶段 RUN/REUSE 视图、有效参数、ToolRun 列表和报告。
 - **History**：切换历史 Execution 后保持选中版本，后台刷新当前任务不会强制跳回当前。
 
@@ -149,3 +151,7 @@ flowchart TD
 `CNLC_STREAM_STEP_DELAY_SECONDS` 当前默认 `1.0` 秒。每个真实步骤进入终态后，SSE 展示协程暂停相应时间，便于观察；后台 Workflow、Execution、ToolRun 和数据库写入不被减速。因此快 Worker 可能已完成，而浏览器仍按队列展示此前事件，这是展示节拍，不是业务状态滞后。
 
 建议后续 Task 将正常运行默认值评估为 `0`，演示环境显式设置非零值；需结合产品体验和测试重新确认。本次只记录现状，不修改配置，也不实施 Task 10.1.1。
+
+## 9. 内部消息展示边界
+
+AgentScope 当前把运行上下文注入为 `role = assistant` 消息内的 `HintBlock`，其 `source` 是结构化 JSON：`label = System`、`sublabel = Runtime State`；独立系统提示则使用 `role = system`。前端 `ChatContent` 只在 presentation boundary 移除这类结构化 runtime hint 和 system role 消息，Session persistence 与模型上下文保持不变。同一 Assistant 消息中的 Text、Thinking、ToolCall、ToolResult 会继续显示，其他来源的 HintBlock 也不受影响。过滤不匹配 `Treat the following...` 等文本。

@@ -147,3 +147,15 @@ pnpm --filter frontend lint                              PASS（0 error，21 个
 - 内置浏览器文件选择器自动化限制需要通过手工点击或支持文件注入的浏览器驱动复核一次选择动作；正式上传协议、持久化、浏览器渲染及后续交互已完成真实联调。
 
 No Architecture Issue found.
+
+## Task 10.2：统一执行型交互流式过程
+
+- 新增 `ExecutionReplyStreamer`，START、MODIFY、FULL_RERUN 共享同一套 Telemetry 投影、`dispatcher.wait()`、Execution repository 与按明确 `execution_id` 的报告读取。
+- `UploadInterpretationReply` 仅负责附件解析和 START Tool 生命周期；纯文本创建型 Tool 由 `ExecutionStreamingMiddleware` 在 `ToolResultEnd` 后接管同一回复。STATUS 与 GET_REPORT 不等待新 Execution。
+- MODIFY 从 ToolResult 的 `effective_override` 展示非空有效参数，从 `reused_steps` 展示 W01～W03“已复用”；实际 W04～W10 继续由真实事件展示。FULL_RERUN 不显示复用，真实运行 W01～W10。
+- Mock 状态匹配覆盖“现在执行到哪里了”“处理到什么地方了”“现在到哪一步了”等表达。
+- AgentScope 内部运行上下文的真实结构为 Assistant 消息内的 `HintBlock`，其 source 为 `System / Runtime State`；独立系统提示使用 `role = system`。前端仅在 `ChatContent` 展示边界过滤对应 block/message，仍保留同一 Assistant 消息中的 Thinking、Tool 和 Text；未使用文本硬编码。
+- 请求侧断开只取消流式观察与等待，`dispatcher.wait()` 的 shield 保持后台 Execution 继续。
+- 浏览器实际验收：START 按约 1 秒展示 W01～W10；MODIFY 显示 W01～W03 已复用、W04～W10、`calculate_sw` 和对应报告；FULL_RERUN 中途可见只推进到 W03，最终显示 W01～W10 与对应报告且没有“已复用”；三种状态问法均调用只读状态 Tool 并返回当前 Execution #1 的 SUCCESS 快照。
+- 刷新历史长会话后，页面不再显示 `Treat the following as the ground truth...` 或“系统消息 - 运行状态”，普通 Thinking、Tool 和报告仍可见。Session persistence 中的原始上下文未删除。
+- 本轮运行环境没有可用的真实模型 API Key，因此 Task 10.2 的 qwen-plus 手工复验未执行；Mock ReAct、真实 PostgreSQL/Redis、AgentScope SSE 和浏览器链路均已完成验收，未用 Mock 结果冒充 qwen-plus 验收。

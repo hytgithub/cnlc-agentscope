@@ -43,6 +43,11 @@ flowchart TD
 
 报告 selector 支持 `CURRENT`、`PREVIOUS`、`LATEST_SUCCESSFUL`。显式 `execution_id` 仍需验证属于该 Task。
 
+START、MODIFY 和 FULL_RERUN 的 Task Tool 返回 `QUEUED/RUNNING` 与可信
+`task_id + execution_id` 后，统一进入 `ExecutionReplyStreamer`。ReAct 只负责选择动作；
+W01～W10、专业 Tool、RUN/REUSE 和报告均来自该 Execution 的持久事实与 Telemetry，
+不会再次经过 qwen-plus 生成。STATUS 与 GET_REPORT 是只读动作，继续使用正常 ReAct 回复。
+
 ### 3.1 意图矩阵
 
 | 用户表达 | Intent | Tool | 结果 |
@@ -52,6 +57,7 @@ flowchart TD
 | 把 POR/PERM 改成 0.16 | MODIFY | `modify_well_interpretation` | 新 Execution |
 | 全部重新跑 | FULL_RERUN | `rerun_well_interpretation` | 全流程新 Execution |
 | 现在处理到哪里了 | STATUS | `get_interpretation_status` | 读取真实状态 |
+| 现在执行到哪里了 / 处理到什么地方了 / 现在到哪一步了 | STATUS | `get_interpretation_status` | 读取当前 Execution |
 | 给我上一版报告 | GET_REPORT | `get_interpretation_report(PREVIOUS)` | 历史报告 |
 | 给我当前报告 | GET_REPORT | `get_interpretation_report(CURRENT)` | 当前报告 |
 | 最近成功报告 | GET_REPORT | `get_interpretation_report(LATEST_SUCCESSFUL)` | 最近成功版本 |
@@ -84,7 +90,7 @@ flowchart TD
 
 ## 6. MockTaskShellModel 与真实模型
 
-`MockTaskShellModel._command()` 是没有公网模型凭证时使用的本地确定性联调桩，只覆盖测试所需的少量中文命令模式。它不代表生产意图识别架构，也不是独立 IntentClassifier。
+`MockTaskShellModel._command()` 是没有公网模型凭证时使用的本地确定性联调桩。状态查询使用小型确定性模式匹配，覆盖“执行到哪里”“处理到什么地方”“现在到哪一步”“当前进度/状态”等自然表达。它不代表生产意图识别架构，也不是独立 IntentClassifier。
 
 真实路径是 `qwen-plus` ReAct：系统提示约束领域和 Tool 边界，Tool description 告诉模型动作语义，JSON Schema 约束参数形状，Pydantic 和应用层再次校验。专业 Workflow 内的模型访问仍走统一 ModelGateway，和外层任务意图模型承担不同职责。
 

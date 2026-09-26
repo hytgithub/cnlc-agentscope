@@ -1,10 +1,8 @@
-"""使用官方 AgentScope Tool 与事件协议生成边界清晰的 Demo 流式回复。"""
+"""将上传资料映射为首次解释，并复用统一 Execution 流式投影。"""
 
 import asyncio
 import json
-import re
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import suppress
 from typing import Any
 from uuid import uuid4
 
@@ -31,50 +29,32 @@ from agentscope.middleware import MiddlewareBase
 from agentscope.tool import ToolResponse
 from agentscope.types import ReplyFinishedReason
 
-from cnlc_agent.demo.progress import ExecutionProgressProjector
+from cnlc_agent.demo.execution_stream import ExecutionReplyStreamer, is_streaming_execution
 from cnlc_agent.demo.tools import RUN_TOOL_NAME, RunWellInterpretationTool
 from cnlc_agent.demo.uploads import UploadError, has_attachment, parse_upload
-from cnlc_agent.domain.models import JsonObject
 from cnlc_agent.infrastructure.telemetry import event_observer
-
-_REPORT_SECTION_PATTERN = re.compile(r"(?=^#{1,3} )", re.MULTILINE)
-
-
-def _report_chunks(markdown: str) -> list[str]:
-    """按 Markdown 标题切分确定性报告，只改善流式体验而不改写文本。"""
-    chunks = [chunk for chunk in _REPORT_SECTION_PATTERN.split(markdown) if chunk]
-    return chunks or [markdown]
 
 
 class UploadInterpretationReply(MiddlewareBase):
-    """把本轮上传映射为一次业务 Tool 调用，不再交给外层 LLM 改写报告。"""
+    """上传层只解析附件并创建 START，后续执行统一交给 Streamer。"""
 
     def __init__(
         self,
         tool: RunWellInterpretationTool,
         *,
+        streamer: ExecutionReplyStreamer | None = None,
         step_delay_seconds: float = 1.0,
         report_chunk_delay_seconds: float = 0.12,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        if step_delay_seconds < 0 or report_chunk_delay_seconds < 0:
-            raise ValueError("流式展示间隔不能为负数")
         self.tool = tool
-        self.step_delay_seconds = step_delay_seconds
-        self.report_chunk_delay_seconds = report_chunk_delay_seconds
-        self._sleep = sleep
-
-    async def _pace_step(self) -> None:
-        """仅控制 SSE 展示节奏，不阻塞后台 Workflow 或修改业务状态。"""
-
-        if self.step_delay_seconds > 0:
-            await self._sleep(self.step_delay_seconds)
-
-    async def _pace_report_chunk(self) -> None:
-        """让相邻报告章节分属不同的可见渲染帧。"""
-
-        if self.report_chunk_delay_seconds > 0:
-            await self._sleep(self.report_chunk_delay_seconds)
+        self.streamer = streamer or ExecutionReplyStreamer(
+            tool.wait_for_execution_completion,
+            tool.get_execution_report,
+            step_delay_seconds=step_delay_seconds,
+            report_chunk_delay_seconds=report_chunk_delay_seconds,
+            sleep=sleep,
+        )
 
     async def on_reply(
         self,
@@ -105,7 +85,7 @@ class UploadInterpretationReply(MiddlewareBase):
     async def _events(
         self, agent: Agent, messages: list[Msg], reply_id: str, block_id: str
     ) -> AsyncGenerator[AgentEvent, None]:
-        """提交后台任务后继续消费真实事件，直到本轮 Execution 报告已持久化。"""
+        """提交 START 后把 task_id/execution_id 交给公共 Streamer。"""
 
         session_id = agent.state.session_id
         yield ReplyStartEvent(session_id=session_id, reply_id=reply_id, name=agent.name)
@@ -117,6 +97,7 @@ class UploadInterpretationReply(MiddlewareBase):
             yield TextBlockEndEvent(reply_id=reply_id, block_id=block_id)
             yield ReplyEndEvent(session_id=session_id, reply_id=reply_id)
             return
+
         yield ThinkingBlockStartEvent(reply_id=reply_id, block_id=block_id)
         yield ThinkingBlockDeltaEvent(
             reply_id=reply_id,
@@ -136,188 +117,65 @@ class UploadInterpretationReply(MiddlewareBase):
         yield ToolResultStartEvent(
             reply_id=reply_id, tool_call_id=call.id, tool_call_name=call.name
         )
-        # Tool 提交与后台事件共用当前 ContextVar；队列仅串行化本轮 SSE 展示。
-        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
-        projector = ExecutionProgressProjector()
 
-        def observe(name: str, attributes: JsonObject) -> None:
-            """把当前 Worker 的既有 Telemetry 转成有限的安全文本。"""
-
-            ended_steps_before = len(projector.ended_steps)
-            for text in projector.project(name, attributes):
-                queue.put_nowait(("progress", text))
-            # 每个真实步骤终态后插入展示节拍；队列顺序保证完成文案先于等待出现。
-            if len(projector.ended_steps) > ended_steps_before:
-                queue.put_nowait(("step_completed", None))
-
-        async def execute() -> None:
-            """在请求级 ContextVar 中安装观察器并执行 Tool。"""
-
-            token = event_observer.set(observe)
-            try:
-                async for chunk in agent.toolkit.call_tool(call, agent.state):
-                    await queue.put(("tool", chunk))
-            finally:
-                event_observer.reset(token)
-                await queue.put(("submission_done", None))
-
-        submission_task = asyncio.create_task(execute())
-        completion_task: asyncio.Task[Any] | None = None
-        queue_task: asyncio.Task[tuple[str, Any]] | None = None
+        buffer = self.streamer.new_buffer()
         result: ToolResponse | None = None
-        buffered_progress: list[tuple[str, Any]] = []
+        token = event_observer.set(buffer.observe)
         try:
-            # 先完整取得 QUEUED Tool Result，让 Panel 尽早获得 task/execution 标识。
-            while True:
-                kind, value = await queue.get()
-                if kind == "submission_done":
-                    await submission_task
-                    break
-                if kind in {"progress", "step_completed"}:
-                    buffered_progress.append((kind, value))
-                elif isinstance(value, ToolResponse):
-                    result = value
+            async for chunk in agent.toolkit.call_tool(call, agent.state):
+                if isinstance(chunk, ToolResponse):
+                    result = chunk
                 else:
-                    for block in value.content:
-                        if isinstance(block, TextBlock):
+                    for content in chunk.content:
+                        if isinstance(content, TextBlock):
                             yield ToolResultTextDeltaEvent(
-                                reply_id=reply_id, tool_call_id=call.id, delta=block.text
+                                reply_id=reply_id,
+                                tool_call_id=call.id,
+                                delta=content.text,
                             )
-            yield ToolResultEndEvent(
-                reply_id=reply_id,
-                tool_call_id=call.id,
-                state=result.state if result else ToolResultState.ERROR,
-                metadata=result.metadata if result else {},
-            )
-            for kind, value in buffered_progress:
-                if kind == "progress":
-                    yield ThinkingBlockDeltaEvent(
-                        reply_id=reply_id, block_id=block_id, delta=value
-                    )
-                else:
-                    await self._pace_step()
+        finally:
+            event_observer.reset(token)
+            self.tool.upload = None
 
-            payload = result.metadata.get("result", {}) if result else {}
-            task_id = payload.get("task_id")
-            execution_id = payload.get("execution_id")
-            completed = None
-            completion_error = False
-            if (
-                result is not None
-                and result.state == ToolResultState.SUCCESS
-                and isinstance(task_id, str)
-                and isinstance(execution_id, str)
-            ):
-                completion_task = asyncio.create_task(
-                    self.tool.wait_for_execution_completion(task_id, execution_id)
-                )
-                try:
-                    while True:
-                        if completion_task.done():
-                            break
-                        queue_task = asyncio.create_task(queue.get())
-                        done, _ = await asyncio.wait(
-                            {completion_task, queue_task},
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        if queue_task in done:
-                            kind, value = queue_task.result()
-                            queue_task = None
-                            if kind == "progress":
-                                yield ThinkingBlockDeltaEvent(
-                                    reply_id=reply_id, block_id=block_id, delta=value
-                                )
-                            elif kind == "step_completed":
-                                await self._pace_step()
-                        else:
-                            queue_task.cancel()
-                            with suppress(asyncio.CancelledError):
-                                await queue_task
-                            queue_task = None
-                    completed = await completion_task
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    completion_error = True
-                # Worker 结束后观察器已经同步放入所有最终事件；必须先排空再收尾。
-                while not queue.empty():
-                    kind, value = queue.get_nowait()
-                    if kind == "progress":
-                        yield ThinkingBlockDeltaEvent(
-                            reply_id=reply_id, block_id=block_id, delta=value
-                        )
-                    elif kind == "step_completed":
-                        await self._pace_step()
-
-            final_text = "解释任务失败，请检查井资料或服务配置后重试。"
-            report: str | None = None
-            if completed is not None:
-                status = completed.execution_status.value
-                if status in {"SUCCESS", "WARNING"}:
-                    if status == "WARNING":
-                        yield ThinkingBlockDeltaEvent(
-                            reply_id=reply_id,
-                            block_id=block_id,
-                            delta="\n⚠ 本次解释完成，但存在告警\n",
-                        )
-                    try:
-                        report_result = await self.tool.get_execution_report(
-                            completed.task_id, completed.execution_id
-                        )
-                        report = report_result.report_markdown
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        completion_error = True
-                    final_text = "解释报告暂不可用，请在右侧任务面板查看当前执行状态。"
-                elif status == "BLOCKED":
-                    yield ThinkingBlockDeltaEvent(
-                        reply_id=reply_id,
-                        block_id=block_id,
-                        delta="\n解释流程已停止：缺少后续处理所需资料\n",
-                    )
-                    final_text = "解释流程已停止：缺少后续处理所需资料。"
-                elif status == "REVIEW_REQUIRED":
-                    yield ThinkingBlockDeltaEvent(
-                        reply_id=reply_id,
-                        block_id=block_id,
-                        delta="\n解释流程已进入人工复核\n",
-                    )
-                    final_text = "解释流程已进入人工复核，请在任务面板查看执行事实。"
-                else:
-                    code = completed.error_code or "INTERPRETATION_FAILED"
-                    yield ThinkingBlockDeltaEvent(
-                        reply_id=reply_id,
-                        block_id=block_id,
-                        delta=f"\n✗ 解释执行失败（错误代码：{code}）\n",
-                    )
-                    final_text = f"解释执行失败（错误代码：{code}），请查看任务面板。"
-            elif completion_error:
-                yield ThinkingBlockDeltaEvent(
-                    reply_id=reply_id,
-                    block_id=block_id,
-                    delta="\n✗ 无法读取解释执行终态\n",
-                )
-
-            yield ThinkingBlockEndEvent(reply_id=reply_id, block_id=block_id)
-            report_id = uuid4().hex
-            yield TextBlockStartEvent(reply_id=reply_id, block_id=report_id)
-            report_chunks = _report_chunks(report or final_text)
-            for index, chunk in enumerate(report_chunks):
-                yield TextBlockDeltaEvent(reply_id=reply_id, block_id=report_id, delta=chunk)
-                if index < len(report_chunks) - 1:
-                    await self._pace_report_chunk()
-            yield TextBlockEndEvent(reply_id=reply_id, block_id=report_id)
-            yield ReplyEndEvent(
+        yield ToolResultEndEvent(
+            reply_id=reply_id,
+            tool_call_id=call.id,
+            state=result.state if result else ToolResultState.ERROR,
+            metadata=result.metadata if result else {},
+        )
+        payload = result.metadata.get("result") if result else None
+        if (
+            result is not None
+            and result.state == ToolResultState.SUCCESS
+            and is_streaming_execution(payload)
+        ):
+            async for event in self.streamer.stream(
                 session_id=session_id,
                 reply_id=reply_id,
-                finished_reason=ReplyFinishedReason.COMPLETED,
-            )
-        finally:
-            # 这里只取消 SSE 观察者自己的等待；dispatcher.wait 的 shield 保证 Worker 继续。
-            for local_task in (queue_task, completion_task, submission_task):
-                if local_task is not None and not local_task.done():
-                    local_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await local_task
-            self.tool.upload = None
+                payload=payload,
+                buffer=buffer,
+                thinking_block_id=block_id,
+                thinking_started=True,
+            ):
+                yield event
+            return
+
+        yield ThinkingBlockDeltaEvent(
+            reply_id=reply_id,
+            block_id=block_id,
+            delta="\n✗ 解释任务提交失败\n",
+        )
+        yield ThinkingBlockEndEvent(reply_id=reply_id, block_id=block_id)
+        error_id = uuid4().hex
+        yield TextBlockStartEvent(reply_id=reply_id, block_id=error_id)
+        yield TextBlockDeltaEvent(
+            reply_id=reply_id,
+            block_id=error_id,
+            delta="解释任务失败，请检查井资料或服务配置后重试。",
+        )
+        yield TextBlockEndEvent(reply_id=reply_id, block_id=error_id)
+        yield ReplyEndEvent(
+            session_id=session_id,
+            reply_id=reply_id,
+            finished_reason=ReplyFinishedReason.COMPLETED,
+        )

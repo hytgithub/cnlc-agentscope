@@ -15,6 +15,7 @@ import type { GitStatus } from '@/api';
 import { ASMessageBubble } from '@/components/chat/ASMessageBubble.tsx';
 import { ConfirmCard } from '@/components/chat/ConfirmCard.tsx';
 import { FlipCard } from '@/components/chat/FlipCard.tsx';
+import { toUserVisibleChatMessage } from '@/components/chat/messageVisibility.ts';
 import { TextInput } from '@/components/chat/TextInput.tsx';
 import { WorkingDirectoryDialog } from '@/components/dialog/WorkingDirectoryDialog';
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert.tsx';
@@ -132,10 +133,15 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 	onRefreshGit,
 }) => {
 	const { t, i18n } = useTranslation();
+	// 内部 system/context/compression 消息保留在会话状态，只在展示边界排除。
+	const visibleMsgs = useMemo(
+		() => msgs.map(toUserVisibleChatMessage).filter((message) => message !== null),
+		[msgs],
+	);
 	// Only a session that finished loading with nothing in it is empty.
 	// Treating "no messages yet" as empty would flash the greeting over
 	// every session that does have history.
-	const isEmpty = !loading && msgs.length === 0;
+	const isEmpty = !loading && visibleMsgs.length === 0;
 
 	// A spinner that appears and vanishes inside a couple of frames reads
 	// as a flicker, not as feedback — so hold it back until the load has
@@ -152,13 +158,13 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 	}, [loading]);
 
 	const toConfirmedToolCalls = useMemo(() => {
-		if (msgs.length === 0) return [];
+		if (visibleMsgs.length === 0) return [];
 
-		const lastMsg = msgs[msgs.length - 1];
+		const lastMsg = visibleMsgs[visibleMsgs.length - 1];
 		return getContentBlocks(lastMsg, 'tool_call')
 			.filter((tc) => tc.state === 'asking')
 			.map((tc) => ({ replyId: lastMsg.id, toolCall: tc }));
-	}, [msgs]);
+	}, [visibleMsgs]);
 
 	// On an empty session the prompt and the input centre together, so every box
 	// down to the message list shrinks to its content instead of filling.
@@ -183,8 +189,8 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 					<MessageScroller>
 						<MessageScrollerViewport>
 							<MessageScrollerContent>
-								{msgs.map((message, index) => {
-									const previous = msgs[index - 1];
+								{visibleMsgs.map((message, index) => {
+									const previous = visibleMsgs[index - 1];
 									const at = new Date(message.created_at);
 									const previousAt = previous
 										? new Date(previous.finished_at ?? previous.created_at)
@@ -212,8 +218,8 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 										</MessageScrollerItem>
 									);
 								})}
-								{msgs.length > 0 &&
-									msgs[msgs.length - 1].finished_reason ===
+								{visibleMsgs.length > 0 &&
+									visibleMsgs[visibleMsgs.length - 1].finished_reason ===
 										ReplyFinishedReason.EXCEED_MAX_ITERS &&
 									phase === 'idle' && (
 										<Alert

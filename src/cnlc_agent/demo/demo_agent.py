@@ -18,8 +18,18 @@ from agentscope.workspace import Offloader
 from pydantic import BaseModel, ConfigDict
 
 from cnlc_agent.config.settings import AppSettings
+from cnlc_agent.demo.execution_stream import (
+    ExecutionReplyStreamer,
+    ExecutionStreamingMiddleware,
+)
 from cnlc_agent.demo.tools import RUN_TOOL_NAME, RunWellInterpretationTool
 from cnlc_agent.demo.upload_reply import UploadInterpretationReply
+
+_STATUS_PATTERNS = (
+    re.compile(r"(?:执行|处理|进行)?到(?:哪里|哪儿|哪一步|哪|什么地方)"),
+    re.compile(r"(?:查看|当前)?进度|进度(?:怎么样|如何)"),
+    re.compile(r"(?:执行|当前)状态"),
+)
 
 DEMO_SYSTEM_PROMPT = """你是单井常规测井解释任务的交互入口，只处理测井解释及相关任务操作。
 支持开始解释、修改参数并重跑、全流程重跑、查询状态、查询当前或历史报告。
@@ -36,7 +46,7 @@ prediction_model 是专业预测配置，不得改变 qwen-plus。Rw、Archie m/
 上一版报告调用 get_interpretation_report(selector="PREVIOUS")，不要猜 execution_id；
 当前版 CURRENT，最近成功版 LATEST_SUCCESSFUL。报告原文来自 Tool，完整展示，不改写专业结论。
 你只决定用户意图；不得自行计算、调用内部专业 Tool、决定 W01-W10 顺序、执行起点或 RUN/REUSE。
-开始、修改和全量重跑只提交后台 Execution；收到 QUEUED 后告知用户任务已提交。
+开始、修改和全量重跑创建 Execution 后，由系统持续展示真实执行过程和对应报告。
 用户询问进度时必须再次调用状态 Tool；报告未就绪时不要编造或改用旧版冒充当前版。
 领域外请求不调用工具，简洁回复“当前 Agent 只处理单井常规测井解释及相关任务操作。”
 Tool 错误按安全文案解释，不自动改成全量重跑。Demo/Mock 专业结果未复算，不编造结果。
@@ -212,7 +222,7 @@ class MockTaskShellModel(ChatModelBase):
             return "get_interpretation_report", {"selector": "CURRENT"}
         if "全部" in instruction and ("重跑" in instruction or "重新跑" in instruction):
             return "rerun_well_interpretation", {}
-        if "处理到哪里" in instruction or "状态" in instruction or "进度" in instruction:
+        if any(pattern.search(instruction) for pattern in _STATUS_PATTERNS):
             return "get_interpretation_status", {}
         if "重新解释" in instruction or "修改" in instruction or "改成" in instruction:
             changes: dict[str, Any] = {}
@@ -273,7 +283,11 @@ class LoggingInterpretationDemoAgent(Agent):
         del name, system_prompt, kwargs
         if model.model != "qwen-plus":
             raise ValueError("AgentScope Demo Agent 只允许使用 qwen-plus")
-        from cnlc_agent.demo.task_tools import ALLOWED_TASK_TOOLS, TaskCommandTool
+        from cnlc_agent.demo.task_tools import (
+            ALLOWED_TASK_TOOLS,
+            TaskCommandRunner,
+            TaskCommandTool,
+        )
 
         if toolkit and any(group.mcps or group.skills_or_loaders for group in toolkit.tool_groups):
             raise ValueError("Demo Agent 不允许注册 MCP 或技能工具")
@@ -286,6 +300,27 @@ class LoggingInterpretationDemoAgent(Agent):
             not isinstance(item, TaskCommandTool) for item in tools if item is not tool
         ):
             raise ValueError("Demo Agent 需要受控任务 Tool 实现")
+        runner = next(item.runner for item in tools if isinstance(item, TaskCommandTool))
+        if not isinstance(runner, TaskCommandRunner) or any(
+            item.runner is not runner for item in tools if isinstance(item, TaskCommandTool)
+        ):
+            raise ValueError("Demo Agent 的任务 Tool 必须共享同一 TaskCommandRunner")
+        step_delay = (
+            AppSettings().stream_step_delay_seconds
+            if stream_step_delay_seconds is None
+            else stream_step_delay_seconds
+        )
+        report_delay = (
+            AppSettings().stream_report_chunk_delay_seconds
+            if stream_report_chunk_delay_seconds is None
+            else stream_report_chunk_delay_seconds
+        )
+        streamer = ExecutionReplyStreamer(
+            runner.wait_for_execution_completion,
+            runner.get_execution_report,
+            step_delay_seconds=step_delay,
+            report_chunk_delay_seconds=report_delay,
+        )
         super().__init__(
             name="LoggingInterpretationDemoAgent",
             system_prompt=DEMO_SYSTEM_PROMPT,
@@ -294,17 +329,9 @@ class LoggingInterpretationDemoAgent(Agent):
             middlewares=[
                 UploadInterpretationReply(
                     tool,
-                    step_delay_seconds=(
-                        AppSettings().stream_step_delay_seconds
-                        if stream_step_delay_seconds is None
-                        else stream_step_delay_seconds
-                    ),
-                    report_chunk_delay_seconds=(
-                        AppSettings().stream_report_chunk_delay_seconds
-                        if stream_report_chunk_delay_seconds is None
-                        else stream_report_chunk_delay_seconds
-                    ),
+                    streamer=streamer,
                 ),
+                ExecutionStreamingMiddleware(streamer),
                 *(middlewares or []),
             ],
             state=state,

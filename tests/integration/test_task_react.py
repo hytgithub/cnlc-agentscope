@@ -1,17 +1,25 @@
 """真实 AgentScope ReAct/Toolkit 多轮链路，只用脚本替代公网模型响应。"""
 
+import asyncio
 import base64
 import json
 from uuid import uuid4
 
+import pytest
 from agentscope.credential import CredentialFactory, DashScopeCredential
-from agentscope.event import ToolResultEndEvent
+from agentscope.event import (
+    ReplyEndEvent,
+    TextBlockDeltaEvent,
+    ThinkingBlockDeltaEvent,
+    ToolResultEndEvent,
+)
 from agentscope.formatter import DashScopeChatFormatter
 from agentscope.message import DataBlock, TextBlock, ToolCallBlock, ToolResultBlock, UserMsg
 from agentscope.model import ChatModelBase, ChatResponse
 from agentscope.tool import Toolkit
 from pydantic import SecretStr
 
+from cnlc_agent.application.commands import GetStatusCommand
 from cnlc_agent.config.settings import AppSettings, PersistenceSettings
 from cnlc_agent.demo.demo_agent import (
     DEMO_SYSTEM_PROMPT,
@@ -20,6 +28,9 @@ from cnlc_agent.demo.demo_agent import (
     MockTaskShellModel,
 )
 from cnlc_agent.demo.task_tools import ALLOWED_TASK_TOOLS, TaskCommandRunner, build_task_tools
+from cnlc_agent.domain.errors import ToolError
+from cnlc_agent.infrastructure.mock import MockModelGateway
+from cnlc_agent.tools.mock import MockResultTool
 
 
 class ScriptedTaskModel(ChatModelBase):
@@ -124,14 +135,14 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
     assert first["execution_status"] == "QUEUED"
     await runner.wait_for_completion(first["task_id"], first["execution_id"])
     seen_results = []
+    streamed_events = {}
     for text in ["把孔隙度、渗透率改成0.16", "给我上一版报告", "全部重新跑", "现在处理到哪里了？"]:
         events = [e async for e in agent.reply_stream(UserMsg(name="user", content=text))]
+        streamed_events[text] = events
         results = [e for e in events if isinstance(e, ToolResultEndEvent)]
         assert len(results) == 1
         assert results[0].state == "success"
         seen_results.append(results[0].metadata["result"])
-        if text in {"把孔隙度、渗透率改成0.16", "全部重新跑"}:
-            await runner.wait_for_completion(first["task_id"], seen_results[-1]["execution_id"])
     modified, previous, full, status = seen_results
     assert modified["reused_steps"] == ["W01", "W02", "W03"]
     assert modified["effective_override"]["por"] == modified["effective_override"]["perm"] == 0.16
@@ -142,9 +153,155 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
     assert full["execution_sequence"] == 3 and full["reused_steps"] == []
     assert full["effective_override"] == modified["effective_override"]
     assert status["execution_id"] == full["execution_id"]
-    assert len(model.seen) == 8
+    modified_events = streamed_events["把孔隙度、渗透率改成0.16"]
+    modified_progress = "".join(
+        event.delta for event in modified_events if isinstance(event, ThinkingBlockDeltaEvent)
+    )
+    modified_report = "".join(
+        event.delta for event in modified_events if isinstance(event, TextBlockDeltaEvent)
+    )
+    assert "孔隙度：0.16" in modified_progress and "渗透率：0.16" in modified_progress
+    assert all(f"{step} " in modified_progress for step in ("W01", "W02", "W03"))
+    assert "已复用" in modified_progress
+    assert all(f"▶ W{number:02}" in modified_progress for number in range(4, 11))
+    assert modified_report == await runner.repository.get_execution_report(modified["execution_id"])
+    assert isinstance(modified_events[-1], ReplyEndEvent)
+
+    full_events = streamed_events["全部重新跑"]
+    full_progress = "".join(
+        event.delta for event in full_events if isinstance(event, ThinkingBlockDeltaEvent)
+    )
+    full_report = "".join(
+        event.delta for event in full_events if isinstance(event, TextBlockDeltaEvent)
+    )
+    assert all(f"▶ W{number:02}" in full_progress for number in range(1, 11))
+    assert "已复用" not in full_progress
+    assert full_report == await runner.repository.get_execution_report(full["execution_id"])
+    assert isinstance(full_events[-1], ReplyEndEvent)
+    # 两个创建型命令不再进入第二次模型调用生成“已提交”文案。
+    assert len(model.seen) == 6
     assert len(await runner.repository.list_executions(first["task_id"])) == 3
     await runner.dispatcher.shutdown()
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "现在执行到哪里了",
+        "执行到哪里了",
+        "执行到哪了",
+        "现在执行到哪一步了",
+        "处理到哪里了",
+        "处理到哪了",
+        "处理到什么地方了",
+        "进行到哪里了",
+        "进行到哪一步了",
+        "现在到哪一步了",
+        "当前执行到哪一步",
+        "查看进度",
+        "当前进度",
+        "进度怎么样",
+        "执行状态",
+        "当前状态",
+    ],
+)
+def test_mock_status_query_variants(instruction):
+    assert MockTaskShellModel._command(instruction) == ("get_interpretation_status", {})
+
+
+async def test_modify_disconnect_does_not_cancel_shared_execution(data_dir, monkeypatch):
+    runner = TaskCommandRunner(
+        AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),
+        PersistenceSettings(persistence="memory", _env_file=None),
+    )
+    agent = LoggingInterpretationDemoAgent(
+        name="demo",
+        system_prompt="",
+        model=ScriptedTaskModel(),
+        toolkit=Toolkit(tools=build_task_tools(runner)),
+        stream_step_delay_seconds=0,
+        stream_report_chunk_delay_seconds=0,
+    )
+    initial = [event async for event in agent.reply_stream(upload_message(data_dir))]
+    first = next(e for e in initial if isinstance(e, ToolResultEndEvent)).metadata["result"]
+
+    entered, released = asyncio.Event(), asyncio.Event()
+    original = MockModelGateway.generate
+
+    async def waiting_model(self, request):
+        if request.purpose == "fluid":
+            entered.set()
+            await released.wait()
+        return await original(self, request)
+
+    monkeypatch.setattr(MockModelGateway, "generate", waiting_model)
+    stream = agent.reply_stream(UserMsg(name="user", content="把孔隙度、渗透率改成0.16"))
+    events = []
+    async for event in stream:
+        events.append(event)
+        if isinstance(event, ToolResultEndEvent):
+            break
+    modified = next(e for e in events if isinstance(e, ToolResultEndEvent)).metadata["result"]
+    try:
+        await stream.aclose()
+        await asyncio.wait_for(entered.wait(), 5)
+        status = await runner.execute(GetStatusCommand(task_id=first["task_id"]))
+        assert status.execution_id == modified["execution_id"]
+        assert status.execution_status == "RUNNING"
+        assert status.current_step == "W06"
+    finally:
+        released.set()
+        completed = await runner.wait_for_completion(first["task_id"], modified["execution_id"])
+        assert completed.execution_status == "SUCCESS"
+        await runner.dispatcher.shutdown()
+
+
+async def test_modify_failure_stream_stops_at_failed_step(data_dir, monkeypatch):
+    runner = TaskCommandRunner(
+        AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),
+        PersistenceSettings(persistence="memory", _env_file=None),
+    )
+    agent = LoggingInterpretationDemoAgent(
+        name="demo",
+        system_prompt="",
+        model=ScriptedTaskModel(),
+        toolkit=Toolkit(tools=build_task_tools(runner)),
+        stream_step_delay_seconds=0,
+        stream_report_chunk_delay_seconds=0,
+    )
+    # 完整消费首次回复，保证修改基于成功版本。
+    initial = [event async for event in agent.reply_stream(upload_message(data_dir))]
+    first = next(e for e in initial if isinstance(e, ToolResultEndEvent)).metadata["result"]
+
+    original = MockResultTool.execute
+
+    async def broken(self, request):
+        if self.name == "calculate_sw":
+            raise ToolError("TEST_W06_FAILED", "sensitive detail")
+        return await original(self, request)
+
+    monkeypatch.setattr(MockResultTool, "execute", broken)
+    try:
+        events = [
+            event
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="把孔隙度、渗透率改成0.16")
+            )
+        ]
+        progress = "".join(
+            event.delta for event in events if isinstance(event, ThinkingBlockDeltaEvent)
+        )
+        result = next(e for e in events if isinstance(e, ToolResultEndEvent)).metadata["result"]
+        completed = await runner.wait_for_completion(first["task_id"], result["execution_id"])
+        assert completed.execution_status == "FAILED"
+        assert "W01" in progress and "已复用" in progress
+        assert "✗ calculate_sw 执行失败" in progress
+        assert "✗ W06" in progress
+        assert "▶ W07" not in progress
+        assert "sensitive detail" not in progress
+        assert isinstance(events[-1], ReplyEndEvent)
+    finally:
+        await runner.dispatcher.shutdown()
 
 
 async def test_missing_task_enters_react_without_inventing_identity(data_dir):

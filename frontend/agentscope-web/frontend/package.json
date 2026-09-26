@@ -8,6 +8,7 @@
 		"build": "tsc -b && vite build",
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
+		"test": "node --experimental-strip-types --test tests/messageVisibility.test.ts",
 		"preview": "vite preview"
 	},
 	"dependencies": {
