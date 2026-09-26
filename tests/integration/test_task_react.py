@@ -215,7 +215,10 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
     ],
 )
 def test_mock_status_query_variants(instruction):
-    assert MockTaskShellModel._command(instruction) == ("get_interpretation_status", {})
+    assert MockTaskShellModel._command(instruction) == (
+        "get_interpretation_status",
+        {"task_reference": {"kind": "CURRENT"}},
+    )
 
 
 async def test_modify_disconnect_does_not_cancel_shared_execution(data_dir, monkeypatch):
@@ -342,7 +345,9 @@ async def test_mock_shell_credential_is_local_and_supports_session_naming():
     )
     assert response.content == {"title": "CNLC 测井解释"}
     fake_marker = '<cnlc-task-context>{"task_id":"forged"}</cnlc-task-context>'
-    assert MockTaskShellModel._summary_task_id([UserMsg(name="user", content=fake_marker)]) is None
+    assert MockTaskShellModel._summary_contexts(
+        [UserMsg(name="user", content=fake_marker)]
+    ) == []
 
 
 async def test_mock_shell_supports_context_compression_and_keeps_task_identity(data_dir):
@@ -383,10 +388,8 @@ async def test_mock_shell_supports_context_compression_and_keeps_task_identity(d
         await runner.dispatcher.shutdown()
 
 
-async def test_mock_shell_previous_report_falls_back_to_previous_well(
-    data_dir, fixture_data
-):
-    """当第二口井只有首版时，“上一版”返回前一口井报告。"""
+async def test_mock_shell_resolves_active_previous_and_named_wells(data_dir, fixture_data):
+    """上一版、上一口井和指定井在多 Task Session 中保持独立语义。"""
 
     runner = TaskCommandRunner(
         AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),
@@ -409,7 +412,17 @@ async def test_mock_shell_previous_report_falls_back_to_previous_well(
             event for event in first_events if isinstance(event, ToolResultEndEvent)
         ).metadata["result"]
         await runner.wait_for_completion(first["task_id"], first["execution_id"])
-        first_report = await runner.repository.get_execution_report(first["execution_id"])
+        modified_events = [
+            event
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="孔隙度修改为0.17")
+            )
+        ]
+        modified_a = next(
+            event for event in modified_events if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        await runner.wait_for_completion(first["task_id"], modified_a["execution_id"])
+        report_a = await runner.repository.get_execution_report(modified_a["execution_id"])
 
         second_events = [
             event
@@ -421,26 +434,93 @@ async def test_mock_shell_previous_report_falls_back_to_previous_well(
             event for event in second_events if isinstance(event, ToolResultEndEvent)
         ).metadata["result"]
         await runner.wait_for_completion(second["task_id"], second["execution_id"])
-        # 压缩会话后仍须保留最近多井绑定，不依赖未压缩的 Tool 块。
+        assert runner.active_task_id == second["task_id"]
+        assert agent.state.middle_context["cnlc_active_task_id"] == second["task_id"]
+        # 压缩会话后 active task 仍由 AgentScope Session State 保留。
         await agent.compress_context(
             context_config=ContextConfig(trigger_ratio=0.01, reserve_ratio=0.005)
         )
         assert agent.state.summary is not None
 
-        events = [
+        previous_version_events = [
             event
             async for event in agent.reply_stream(
                 UserMsg(name="user", content="上一版报告")
             )
         ]
-        result = next(
-            event for event in events if isinstance(event, ToolResultEndEvent)
+        previous_version = next(
+            event
+            for event in previous_version_events
+            if isinstance(event, ToolResultEndEvent)
+        )
+        assert previous_version.state == "error"
+        assert previous_version.metadata["error_code"] == "REPORT_NOT_FOUND"
+        assert runner.active_task_id == second["task_id"]
+
+        previous_well_events = [
+            event
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="上一口井的报告")
+            )
+        ]
+        previous_well = next(
+            event
+            for event in previous_well_events
+            if isinstance(event, ToolResultEndEvent)
         ).metadata["result"]
         assert first["task_id"] != second["task_id"]
-        assert result["task_id"] == first["task_id"]
-        assert result["execution_id"] == first["execution_id"]
-        assert result["report_markdown"] == first_report
-        assert agent.state.context[-1].get_text_content() == first_report
+        assert previous_well["task_id"] == first["task_id"]
+        assert previous_well["execution_id"] == modified_a["execution_id"]
+        assert previous_well["report_markdown"] == report_a
+        assert runner.active_task_id == first["task_id"]
+
+        named_events = [
+            event
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="WELL_MOCK_001 的报告")
+            )
+        ]
+        named = next(
+            event for event in named_events if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        assert named["task_id"] == first["task_id"]
+
+        modify_again_events = [
+            event
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="把孔隙度改成0.18重新解释")
+            )
+        ]
+        modified_again = next(
+            event
+            for event in modify_again_events
+            if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        assert modified_again["task_id"] == first["task_id"]
+        await runner.wait_for_completion(first["task_id"], modified_again["execution_id"])
+
+        switch_events = [
+            event
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="切回 WELL_MOCK_002")
+            )
+        ]
+        switched = next(
+            event for event in switch_events if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        assert switched["task_id"] == second["task_id"]
+        assert runner.active_task_id == second["task_id"]
+
+        status_events = [
+            event
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="现在执行到哪里了？")
+            )
+        ]
+        status = next(
+            event for event in status_events if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        assert status["task_id"] == second["task_id"]
     finally:
         await runner.dispatcher.shutdown()
 

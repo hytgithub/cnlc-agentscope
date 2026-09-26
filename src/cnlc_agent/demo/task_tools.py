@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -29,6 +30,7 @@ from cnlc_agent.application.ports import TaskRepository
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
+from cnlc_agent.demo.task_context import SessionTaskResolver, TaskReference
 from cnlc_agent.domain.errors import ApplicationError, InfrastructureError
 from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, ExecutionStatus
 from cnlc_agent.domain.inputs import InterpretationInputVersion
@@ -67,6 +69,52 @@ class TaskCommandRunner:
         self._lock = asyncio.Lock()
         # 仅作为进程内加速缓存；postgres-redis 模式的 canonical source 是绑定表。
         self.observed_task_ids: set[str] = set()
+        self._observed_task_order: list[str] = []
+        self.active_task_id: str | None = None
+        self._session_runtime_context: dict[str, Any] | None = None
+
+    def attach_session_runtime_context(self, context: dict[str, Any]) -> None:
+        """将 active task 放入 AgentScope Session State，不污染业务 Task。"""
+
+        self._session_runtime_context = context
+        stored = context.get("cnlc_active_task_id")
+        if isinstance(stored, str) and stored:
+            self.active_task_id = stored
+        elif self.active_task_id is not None:
+            context["cnlc_active_task_id"] = self.active_task_id
+
+    def set_active_task(self, task_id: str) -> None:
+        """仅更新会话交互焦点，不修改 InterpretationTask 业务事实。"""
+
+        self.active_task_id = task_id
+        if self._session_runtime_context is not None:
+            self._session_runtime_context["cnlc_active_task_id"] = task_id
+
+    def _remember_task(self, task_id: str) -> None:
+        """记录无持久化身份的独立测试会话顺序。"""
+
+        self.observed_task_ids.add(task_id)
+        if task_id not in self._observed_task_order:
+            self._observed_task_order.append(task_id)
+
+    async def resolve_task_reference(self, reference: TaskReference) -> str:
+        """通过受控 Resolver 解析并切换 active task。"""
+
+        with TemporaryDirectory(prefix="cnlc-resolve-") as directory:
+            async with self.context(Path(directory)) as service:
+                if self.session_identity is not None:
+                    task_ids = await service.repository.list_session_task_ids(
+                        self.session_identity
+                    )
+                else:
+                    # 仅供无 Session identity 的本地测试与兼容入口使用。
+                    task_ids = list(self._observed_task_order)
+                resolved = await SessionTaskResolver(service.repository, task_ids).resolve(
+                    reference, self.active_task_id
+                )
+        self._remember_task(resolved.task_id)
+        self.set_active_task(resolved.task_id)
+        return resolved.task_id
 
     @asynccontextmanager
     async def context(self, root: Path) -> AsyncIterator[InterpretationTaskService]:
@@ -114,7 +162,8 @@ class TaskCommandRunner:
                                 task_id=execution.task_id,
                             )
                         )
-                    self.observed_task_ids.add(execution.task_id)
+                    self._remember_task(execution.task_id)
+                    self.set_active_task(execution.task_id)
                     result = await TaskCommands(service).project(
                         execution.task_id, execution.execution_id, "START"
                     )
@@ -229,7 +278,7 @@ class TaskCommandRunner:
                     self.session_identity, task_id
                 )
         if owned:
-            self.observed_task_ids.add(task_id)
+            self._remember_task(task_id)
         return owned
 
     async def restore_task_bindings(self) -> set[str]:
@@ -245,7 +294,8 @@ class TaskCommandRunner:
                 task_ids = await service.repository.list_session_task_ids(
                     self.session_identity
                 )
-        self.observed_task_ids.update(task_ids)
+        for task_id in task_ids:
+            self._remember_task(task_id)
         return set(self.observed_task_ids)
 
     async def wait_for_completion(
@@ -306,7 +356,37 @@ _SAFE_ERRORS = {
     "TASK_EXECUTION_ACTIVE": "当前任务已有执行正在排队或运行，请稍后查询状态。",
     "STALE_EXECUTION_PLAN": "任务版本已变化，请重新提交修改请求。",
     "SESSION_TASK_BINDING_FAILED": "任务归属保存失败，请稍后重试。",
+    "PREVIOUS_TASK_NOT_FOUND": "当前会话没有上一口井的解释任务。",
 }
+
+_TASK_REFERENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kind": {
+            "type": "string",
+            "enum": ["CURRENT", "PREVIOUS_TASK", "WELL_ID", "TASK_ID"],
+            "description": "当前任务、上一口井任务、按井号或按可信任务号解析。",
+        },
+        "value": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "WELL_ID 的井号或 TASK_ID 的可信任务号。",
+        },
+    },
+    "required": ["kind"],
+    "additionalProperties": False,
+}
+
+
+def _task_input_schema(command_schema: dict[str, Any]) -> dict[str, Any]:
+    """任务工具允许受控引用，同时保留 task_id 兼容旧调用。"""
+
+    schema: dict[str, Any] = deepcopy(command_schema)
+    schema.setdefault("properties", {})["task_reference"] = _TASK_REFERENCE_SCHEMA
+    schema["required"] = [item for item in schema.get("required", []) if item != "task_id"]
+    schema["additionalProperties"] = False
+    return schema
 
 
 class TaskCommandTool(ToolBase):
@@ -333,14 +413,26 @@ class TaskCommandTool(ToolBase):
         try:
             if args:
                 raise ValueError("keyword arguments required")
+            raw_reference = kwargs.pop("task_reference", None)
+            legacy_task_id = kwargs.pop("task_id", None)
+            if raw_reference is not None and legacy_task_id is not None:
+                raise ValueError("task reference is ambiguous")
+            reference = (
+                TaskReference.model_validate(raw_reference)
+                if raw_reference is not None
+                else TaskReference(kind="TASK_ID", value=legacy_task_id)
+                if isinstance(legacy_task_id, str) and legacy_task_id
+                else TaskReference(kind="CURRENT")
+            )
+            task_id = await self.runner.resolve_task_reference(reference)
             command: GetStatusCommand
             if self.command_type is ModifyInterpretationCommand:
                 command = ModifyInterpretationCommand(
-                    task_id=kwargs.pop("task_id", ""),
+                    task_id=task_id,
                     changes=InterpretationOverride.model_validate(kwargs)
                 )
             else:
-                command = self.command_type.model_validate(kwargs)
+                command = self.command_type.model_validate({"task_id": task_id, **kwargs})
             result = await self.runner.execute(command)
             payload = result.model_dump(mode="json")
             return ToolChunk(
@@ -353,7 +445,10 @@ class TaskCommandTool(ToolBase):
             message = "参数无效；当前只支持采样间隔、POR、PERM 和预测模型。"
         except ApplicationError as exc:
             code = exc.code if exc.code in _SAFE_ERRORS else "TASK_COMMAND_FAILED"
-            message = _SAFE_ERRORS.get(code, "任务操作失败，请检查资料或服务配置。")
+            if exc.code == "SESSION_WELL_NOT_FOUND":
+                code, message = exc.code, str(exc)
+            else:
+                message = _SAFE_ERRORS.get(code, "任务操作失败，请检查资料或服务配置。")
         except Exception as exc:
             logging.getLogger(__name__).warning("Task command failed: %s", type(exc).__name__)
             code, message = "TASK_COMMAND_FAILED", "任务操作失败，请检查资料或服务配置。"
@@ -370,14 +465,14 @@ class ModifyWellInterpretationTool(TaskCommandTool):
     name = "modify_well_interpretation"
     description = "修改已有任务的采样间隔、POR、PERM 或专业预测模型并重跑；至少一个实际变化。"
     command_type = ModifyInterpretationCommand
-    input_schema = {
+    input_schema = _task_input_schema({
         **InterpretationOverride.model_json_schema(),
         "properties": {
             "task_id": GetStatusCommand.model_json_schema()["properties"]["task_id"],
             **InterpretationOverride.model_json_schema()["properties"],
         },
         "required": ["task_id"],
-    }
+    })
 
 
 class RerunWellInterpretationTool(TaskCommandTool):
@@ -386,7 +481,7 @@ class RerunWellInterpretationTool(TaskCommandTool):
     name = "rerun_well_interpretation"
     description = "对已有任务全部重新解释一次，保留当前有效参数。"
     command_type = FullRerunCommand
-    input_schema = FullRerunCommand.model_json_schema()
+    input_schema = _task_input_schema(FullRerunCommand.model_json_schema())
 
 
 class GetInterpretationStatusTool(TaskCommandTool):
@@ -395,7 +490,7 @@ class GetInterpretationStatusTool(TaskCommandTool):
     name = "get_interpretation_status"
     description = "查询已有任务真实保存的后台执行状态、版本、参数和工具调用统计。"
     is_read_only = True
-    input_schema = GetStatusCommand.model_json_schema()
+    input_schema = _task_input_schema(GetStatusCommand.model_json_schema())
 
 
 class GetInterpretationReportTool(TaskCommandTool):
@@ -407,7 +502,7 @@ class GetInterpretationReportTool(TaskCommandTool):
     )
     command_type = GetReportCommand
     is_read_only = True
-    input_schema = GetReportCommand.model_json_schema()
+    input_schema = _task_input_schema(GetReportCommand.model_json_schema())
 
 
 def build_task_tools(runner: TaskCommandRunner | None = None) -> list[ToolBase]:

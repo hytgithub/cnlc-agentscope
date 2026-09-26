@@ -45,6 +45,16 @@ ToolRun 已实现并由 migration `0004` 持久化。Workflow 在专业 Tool 开
 
 Binding 已由 migration `0006` 实现。完整 `(user_id, agent_id, session_id)` 决定 Task ownership；`observed_task_ids` 只是会话 runner 的加速缓存。Backend 重启后从 PostgreSQL 恢复绑定，旧 Session 可继续查询和修改原 Task。
 
+一个 Session 可以绑定多个 Task，每个 Task 仍只对应一口井的持续工作对象。
+`SessionTaskResolver` 使用 Binding 列表和 `get_task()` 构建内部 Task Summary，
+以确定性规则解析 CURRENT、PREVIOUS_TASK、WELL_ID 和 TASK_ID。同井存在
+多个 Task 时选绑定顺序中最近创建的 Task。
+
+`active_task_id` 位于 AgentScope Session State，不是测井业务结果。上传新井或
+明确访问某井后更新 active task。Backend 重启后优先使用已恢复的
+Session State；如果该值不可用，则从 Binding 稳定顺序选最近创建的 Task。
+报告 `PREVIOUS` 始终限于 active task 内的前一个 Execution，绝不跨 Task。
+
 ## 3. 规划与复用
 
 最近成功来源必须同时满足：Execution 为 SUCCESS/WARNING、有报告、引用的 InputVersion 属于同一 Task 且一致。当前执行用于确定用户正在修改的有效参数，最近成功执行用于确定哪些结果可靠可复用。

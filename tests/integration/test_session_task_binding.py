@@ -1,5 +1,6 @@
 """真实 PostgreSQL/Redis 上验证 Session ↔ Task 绑定跨实例恢复。"""
 
+import json
 import os
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.demo.agentscope_app import SessionTaskToolFactory, create_demo_app
-from cnlc_agent.domain.models import TaskRequest
+from cnlc_agent.domain.models import MockFixture, TaskRequest
 from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.infrastructure.database import (
@@ -201,3 +202,79 @@ async def test_factory_task_tool_and_read_api_restore_after_restart(
             await redis.delete(*keys)
         await redis.aclose()
         await engine.dispose()
+
+
+async def test_multiple_wells_resolve_after_real_backend_restart(
+    migrated_session_binding, fixture_data
+):
+    """真实 PostgreSQL Binding 在 Factory 重建后仍恢复当前井和上一口井。"""
+
+    del migrated_session_binding
+    prefix = f"cnlc:test:multi-well:{uuid4().hex}"
+    session_id = f"session-{uuid4().hex}"
+    identity = ("alice", "agent-a", session_id)
+    settings = AppSettings(
+        mode="demo", model_provider="mock", mock_data_dir=ROOT / "mock_data", _env_file=None
+    )
+    persistence = PersistenceSettings(
+        persistence="postgres-redis", redis_prefix=prefix, _env_file=None
+    )
+    connections = ConnectionSettings(
+        database_url=DB_URL, redis_url=REDIS_URL, _env_file=None
+    )
+    task_ids: list[str] = []
+    first_factory = SessionTaskToolFactory(
+        settings=settings, persistence=persistence, connections=connections
+    )
+    try:
+        tools = {tool.name: tool for tool in await first_factory(*identity)}
+        started_a = await tools["run_well_interpretation"].call(well_id="WELL_MOCK_001")
+        task_a = started_a.metadata["result"]
+        task_ids.append(task_a["task_id"])
+        runner = tools["get_interpretation_status"].runner
+        await runner.wait_for_completion(task_a["task_id"], task_a["execution_id"])
+
+        fixture_b_data = json.loads(json.dumps(fixture_data))
+        fixture_b_data["well"]["well_id"] = "WELL_MOCK_002"
+        fixture_b_data["well"]["name"] = "虚构演示井 002"
+        start_tool = tools["run_well_interpretation"]
+        start_tool.upload = MockFixture.model_validate(fixture_b_data), "解释第二口井"
+        started_b = await start_tool.call(well_id="WELL_MOCK_002")
+        start_tool.upload = None
+        task_b = started_b.metadata["result"]
+        task_ids.append(task_b["task_id"])
+        await runner.wait_for_completion(task_b["task_id"], task_b["execution_id"])
+        await first_factory.shutdown()
+
+        restored_factory = SessionTaskToolFactory(
+            settings=settings, persistence=persistence, connections=connections
+        )
+        restored = {tool.name: tool for tool in await restored_factory(*identity)}
+        restored_runner = restored["get_interpretation_status"].runner
+        assert restored_runner.active_task_id is None
+        current = await restored["get_interpretation_status"].call(
+            task_reference={"kind": "CURRENT"}
+        )
+        assert current.metadata["result"]["task_id"] == task_b["task_id"]
+        previous = await restored["get_interpretation_report"].call(
+            task_reference={"kind": "PREVIOUS_TASK"},
+            selector="LATEST_SUCCESSFUL",
+        )
+        assert previous.metadata["result"]["task_id"] == task_a["task_id"]
+        await restored_factory.shutdown()
+    finally:
+        await first_factory.shutdown()
+        engine = create_async_engine(DB_URL)
+        redis = Redis.from_url(REDIS_URL, decode_responses=True)
+        try:
+            if task_ids:
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        delete(TaskRow).where(TaskRow.task_id.in_(task_ids))
+                    )
+            keys = [key async for key in redis.scan_iter(f"{prefix}*")]
+            if keys:
+                await redis.delete(*keys)
+        finally:
+            await redis.aclose()
+            await engine.dispose()
