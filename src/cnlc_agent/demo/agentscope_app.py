@@ -43,6 +43,7 @@ from cnlc_agent.demo.read_models import (
 )
 from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
 from cnlc_agent.domain.session_binding import TaskSessionIdentity
+from cnlc_agent.infrastructure.conversation import DurableConversationStorage
 
 BACKEND_MODEL_CREDENTIAL_ID = "cnlc-backend-model"
 BACKEND_MODEL_OWNER_ID = "__cnlc_backend_model__"
@@ -263,8 +264,8 @@ class AgentScopeServiceAdapter(LoggingInterpretationDemoAgent):
         super().__init__(toolkit=Toolkit(tools=tools), **kwargs)
 
 
-def _redis_storage(connections: ConnectionSettings) -> RedisStorage:
-    """解析 REDIS_URL 并创建 AgentScope 会话存储，不输出连接凭据。"""
+def _redis_connection_kwargs(connections: ConnectionSettings) -> dict[str, Any]:
+    """解析 Redis 连接参数；返回值只在构造存储时使用，禁止写日志。"""
 
     raw_url = (
         connections.redis_url.get_secret_value()
@@ -280,21 +281,40 @@ def _redis_storage(connections: ConnectionSettings) -> RedisStorage:
         raise ValueError("REDIS_URL 的数据库编号必须为整数") from None
     password = unquote(parsed.password) if parsed.password is not None else None
     username = unquote(parsed.username) if parsed.username is not None else None
+    kwargs: dict[str, Any] = {
+        "host": parsed.hostname,
+        "port": parsed.port or 6379,
+        "db": db,
+        "password": password,
+        "username": username,
+    }
     if parsed.scheme == "rediss":
-        return RedisStorage(
-            host=parsed.hostname,
-            port=parsed.port or 6379,
-            db=db,
-            password=password,
-            username=username,
-            connection_class=SSLConnection,
-        )
-    return RedisStorage(
-        host=parsed.hostname,
-        port=parsed.port or 6379,
-        db=db,
-        password=password,
-        username=username,
+        kwargs["connection_class"] = SSLConnection
+    return kwargs
+
+
+def _redis_storage(connections: ConnectionSettings) -> RedisStorage:
+    """内存业务模式仍使用官方 RedisStorage，便于离线与框架级测试。"""
+
+    return RedisStorage(**_redis_connection_kwargs(connections))
+
+
+def _conversation_storage(
+    connections: ConnectionSettings,
+    persistence: PersistenceSettings,
+) -> DurableConversationStorage:
+    """正式模式构造 PostgreSQL durable + Redis cache 的 AgentScope Storage。"""
+
+    if connections.database_url is None:
+        raise ValueError("postgres-redis 模式需要 DATABASE_URL")
+    database_url = connections.database_url.get_secret_value()
+    if not database_url.startswith("postgresql+asyncpg://"):
+        raise ValueError("DATABASE_URL 必须使用 postgresql+asyncpg 驱动")
+    return DurableConversationStorage(
+        database_url,
+        session_cache_ttl_seconds=persistence.session_cache_ttl_seconds,
+        conversation_retention_days=persistence.conversation_retention_days,
+        **_redis_connection_kwargs(connections),
     )
 
 
@@ -309,7 +329,11 @@ def create_demo_app(
     persistence = PersistenceSettings()
     connections = connections or ConnectionSettings()
     workspace_dir = workspace_dir or settings.output_dir / "agentscope_workspaces"
-    storage = _redis_storage(connections)
+    storage: StorageBase = (
+        _conversation_storage(connections, persistence)
+        if persistence.persistence == "postgres-redis"
+        else _redis_storage(connections)
+    )
     api_key = connections.model_api_key
     model_name = connections.model_name
     base_url = connections.model_base_url
@@ -330,7 +354,7 @@ def create_demo_app(
         else None
     )
 
-    # 聊天会话和消息落入 Redis；消息总线只负责当前进程中的实时事件分发。
+    # 正式模式以 PostgreSQL 保存长期会话，Redis 仅缓存活跃会话；消息总线仍只传实时事件。
     task_tools = SessionTaskToolFactory(
         settings=settings.model_copy(update={"mode": "demo"}),
         persistence=persistence,

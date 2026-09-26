@@ -8,8 +8,8 @@ Execution、Workflow 和 ToolRun 状态的中文含义见 [11-status-enum-glossa
 
 正式持久模式使用 SQLAlchemy asyncio + asyncpg 访问 PostgreSQL，使用 redis-py asyncio 访问 Redis，使用 Alembic 显式管理 migration。Repository 和 StateStore 隔离 SDK；Agent、Workflow 和专业 Tool 不直接持有数据库连接。
 
-- PostgreSQL 保存 Task、InputVersion、Execution、ToolRun、SessionTaskBinding、报告、执行租约及审计事实，是 canonical source。
-- Redis 保存可丢弃的 `InterpretationState` 运行检查点；AgentScope 另用 Redis 保存聊天 Session、消息和服务凭证。
+- PostgreSQL 保存 Task、InputVersion、Execution、ToolRun、SessionTaskBinding、报告、执行租约、Conversation Session / Message 及审计事实，是长期 canonical source。
+- Redis 保存可丢弃的 `InterpretationState` 运行检查点和有滑动 TTL 的 AgentScope 活跃聊天缓存；服务凭证等非 Conversation 资源不使用 Session TTL。
 - 进程内 `observed_task_ids` 和 dispatcher task 仅用于加速与调度，不是业务事实。
 
 Redis 过期或清空不会删除 PostgreSQL 中的版本、报告或任务归属。PostgreSQL 写入失败时必须返回基础设施错误，不能伪造成功，也不能静默降级到 memory。
@@ -40,19 +40,19 @@ Task、InputVersion、Execution、ToolRun 和 Binding 的写入均依赖数据�
 
 PostgreSQL 的 `(user_id, agent_id, session_id, task_id)` Binding 是业务 ownership。Backend 重启后，SessionTaskToolFactory 可从 Binding 恢复 runner 的任务集合；Read API 再按 Task 和 Execution 查询面板、历史、ToolRun 和报告。错误用户、Agent、Session 或 Execution 归属统一拒绝。
 
-AgentScope 的 Redis Session 可恢复聊天消息；即使相关业务缓存缺失，业务读模型仍必须从 PostgreSQL 构造。SSE 断开不会取消受 `shield` 保护的后台 Worker，重开页面通过 Read API 查看持久事实；当前没有 SSE replay。
+AgentScope Session / Message 长期副本由 PostgreSQL Conversation 表保存；Redis 命中时直接使用活跃缓存，缓存过期或清空时按完整 ownership 恢复 Session，并由 Message 表分页恢复历史。业务 runner 仍从 SessionTaskBinding 恢复，业务读模型仍从 Task / Execution 构造。SSE 断开不会取消受 `shield` 保护的后台 Worker；当前没有 SSE replay。完整边界见 [12-conversation-persistence.md](12-conversation-persistence.md)。
 
 ## 6. Redis 缓存
 
 运行快照 Key 为 `<CNLC_REDIS_PREFIX>:state:<task_id SHA-256>`，避免在 Key 中暴露原始 ID。SET 原子附带 TTL，每次保存刷新过期时间。缺失返回 `None`；损坏快照和网络错误分类为稳定 `InfrastructureError`，不吞掉异常。
 
-默认 TTL、租约、恢复轮询和连接地址由配置统一管理。Redis 数据可以丢失；PostgreSQL 事实不应依赖缓存存活。
+运行快照 TTL 使用 `CNLC_REDIS_TTL_SECONDS`；聊天缓存另用 `CNLC_SESSION_CACHE_TTL_SECONDS`，只作用于 Session、Message 和对应 Session index，并随活跃读写刷新。Credential 等 key 不设置聊天 TTL。长期 Conversation retention 由独立的 `CNLC_CONVERSATION_RETENTION_DAYS` 表达，默认不清理。Redis 数据可以丢失；PostgreSQL 事实不依赖缓存存活。
 
 ## 7. 配置与 migration
 
 正式模式设置 `CNLC_PERSISTENCE=postgres-redis`，并提供 `DATABASE_URL` 与 `REDIS_URL`。数据库连接必须使用 `postgresql+asyncpg`。密码、Token 和 API Key 只从未纳入版本控制的环境配置读取，使用 SecretStr 包装，日志不得输出连接串、驱动原文或密钥。
 
-Alembic migration `0001`～`0006` 必须由部署或开发者显式执行；应用启动不自动改表。迁移顺序和含义见数据库设计。内存模式只用于离线 Demo 和单元测试，不能冒充跨进程持久化。
+Alembic migration `0001`～`0007` 必须由部署或开发者显式执行；应用启动不自动改表。迁移顺序和含义见数据库设计。内存模式只用于离线 Demo 和单元测试，不能冒充跨进程持久化。
 
 示例：
 
@@ -71,6 +71,8 @@ uv run python -m cnlc_agent.demo.agentscope_app
 - Worker 失联：租约过期恢复为 `FAILED`（执行失败），不自动重跑。
 - 报告失败：Execution 保留状态和诊断；后续新版本可只运行报告阶段，但不会覆盖旧版本。
 - Binding 保存失败：首次任务不向会话宣称可用，返回稳定 `SESSION_TASK_BINDING_FAILED`。
+- Conversation PostgreSQL 写失败：不先写 Redis，不向用户确认不可恢复的历史。
+- Conversation durable 写成功而缓存失败：保留 PostgreSQL 事实并记录安全 warning，后续读取回填缓存。
 
 所有异常至少包含分类、日志、Trace 和是否影响执行的明确结果。日志只记录安全错误码和异常类型。
 

@@ -135,6 +135,12 @@ InteractionSnapshot 是 Binding/Task/Execution/Session State 的派生读模型�
 澄清只保留紧邻下一轮、最长 10 分钟；无关操作、断流、格式不完整或新 runner 后安全清除。
 Context compression 保留完整 Session State，不从摘要恢复数值。
 
+Task 10.4 后，Session / Message 历史由 PostgreSQL Conversation 表长期保存，Redis 只保留活跃缓存。
+缓存丢失后恢复的 Session State 不包含 PendingClarification；active_task_id 无法使用时仍从
+SessionTaskBinding fallback。历史消息分页服务 UI，模型 Context 继续由 AgentScope compression 和
+Session State 控制，不把完整长期历史一次性注入模型。详见
+[12-conversation-persistence.md](12-conversation-persistence.md)。
+
 TaskReference 解析不改变焦点，成功操作才切 active；上一版与上一口井仍严格分离。
 模型一次提出多个写操作时，在执行前拒绝整批，不部分完成后声称全部满足。
 FAILED/BLOCKED/REVIEW_REQUIRED/WARNING 查询输出持久的安全诊断字段。

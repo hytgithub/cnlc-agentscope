@@ -60,6 +60,10 @@ class PersistenceSettings(BaseSettings):
     persistence: Literal["memory", "postgres-redis"] = "memory"
     redis_prefix: str = Field(default="cnlc:v1", min_length=1)
     redis_ttl_seconds: int = Field(default=86400, gt=0)
+    # 聊天缓存与 InterpretationState 检查点生命周期不同，避免一个开关误清理两类数据。
+    session_cache_ttl_seconds: int = Field(default=604800, gt=0)
+    # None 表示长期保留；配置正整数后，启动时清理超过天数的非活跃 Conversation。
+    conversation_retention_days: int | None = Field(default=None, gt=0)
     infrastructure_timeout_seconds: float = Field(default=5, gt=0)
     execution_lease_seconds: float = Field(default=90, gt=3, le=3600)
     execution_poll_seconds: float = Field(default=15, gt=0, le=60)

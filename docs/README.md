@@ -18,6 +18,7 @@
 | 意图与交互设计 | [08-intent-and-interaction-design.md](08-intent-and-interaction-design.md) | 附件路由、ReAct、五个任务级 Tool |
 | 交互状态机 | [10-interaction-state-machine.md](10-interaction-state-machine.md) | 异常交互、集中 Policy、短期澄清和状态裁决 |
 | 状态与枚举中文词典 | [11-status-enum-glossary.md](11-status-enum-glossary.md) | Workflow、Execution、Validation、交互、ToolRun、规划等代码值的中文含义 |
+| Conversation 持久化 | [12-conversation-persistence.md](12-conversation-persistence.md) | PostgreSQL 长期会话、Redis TTL、恢复和删除语义 |
 | 流式进度与 UI | [09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md) | 首次解释 SSE、Telemetry 投影和界面边界 |
 
 ## 历史差距分析（Historical Gap Analysis）
@@ -27,14 +28,14 @@
 
 ## Task 执行记录（Task Execution Record）
 
-`docs/tasks/` 保存每个 Task 的实现与验证记录。当前前后端和首次解释流式联调记录见 [tasks/010-frontend-backend-integration.md](tasks/010-frontend-backend-integration.md)。执行记录说明当时环境与结果，不替代 Current Design。Task 10.3 见 [tasks/010-3-interaction-robustness.md](tasks/010-3-interaction-robustness.md)。
+`docs/tasks/` 保存每个 Task 的实现与验证记录。当前前后端和首次解释流式联调记录见 [tasks/010-frontend-backend-integration.md](tasks/010-frontend-backend-integration.md)。执行记录说明当时环境与结果，不替代 Current Design。Task 10.3 见 [tasks/010-3-interaction-robustness.md](tasks/010-3-interaction-robustness.md)，Task 10.4 见 [tasks/010-4-conversation-persistence.md](tasks/010-4-conversation-persistence.md)。
 
 ## 验收（Acceptance）
 
 - [mvp-acceptance.md](mvp-acceptance.md)：MVP 验收口径。
 - 自动化测试和真实 PostgreSQL / Redis 联调结果应与对应 Task 记录一起阅读。
 
-## 当前能力状态（Task 01～10.3）
+## 当前能力状态（Task 01～10.4）
 
 | 能力 | 状态 |
 | --- | --- |
@@ -50,6 +51,7 @@
 | START / MODIFY / FULL_RERUN Streaming | 已实现 |
 | Multi-well Session / Active Task Resolver | 已实现 |
 | Interaction State / Policy / Pending Clarification | 已实现 |
+| Durable Conversation / Redis Session TTL / Cache Restore | 已实现 |
 | fixture / company_mock 四批次能力 | 已实现（Mock） |
 | Heavy Prediction API | Future / 未实现 |
 | Curve Visualization | Future / 未实现 |

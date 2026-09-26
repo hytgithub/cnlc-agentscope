@@ -55,7 +55,7 @@ PostgreSQL
 负责长期、可追溯的业务事实
 
 Redis
-负责可丢弃运行快照和 AgentScope Session / Message
+负责可丢弃运行快照和有 TTL 的 AgentScope 活跃 Session / Message cache
 
 Telemetry
 负责 Workflow / Tool / Report 实时过程事件
@@ -84,7 +84,7 @@ Telemetry
 | 数据库 | PostgreSQL |
 | ORM | SQLAlchemy 2.x async |
 | Migration | Alembic |
-| Runtime / Session | Redis |
+| Runtime / Active Session Cache | Redis |
 | 配置 | pydantic-settings |
 | 测试 | pytest |
 | 代码检查 | ruff |
@@ -458,6 +458,8 @@ interpretation_input_version
 interpretation_execution
 interpretation_tool_run
 interpretation_session_task_binding
+conversation_session
+conversation_message
 ```
 
 关键原则：
@@ -467,6 +469,7 @@ interpretation_session_task_binding
 - Execution 表示一次真正执行；
 - ToolRun 记录专业工具轨迹；
 - SessionTaskBinding 记录用户 / Agent / Session 对 Task 的 durable ownership；
+- ConversationSession / Message 保存长期聊天生命周期，不替代业务 ownership；
 - 报告当前与 Execution 同版本存储在 `interpretation_execution.markdown`；
 - 历史版本追加保存，不覆盖。
 
@@ -479,13 +482,12 @@ interpretation_session_task_binding
 Redis 当前主要承担：
 
 - `InterpretationState` 运行快照；
-- AgentScope Session；
-- AgentScope Message；
-- 服务凭证等运行时数据。
+- 有独立滑动 TTL 的 AgentScope 活跃 Session / Message cache；
+- 不使用 Session TTL 的服务凭证等 AgentScope 资源。
 
 原则：
 
-> Redis 可丢；PostgreSQL 业务事实不可丢。
+> Redis 可丢；PostgreSQL Conversation 与业务事实不可丢。
 
 进程内的 runner、`observed_task_ids` 和 dispatcher Task 也都不是 durable truth。
 
@@ -520,7 +522,7 @@ Worker 失联时通过 lease expiry 标记为失败；当前不会自动重新�
 
 ## 16. Session 与重启恢复
 
-Migration `0006` 已实现 durable SessionTaskBinding：
+Migration `0006` 实现 durable SessionTaskBinding，Migration `0007` 实现 durable Conversation：
 
 ```text
 (user_id, agent_id, session_id, task_id)
@@ -540,7 +542,10 @@ get_or_restore_runner()
 Read API / ReAct 可以继续访问原 Task
 ```
 
-不能因为 PostgreSQL 中存在 task_id 就直接授权。
+聊天 Redis cache miss 时先按完整 ownership 从 `conversation_session` 恢复 Session，历史展示由
+`conversation_message` 分页读取；Task ownership 仍只由 SessionTaskBinding 决定。不能因为
+PostgreSQL 中存在 task_id 或聊天中出现 task_id 就直接授权。完整设计见
+[12-conversation-persistence.md](12-conversation-persistence.md)。
 
 ---
 
@@ -740,6 +745,7 @@ Redis
 | Durable ToolRun | Current |
 | Background Execution + Lease | Current |
 | SessionTaskBinding restart recovery | Current |
+| Durable Conversation + Redis Session TTL recovery | Current |
 | Interpretation Read API / History | Current |
 | First-run streaming to final report | Current |
 | qwen-plus 外层 ReAct | Current |

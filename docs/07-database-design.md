@@ -1,6 +1,6 @@
 # 测井解释智能体数据库设计
 
-本文记录 migration `0001`～`0006` 已实现的数据库事实。设计原则是 **Versioned、Append-oriented、Traceable、Recoverable**：输入、执行和工具调用以新版本追加，Task 只维护当前指针和兼容视图，运行失败也必须留下可查询事实。状态、枚举和规划原因的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
+本文记录 migration `0001`～`0007` 已实现的数据库事实。设计原则是 **Versioned、Append-oriented、Traceable、Recoverable**：输入、执行和工具调用以新版本追加，Task 只维护当前指针和兼容视图，运行失败也必须留下可查询事实。状态、枚举和规划原因的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
 
 ## 1. 实体关系
 
@@ -72,6 +72,28 @@ erDiagram
         timestamptz finished_at
         text error_code
         text error_message
+    }
+    CONVERSATION_SESSION ||--o{ CONVERSATION_MESSAGE : contains
+    CONVERSATION_SESSION {
+        text user_id PK
+        text agent_id PK
+        text session_id PK
+        text title
+        varchar status
+        jsonb record_json
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz last_active_at
+    }
+    CONVERSATION_MESSAGE {
+        text message_id PK
+        text user_id FK
+        text agent_id FK
+        text session_id FK
+        bigint sequence
+        varchar role
+        jsonb content_json
+        timestamptz created_at
     }
     INTERPRETATION_SESSION_TASK_BINDING {
         text user_id PK
@@ -171,6 +193,17 @@ Migration `0006` 创建 `interpretation_session_task_binding`。复合主键是 
 
 当前不建独立 Report 表，因为还没有报告编辑、审批、签名、发布状态、多格式制品或 PDF 生命周期。出现这些独立生命周期后再引入 Report / Artifact 实体，避免提前复制 Execution 的版本边界。
 
+## 8.1 ConversationSession 与 ConversationMessage
+
+Migration `0007` 创建 `conversation_session` 和 `conversation_message`。Session 使用
+`(user_id, agent_id, session_id)` 复合主键；Message 使用全局唯一 message_id，并以 Session 内
+sequence 唯一约束保持稳定顺序。Message 的 content_json 保存可还原 AgentScope Block 的结构化展示副本。
+
+Conversation 与 SessionTaskBinding 职责独立：前者保存聊天生命周期，后者保存测井 Task ownership。
+ConversationMessage 的唯一级联目标是其 ConversationSession；删除聊天不会删除 Binding、Task、
+Execution、ToolRun 或报告。详细恢复、TTL、幂等和去重边界见
+[12-conversation-persistence.md](12-conversation-persistence.md)。
+
 ## 9. 并发、租约与恢复
 
 创建新 Execution 时，Repository 对 Task 执行 `SELECT ... FOR UPDATE`，并校验规划携带的 `expected_current_execution_id`。指针已变化说明计划过期；当前 Execution 仍为活跃状态则返回 `TASK_EXECUTION_ACTIVE`。这保证同一 Task 只有一个当前活跃执行。
@@ -181,8 +214,8 @@ Worker 以原子 `claim_execution` 把 `QUEUED` 改为 `RUNNING`，写入 owner 
 
 | 存储 | 当前职责 | 丢失后的含义 |
 | --- | --- | --- |
-| PostgreSQL | Task、InputVersion、Execution、ToolRun、SessionTaskBinding、报告、租约和审计事实 | 业务事实丢失，不允许伪装成功或自动降级到内存 |
-| Redis | 可丢弃的 `InterpretationState` 运行检查点；AgentScope 会话、消息与服务凭证存储 | 可由 PostgreSQL 事实恢复业务读取；实时聊天体验可能受影响 |
+| PostgreSQL | Task、InputVersion、Execution、ToolRun、SessionTaskBinding、报告、Conversation、租约和审计事实 | 长期事实丢失，不允许伪装成功或自动降级到内存 |
+| Redis | 可丢弃的 `InterpretationState` 运行检查点；有 TTL 的 AgentScope 活跃 Session / Message cache；无 Session TTL 的服务凭证等资源 | Conversation 和业务读取可分别由 PostgreSQL 恢复；实时流事件可能丢失 |
 
 PostgreSQL 是 canonical source。Redis 写入使用带 TTL 的 SET，Key 中的 Task ID 被 SHA-256 散列；Redis 可过期或清空，PostgreSQL 的版本、归属和报告不应因此消失。
 
@@ -196,5 +229,6 @@ PostgreSQL 是 canonical source。Redis 写入使用带 TTL 的 SET，Key 中的
 | `0004` | 持久化 ToolRun |
 | `0005` | Execution 起点、来源、规划原因、时间、租约和错误码；旧活跃状态迁移为失败 |
 | `0006` | durable Session ↔ Task binding |
+| `0007` | durable Conversation Session / Message、ownership、消息顺序与幂等键 |
 
 Migration 必须显式执行，应用启动不自动改表。正式井数据字段仍为 **Pending final well-data schema**。
