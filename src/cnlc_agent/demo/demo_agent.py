@@ -31,6 +31,18 @@ _STATUS_PATTERNS = (
     re.compile(r"(?:执行|当前)状态"),
 )
 
+_SUMMARY_TASK_CONTEXT_PATTERN = re.compile(
+    r"<cnlc-task-context>(?P<payload>\{.*?\})</cnlc-task-context>",
+    re.DOTALL,
+)
+_SUMMARY_FIELDS = {
+    "task_overview",
+    "current_state",
+    "important_discoveries",
+    "next_steps",
+    "context_to_preserve",
+}
+
 DEMO_SYSTEM_PROMPT = """你是单井常规测井解释任务的交互入口，只处理测井解释及相关任务操作。
 支持开始解释、修改参数并重跑、全流程重跑、查询状态、查询当前或历史报告。
 上传由接入层确定性解析；明确提供已知 Fixture 井号时可以调用 run_well_interpretation。
@@ -85,6 +97,9 @@ class MockTaskShellModel(ChatModelBase):
             model=model,
             parameters=parameters or self.Parameters(),
             stream=False,
+            # 与发布给 AgentScope Web 的 ModelCard 保持一致，避免 32K 默认值让
+            # 正常的长报告会话过早触发上下文压缩。
+            context_size=kwargs.pop("context_size", 131_072),
             **kwargs,
         )
         self.formatter = DashScopeChatFormatter()
@@ -112,14 +127,43 @@ class MockTaskShellModel(ChatModelBase):
         structured_model: type[BaseModel] | dict[Any, Any],
         **kwargs: Any,
     ) -> StructuredResponse:
-        """本地完成 AgentScope 会话标题生成，避免 Mock 凭证触发外网请求。"""
+        """本地完成标题或上下文摘要，并严格满足上游结构化输出契约。"""
 
-        del structured_model, kwargs
+        del kwargs
+        schema = (
+            structured_model.model_json_schema()
+            if isinstance(structured_model, type) and issubclass(structured_model, BaseModel)
+            else structured_model
+        )
+        properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
         candidates = [message.get_text_content() or "" for message in reversed(messages)]
         text = next(
             (candidate.strip() for candidate in candidates if candidate.strip()),
             "CNLC 测井解释",
         )
+        if _SUMMARY_FIELDS.issubset(properties):
+            context = self._summary_task_context(messages)
+            marker = (
+                "<cnlc-task-context>"
+                f"{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}"
+                "</cnlc-task-context>"
+                if context
+                else "尚无已绑定的解释任务。"
+            )
+            return StructuredResponse(
+                content={
+                    "task_overview": "在当前会话中完成单井常规测井解释及任务级操作。",
+                    "current_state": f"最近可信的持久化任务上下文：{marker}",
+                    "important_discoveries": (
+                        "任务标识只来自 Tool Result；专业结果由 Workflow 和专业 Tool 生成。"
+                    ),
+                    "next_steps": "等待用户继续查询状态、查看报告、修改参数或全量重跑。",
+                    "context_to_preserve": (
+                        "保持 W01-W10 顺序；只支持 sampling_interval、por、perm、"
+                        "prediction_model 参数修改。"
+                    ),
+                }
+            )
         title = "CNLC 测井解释" if "title" in text.lower() else text[:80]
         return StructuredResponse(content={"title": title})
 
@@ -160,7 +204,7 @@ class MockTaskShellModel(ChatModelBase):
             for block in message.content
             if isinstance(block, ToolResultBlock)
         ]
-        task_id = self._latest_task_id(historical_results)
+        task_id = self._latest_task_id(historical_results) or self._summary_task_id(messages)
         if task_id is None:
             return ChatResponse(
                 content=[TextBlock(text="请先上传井资料或开始一次解释任务。")],
@@ -168,6 +212,20 @@ class MockTaskShellModel(ChatModelBase):
             )
         name, parameters = self._command(instruction)
         if name is None:
+            if "含水饱和度" in instruction and any(
+                phrase in instruction for phrase in ("重算", "重新计算", "重跑", "重新跑")
+            ):
+                return ChatResponse(
+                    content=[
+                        TextBlock(
+                            text=(
+                                "当前尚不支持只重算含水饱和度。请修改受支持的参数后重跑，"
+                                "或明确要求全部重新跑。"
+                            )
+                        )
+                    ],
+                    is_last=True,
+                )
             return ChatResponse(
                 content=[TextBlock(text="当前 Agent 只处理单井常规测井解释及相关任务操作。")],
                 is_last=True,
@@ -208,6 +266,59 @@ class MockTaskShellModel(ChatModelBase):
 
         for block in reversed(blocks):
             task_id = cls._payload(block).get("task_id")
+            if isinstance(task_id, str) and task_id:
+                return task_id
+        return None
+
+    @classmethod
+    def _summary_task_context(cls, messages: list[Msg]) -> dict[str, Any]:
+        """从 Tool 结果或既有受控摘要提取最小任务上下文，避免压缩后丢失绑定。"""
+
+        blocks = [
+            block
+            for message in messages
+            for block in message.content
+            if isinstance(block, ToolResultBlock)
+        ]
+        for block in reversed(blocks):
+            payload = cls._payload(block)
+            task_id = payload.get("task_id")
+            if isinstance(task_id, str) and task_id:
+                return {
+                    key: payload[key]
+                    for key in ("task_id", "execution_id", "well_id", "execution_sequence")
+                    if payload.get(key) is not None
+                }
+        for message in reversed(messages):
+            text = message.get_text_content() or ""
+            if not text.startswith("<system-info>Here is a summary of your previous work"):
+                continue
+            match = _SUMMARY_TASK_CONTEXT_PATTERN.search(text)
+            if match:
+                try:
+                    payload = json.loads(match.group("payload"))
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and isinstance(payload.get("task_id"), str):
+                    return payload
+        return {}
+
+    @classmethod
+    def _summary_task_id(cls, messages: list[Msg]) -> str | None:
+        """只读取本模型生成的摘要标记，不把普通用户文本当作可信 task_id。"""
+
+        for message in reversed(messages):
+            text = message.get_text_content() or ""
+            if not text.startswith("<system-info>Here is a summary of your previous work"):
+                continue
+            match = _SUMMARY_TASK_CONTEXT_PATTERN.search(text)
+            if not match:
+                continue
+            try:
+                payload = json.loads(match.group("payload"))
+            except json.JSONDecodeError:
+                continue
+            task_id = payload.get("task_id") if isinstance(payload, dict) else None
             if isinstance(task_id, str) and task_id:
                 return task_id
         return None
