@@ -22,6 +22,8 @@ from cnlc_agent.demo.execution_stream import (
     ExecutionReplyStreamer,
     ExecutionStreamingMiddleware,
 )
+from cnlc_agent.demo.interaction_middleware import InteractionStateMiddleware
+from cnlc_agent.demo.interaction_state import render_interaction_result
 from cnlc_agent.demo.tools import RUN_TOOL_NAME, RunWellInterpretationTool
 from cnlc_agent.demo.upload_reply import UploadInterpretationReply
 
@@ -45,27 +47,35 @@ _SUMMARY_FIELDS = {
     "context_to_preserve",
 }
 
-DEMO_SYSTEM_PROMPT = """你是单井常规测井解释任务的交互入口，只处理测井解释及相关任务操作。
-支持开始解释、修改参数并重跑、全流程重跑、查询状态、查询当前或历史报告。
-上传由接入层确定性解析；明确提供已知 Fixture 井号时可以调用 run_well_interpretation。
-同一 Session 可能包含多口井，不得简单把最近 Tool result 的 task_id 用于所有请求。
-任务选择必须使用 task_reference 交给受控 Session Task Resolver，不得自行构造 UUID。
-默认当前井用 CURRENT；“上一口井”用 PREVIOUS_TASK；明确井号用 WELL_ID。
-修改参数使用 modify_well_interpretation，仅支持 sampling_interval、por、perm、prediction_model。
-用户未说参数名称（例如“改成0.16”）时先询问，不猜 POR 或 PERM。
-明确的孔隙度16%可以转为 por=0.16；PERM 单位未确认，不擅自换算。
-prediction_model 是专业预测配置，不得改变 qwen-plus。Rw、Archie m/n、Sw 不在参数契约内。
-“重新计算含水饱和度”应说明尚不支持步骤级重跑，可以全流程重跑或修改受支持参数后重跑；
-不要因此自行调用重跑或编造参数。用户明确要求全部重跑时调用 rerun_well_interpretation。
-查询状态必须调用 get_interpretation_status 并依据持久事实回答，不能从聊天记忆推测。
-“上一版报告”始终是当前 active task 的 selector="PREVIOUS"，绝不跨井。
-“上一口井的报告”用 PREVIOUS_TASK + LATEST_SUCCESSFUL，指定井号用 WELL_ID。
-当前版 CURRENT，最近成功版 LATEST_SUCCESSFUL。报告原文来自 Tool，完整展示，不改写专业结论。
-你只决定用户意图；不得自行计算、调用内部专业 Tool、决定 W01-W10 顺序、执行起点或 RUN/REUSE。
-开始、修改和全量重跑创建 Execution 后，由系统持续展示真实执行过程和对应报告。
-用户询问进度时必须再次调用状态 Tool；报告未就绪时不要编造或改用旧版冒充当前版。
-领域外请求不调用工具，简洁回复“当前 Agent 只处理单井常规测井解释及相关任务操作。”
-Tool 错误按安全文案解释，不自动改成全量重跑。Demo/Mock 专业结果未复算，不编造结果。
+DEMO_SYSTEM_PROMPT = """你是单井常规测井解释交互入口。ReAct 理解用户意图，Workflow 执行专业步骤。
+必须实际调用工具执行任务操作，不得只输出调用计划、伪造成功或根据聊天记忆回答。
+模型只可使用注册的五个业务工具与一个纯交互工具；不调用内部专业 Tool，不计算专业参数，
+不决定 W01-W10、执行起点或 RUN/REUSE。专业结果只来自 Workflow。
+任务统一用 task_reference；不要传 task_id。默认 CURRENT；上一口井 PREVIOUS_TASK；
+明确井号 WELL_ID；不得构造 UUID，也不得把最近 ToolResult 当当前任务。
+CURRENT/PREVIOUS_TASK 的 value 必须省略；WELL_ID/TASK_ID 必须带非空 value。
+上传由接入层处理；明确 Fixture 井号时可 run_well_interpretation。
+修改用 modify_well_interpretation，仅支持 sampling_interval、por、perm、prediction_model。
+孔隙度16%可转 por=0.16；PERM 单位不擅自换算；prediction_model 不改变 qwen-plus。
+“改成0.16”必须调用 request_interpretation_clarification(reason=PARAMETER_NAME, known_value=0.16)。
+不猜参数。下一轮“孔隙度”且可信快照有 pending 时，必须实际调用
+modify_well_interpretation(parameter_name="por")，省略 por 和其它值；工具从 pending 补齐。
+没有 pending 时，只给参数名必须询问完整名称和值，不从旧聊天取值。
+完整参数修改并要报告是一个 MODIFY。明确全部重跑用 rerun_well_interpretation。
+同一句 MODIFY+FULL_RERUN 或混合不支持的操作，必须调用交互工具 reason=CONFLICT，不部分执行。
+Rw、Archie m/n、Sw 等不支持参数必须调用交互工具 reason=UNSUPPORTED_PARAMETER。
+重新计算含水饱和度、Sw-only、岩性-only、层段-only 必须调用交互工具 reason=UNSUPPORTED_OPERATION。
+细层段原因、证据查询或专业概念问答用 reason=DOMAIN_QUERY；当前未开放完整专业问答。
+这些都是测井领域请求，不能当 OUT_OF_DOMAIN，也不能自动 FULL_RERUN 或自己算 Sw。
+查询进度、现在呢、为什么失败、缺什么，每轮必须调用 get_interpretation_status。
+报告必须调用 get_interpretation_report。“上一版”是当前 Task 的 PREVIOUS Execution，不跨井；
+“上一口井报告”是 PREVIOUS_TASK + LATEST_SUCCESSFUL；当前版 CURRENT，最近成功版 LATEST_SUCCESSFUL。
+即使快照显示无任务、无上一版或无上一口井，也必须调用对应工具，由工具返回稳定错误。
+工具返回澄清或拒绝后结束本轮，不重复尝试，不用旧报告冒充当前报告。
+FAILED/BLOCKED/REVIEW_REQUIRED/WARNING 按持久事实解释，不自动改结论或继续步骤。
+开始/修改/重跑成功后由系统流式返回过程和本轮报告。报告完整展示，不改写专业结论。
+领域外的天气、通用编程、笑话不调用测井 Tool，只说明当前 Agent 的单井测井解释边界。
+任何回复不暴露原始异常、API Key、内部 URL、数据库配置或本地路径。
 """
 
 
@@ -85,7 +95,7 @@ class MockTaskShellCredential(CredentialBase):
 class MockTaskShellModel(ChatModelBase):
     """Mock 环境的确定性 ReAct 外壳，供真实 Web 联调时免公网模型运行。
 
-    它只识别 Demo 已公开的任务级意图，并始终从历史 Tool Result 取得 task_id；
+    它只识别 Demo 已公开的任务级意图，任务引用由 SessionTaskResolver 解析；
     专业计算仍由 Workflow、专业 Tool 和 MockModelGateway 完成。
     """
 
@@ -204,24 +214,38 @@ class MockTaskShellModel(ChatModelBase):
             )
         name, parameters = self._command(instruction)
         if name is None:
-            if "含水饱和度" in instruction and any(
-                phrase in instruction for phrase in ("重算", "重新计算", "重跑", "重新跑")
-            ):
+            # Mock 桩只解析紧邻轮次的受控快照，不从聊天记忆找旧值。
+            names = {
+                "孔隙度": "por",
+                "por": "por",
+                "渗透率": "perm",
+                "perm": "perm",
+                "采样间隔": "sampling_interval",
+            }
+            parameter = names.get(instruction.strip().lower())
+            if parameter:
+                pending = None
+                for message in messages:
+                    text = message.get_text_content() or ""
+                    marker = "当前可信交互快照（不得由聊天记忆覆盖）：\n"
+                    if message.role == "system" and marker in text:
+                        snapshot = json.loads(text.split(marker, 1)[1])
+                        pending = snapshot.get("pending_clarification")
+                if pending:
+                    name = "modify_well_interpretation"
+                    parameters = {
+                        "task_reference": {"kind": "TASK_ID", "value": pending["task_id"]},
+                        "parameter_name": parameter,
+                    }
+                else:
+                    return ChatResponse(
+                        content=[TextBlock(text="请明确要修改的参数名称和值。")], is_last=True
+                    )
+            else:
                 return ChatResponse(
-                    content=[
-                        TextBlock(
-                            text=(
-                                "当前尚不支持只重算含水饱和度。请修改受支持的参数后重跑，"
-                                "或明确要求全部重新跑。"
-                            )
-                        )
-                    ],
+                    content=[TextBlock(text="当前 Agent 只处理单井常规测井解释及相关任务操作。")],
                     is_last=True,
                 )
-            return ChatResponse(
-                content=[TextBlock(text="当前 Agent 只处理单井常规测井解释及相关任务操作。")],
-                is_last=True,
-            )
         return ChatResponse(
             content=[
                 ToolCallBlock(
@@ -339,6 +363,59 @@ class MockTaskShellModel(ChatModelBase):
         elif well_match:
             reference = {"kind": "WELL_ID", "value": well_match.group(1)}
         task_reference = {"task_reference": reference}
+        lower = instruction.lower()
+        modify = any(word in lower for word in ("修改", "改成", "改为", "修改为"))
+        full = any(word in lower for word in ("全部重跑", "全部重新跑", "全量重跑", "全流程重跑"))
+        rerun = any(
+            word in lower
+            for word in ("重新计算", "重新算", "重算", "重新识别", "重新划分", "只重新算", "重跑")
+        )
+        granular = (
+            not full
+            and rerun
+            and any(word in lower for word in ("sw", "含水饱和度", "岩性", "层段"))
+        )
+        interaction = "request_interpretation_clarification"
+        if modify and (full or granular or "比较" in lower):
+            return interaction, {"reason": "CONFLICT"}
+        if modify and any(word in lower for word in ("rw", "archie", "含水饱和度", "sw")):
+            return interaction, {"reason": "UNSUPPORTED_PARAMETER"}
+        if granular or "比较上一版" in lower:
+            return interaction, {"reason": "UNSUPPORTED_OPERATION"}
+        if any(word in lower for word in ("什么是", "为什么这层", "为什么这段")) or (
+            "为什么" in lower and any(word in lower for word in ("水层", "油层", "油水同层"))
+        ):
+            return interaction, {"reason": "DOMAIN_QUERY"}
+        if any(
+            word in lower for word in ("现在呢", "为什么失败", "为什么停", "现在怎么了", "缺什么")
+        ):
+            return "get_interpretation_status", task_reference
+        if full or any(word in lower for word in ("再重新解释一次", "重新解释一次")):
+            return "rerun_well_interpretation", task_reference
+        if modify or "重新解释" in lower:
+            changes: dict[str, Any] = {}
+            numeric_instruction = (
+                instruction.replace(well_match.group(1), "") if well_match else instruction
+            )
+            value = re.search(r"(?:\d*\.\d+|\d+(?:\.\d+)?%?)", numeric_instruction)
+            if value:
+                raw = value.group(0)
+                number = float(raw.rstrip("%")) / (100 if raw.endswith("%") else 1)
+                for words, parameter in (
+                    (("孔隙度", "por"), "por"),
+                    (("渗透率", "perm"), "perm"),
+                    (("采样间隔", "sampling_interval"), "sampling_interval"),
+                ):
+                    if any(word in lower for word in words):
+                        changes[parameter] = number
+                if changes:
+                    return "modify_well_interpretation", {**task_reference, **changes}
+                return interaction, {
+                    **task_reference,
+                    "reason": "PARAMETER_NAME",
+                    "known_value": number,
+                }
+            return interaction, {"reason": "CONFLICT"}
         if (
             any(phrase in instruction for phrase in _PREVIOUS_TASK_PHRASES)
             and "报告" in instruction
@@ -358,18 +435,8 @@ class MockTaskShellModel(ChatModelBase):
             return "rerun_well_interpretation", task_reference
         if any(pattern.search(instruction) for pattern in _STATUS_PATTERNS):
             return "get_interpretation_status", task_reference
-        if "重新解释" in instruction or "修改" in instruction or "改成" in instruction:
-            changes: dict[str, Any] = {}
-            value = re.search(r"(?:0?\.\d+|\d+(?:\.\d+)?%)", instruction)
-            if value:
-                raw = value.group(0)
-                number = float(raw.rstrip("%")) / (100 if raw.endswith("%") else 1)
-                if "孔隙度" in instruction:
-                    changes["por"] = number
-                if "渗透率" in instruction:
-                    changes["perm"] = number
-            if changes:
-                return "modify_well_interpretation", {**task_reference, **changes}
+        if well_match and any(word in instruction for word in ("开始", "解释")):
+            return "run_well_interpretation", {"well_id": well_match.group(1)}
         return None, {}
 
     @classmethod
@@ -377,19 +444,12 @@ class MockTaskShellModel(ChatModelBase):
         """回复只复述 Tool 的持久事实，不推断专业结果。"""
 
         payload = cls._payload(block)
-        if payload.get("error_code"):
-            return str(payload.get("message") or "任务操作失败，请检查资料或服务配置。")
-        if report := payload.get("report_markdown"):
-            return str(report)
-        sequence = payload.get("execution_sequence")
-        status = payload.get("execution_status")
-        current = payload.get("current_step") or "暂无运行步骤"
-        completed = "、".join(payload.get("completed_steps") or []) or "无"
-        if payload.get("command") == "STATUS":
+        if payload.get("command") in {"START", "MODIFY", "FULL_RERUN"}:
             return (
-                f"Execution #{sequence} 状态为 {status}；当前步骤：{current}；已完成：{completed}。"
+                f"解释任务已提交：Execution #{payload.get('execution_sequence')}，"
+                f"状态 {payload.get('execution_status')}。"
             )
-        return f"解释任务已提交：Execution #{sequence}，状态 {status}。"
+        return render_interaction_result(payload)
 
 
 # AgentScope 从持久化的 discriminator 还原凭证，因此必须在应用创建前注册。
@@ -463,6 +523,7 @@ class LoggingInterpretationDemoAgent(Agent):
             model=model,
             toolkit=Toolkit(tools=tools),
             middlewares=[
+                InteractionStateMiddleware(runner),
                 UploadInterpretationReply(
                     tool,
                     streamer=streamer,

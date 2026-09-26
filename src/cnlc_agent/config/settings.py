@@ -24,6 +24,8 @@ class AppSettings(BaseSettings):
     model_timeout_seconds: float = Field(default=30, gt=0)
     model_max_retries: int = Field(default=2, ge=0, le=5)
     model_retry_backoff_seconds: float = Field(default=0.25, ge=0, le=5)
+    # 澄清仅跨紧邻一轮；TTL 另防止页面闲置后意外使用旧值。
+    clarification_ttl_seconds: float = Field(default=600, gt=0, le=3600)
     stream_step_delay_seconds: float = Field(default=1.0, ge=0, le=5)
     stream_report_chunk_delay_seconds: float = Field(default=0.12, ge=0, le=2)
 

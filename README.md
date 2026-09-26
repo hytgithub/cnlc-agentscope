@@ -2,10 +2,16 @@
 
 测井解释智能体，技术设计见 `docs/03-system-architecture.md`。
 
-当前实现已完成 Task 01–06，并完成 Task 007 的 AgentScope 官方 Web UI 后端适配。
-默认 provider 仍为 Mock；真实 provider 使用配置的 DashScope 北京兼容地址、模型名和本地 API Key。
-官方前端源码不在本仓库；OpenTelemetry 导出和专业业务扩展仍属于后续任务，本轮不代表
-V0.1 MVP 已验收。
+当前实现已完成 Task 01–10.3：W01–W10 演示主链、AgentScope Web、PostgreSQL/Redis、
+版本历史、局部重跑、多井会话、统一执行流式展示，以及集中 Interaction State/Policy 与短期澄清。
+专业来源支持 fixture 和 company_mock 四批次 Mock；真实公司 Heavy API、GDSX/WPLM 主链接入、
+细粒度重算与证据查询仍未实现。本轮不代表 V0.1 MVP 全面验收或专业准确率验收。
+
+当前设计导航见 [docs/README.md](docs/README.md)，交互状态矩阵见
+[docs/10-interaction-state-machine.md](docs/10-interaction-state-machine.md)，Task 10.3 执行结果见
+[docs/tasks/010-3-interaction-robustness.md](docs/tasks/010-3-interaction-robustness.md)。
+默认 provider 为 Mock；真实交互使用配置的 qwen-plus 与本地 API Key。
+官方 Web 前端快照已包含在 `frontend/agentscope-web`。
 
 ## 快速运行
 

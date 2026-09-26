@@ -9,7 +9,9 @@ from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from time import time
+from typing import Any, Literal
+from uuid import uuid4
 
 from agentscope.message import TextBlock, ToolResultState
 from agentscope.permission import PermissionBehavior, PermissionDecision
@@ -30,6 +32,11 @@ from cnlc_agent.application.ports import TaskRepository
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
+from cnlc_agent.demo.interaction_state import (
+    InteractionPolicy,
+    InteractionSnapshot,
+    PendingClarification,
+)
 from cnlc_agent.demo.task_context import SessionTaskResolver, TaskReference
 from cnlc_agent.domain.errors import ApplicationError, InfrastructureError
 from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, ExecutionStatus
@@ -43,17 +50,24 @@ from cnlc_agent.infrastructure.mock import (
     MockWellRepository,
 )
 
-ALLOWED_TASK_TOOLS = frozenset({
-    "run_well_interpretation", "modify_well_interpretation", "rerun_well_interpretation",
-    "get_interpretation_status", "get_interpretation_report",
-})
+ALLOWED_TASK_TOOLS = frozenset(
+    {
+        "run_well_interpretation",
+        "modify_well_interpretation",
+        "rerun_well_interpretation",
+        "get_interpretation_status",
+        "get_interpretation_report",
+        "request_interpretation_clarification",
+    }
+)
 
 
 class TaskCommandRunner:
     """每个会话独享实例；临时目录每次重建，数据库模式仍走现有 runtime。"""
 
     def __init__(
-        self, settings: AppSettings | None = None,
+        self,
+        settings: AppSettings | None = None,
         persistence: PersistenceSettings | None = None,
         dispatcher: InProcessExecutionDispatcher | None = None,
         connections: ConnectionSettings | None = None,
@@ -71,12 +85,15 @@ class TaskCommandRunner:
         self.observed_task_ids: set[str] = set()
         self._observed_task_order: list[str] = []
         self.active_task_id: str | None = None
-        self._session_runtime_context: dict[str, Any] | None = None
+        self._session_runtime_context: dict[str, Any] = {}
+        self._interaction_owner = uuid4().hex
+        self._interaction_turn = 0
 
     def attach_session_runtime_context(self, context: dict[str, Any]) -> None:
         """将 active task 放入 AgentScope Session State，不污染业务 Task。"""
 
         self._session_runtime_context = context
+        self.pending_clarification()  # 新 runner 丢弃无法证明生命周期的旧 pending。
         stored = context.get("cnlc_active_task_id")
         if isinstance(stored, str) and stored:
             self.active_task_id = stored
@@ -97,24 +114,118 @@ class TaskCommandRunner:
         if task_id not in self._observed_task_order:
             self._observed_task_order.append(task_id)
 
+    def pending_clarification(self) -> PendingClarification | None:
+        """只接受本 runner 创建且未过期的完整 pending，重启安全丢弃。"""
+
+        raw = self._session_runtime_context.get("cnlc_pending_clarification")
+        if raw is None:
+            return None
+        try:
+            pending = PendingClarification.model_validate(raw)
+        except ValidationError:
+            self.clear_pending()
+            return None
+        if (
+            pending.owner_token != self._interaction_owner
+            or pending.expires_at < time()
+            or self._interaction_turn > pending.created_turn + 1
+        ):
+            self.clear_pending()
+            return None
+        return pending
+
+    def save_pending(self, reference: TaskReference, task_id: str, value: float) -> None:
+        """保存完整澄清对象，生命周期字段只能由服务端生成。"""
+
+        pending = PendingClarification(
+            known_value=value,
+            task_reference=reference,
+            task_id=task_id,
+            owner_token=self._interaction_owner,
+            created_turn=self._interaction_turn,
+            expires_at=time() + self.settings.clarification_ttl_seconds,
+        )
+        self._session_runtime_context["cnlc_pending_clarification"] = pending.model_dump(
+            mode="json"
+        )
+
+    def clear_pending(self) -> None:
+        """会话交互状态不写入业务 Task。"""
+
+        self._session_runtime_context.pop("cnlc_pending_clarification", None)
+
+    def begin_interaction_turn(self) -> None:
+        """计数只在请求入口推进，不从聊天摘要猜测。"""
+
+        self._interaction_turn += 1
+        self.pending_clarification()
+
+    def end_interaction_turn(self) -> None:
+        """下一轮未补齐即失效，避免很久以后的参数名触发旧值。"""
+
+        pending = self.pending_clarification()
+        if pending is not None and pending.created_turn < self._interaction_turn:
+            self.clear_pending()
+
     async def resolve_task_reference(self, reference: TaskReference) -> str:
-        """通过受控 Resolver 解析并切换 active task。"""
+        """解析只返回受授权目标；成功操作后才切换 active task。"""
 
         with TemporaryDirectory(prefix="cnlc-resolve-") as directory:
             async with self.context(Path(directory)) as service:
-                if self.session_identity is not None:
-                    task_ids = await service.repository.list_session_task_ids(
-                        self.session_identity
-                    )
-                else:
-                    # 仅供无 Session identity 的本地测试与兼容入口使用。
-                    task_ids = list(self._observed_task_order)
+                task_ids = (
+                    await service.repository.list_session_task_ids(self.session_identity)
+                    if self.session_identity is not None
+                    else list(self._observed_task_order)
+                )
                 resolved = await SessionTaskResolver(service.repository, task_ids).resolve(
                     reference, self.active_task_id
                 )
         self._remember_task(resolved.task_id)
-        self.set_active_task(resolved.task_id)
         return resolved.task_id
+
+    async def interaction_snapshot(self, task_id: str | None = None) -> InteractionSnapshot:
+        """从授权 Binding、Task 和 Execution 派生，不以 Redis 或聊天作为事实。"""
+
+        with TemporaryDirectory(prefix="cnlc-interaction-") as directory:
+            async with self.context(Path(directory)) as service:
+                task_ids = (
+                    await service.repository.list_session_task_ids(self.session_identity)
+                    if self.session_identity is not None
+                    else list(self._observed_task_order)
+                )
+                resolver = SessionTaskResolver(service.repository, task_ids)
+                items = await resolver.summaries()
+                if not items:
+                    return InteractionSnapshot()
+                selected = await resolver.resolve(
+                    TaskReference(kind="TASK_ID", value=task_id) if task_id else TaskReference(),
+                    self.active_task_id,
+                )
+                execution = (
+                    await service.repository.get_execution(selected.current_execution_id)
+                    if selected.current_execution_id
+                    else None
+                )
+                executions = await service.repository.list_executions(selected.task_id)
+                return InteractionSnapshot(
+                    session_has_task=True,
+                    active_task_id=selected.task_id,
+                    active_well_id=selected.well_id,
+                    current_execution_id=selected.current_execution_id,
+                    execution_status=execution.status if execution else None,
+                    execution_sequence=execution.sequence if execution else None,
+                    current_step=execution.state_snapshot.current_step if execution else None,
+                    report_ready=bool(
+                        execution
+                        and execution.status in TERMINAL_EXECUTION_STATUSES
+                        and execution.markdown
+                    ),
+                    has_previous_execution=bool(
+                        execution and any(item.sequence < execution.sequence for item in executions)
+                    ),
+                    has_previous_task=items.index(selected) > 0,
+                    pending_clarification=self.pending_clarification(),
+                )
 
     @asynccontextmanager
     async def context(self, root: Path) -> AsyncIterator[InterpretationTaskService]:
@@ -147,6 +258,8 @@ class TaskCommandRunner:
     async def start_uploaded(self, fixture: MockFixture, instruction: str) -> TaskCommandResult:
         """提交首轮 QUEUED Execution 并立即返回，实际流程在请求外运行。"""
 
+        self.clear_pending()
+        InteractionPolicy.decide(await self.interaction_snapshot(), "START")
         async with self._lock:
             with TemporaryDirectory(prefix="cnlc-submit-") as directory:
                 root = Path(directory)
@@ -206,7 +319,9 @@ class TaskCommandRunner:
 
         try:
             await repository.finish_execution(
-                execution_id, worker_id, ExecutionStatus.FAILED,
+                execution_id,
+                worker_id,
+                ExecutionStatus.FAILED,
                 error_code="BACKGROUND_EXECUTION_FAILED",
             )
             return
@@ -214,12 +329,15 @@ class TaskCommandRunner:
             pass
         try:
             claimed = await repository.claim_execution(
-                execution_id, worker_id,
+                execution_id,
+                worker_id,
                 utc_now() + timedelta(seconds=self.persistence.execution_lease_seconds),
             )
             if claimed:
                 await repository.finish_execution(
-                    execution_id, worker_id, ExecutionStatus.FAILED,
+                    execution_id,
+                    worker_id,
+                    ExecutionStatus.FAILED,
                     error_code="BACKGROUND_EXECUTION_FAILED",
                 )
         except Exception as exc:
@@ -234,12 +352,15 @@ class TaskCommandRunner:
         async def materialize(version: InterpretationInputVersion) -> None:
             await asyncio.to_thread(
                 (root / f"{version.well_id}.json").write_text,
-                version.payload.model_dump_json(), encoding="utf-8",
+                version.payload.model_dump_json(),
+                encoding="utf-8",
             )
+
         return materialize
 
     async def execute(
-        self, command: GetStatusCommand,
+        self,
+        command: GetStatusCommand,
     ) -> TaskCommandResult:
         """修改命令只提交后台任务；状态与报告命令始终查询持久事实。"""
 
@@ -267,10 +388,7 @@ class TaskCommandRunner:
 
         if task_id in self.observed_task_ids:
             return True
-        if (
-            self.persistence.persistence != "postgres-redis"
-            or self.session_identity is None
-        ):
+        if self.persistence.persistence != "postgres-redis" or self.session_identity is None:
             return False
         with TemporaryDirectory(prefix="cnlc-ownership-") as directory:
             async with self.context(Path(directory)) as service:
@@ -284,16 +402,11 @@ class TaskCommandRunner:
     async def restore_task_bindings(self) -> set[str]:
         """PostgreSQL 模式从 durable binding 恢复缓存；内存模式不伪装可恢复。"""
 
-        if (
-            self.persistence.persistence != "postgres-redis"
-            or self.session_identity is None
-        ):
+        if self.persistence.persistence != "postgres-redis" or self.session_identity is None:
             return set(self.observed_task_ids)
         with TemporaryDirectory(prefix="cnlc-restore-") as directory:
             async with self.context(Path(directory)) as service:
-                task_ids = await service.repository.list_session_task_ids(
-                    self.session_identity
-                )
+                task_ids = await service.repository.list_session_task_ids(self.session_identity)
         for task_id in task_ids:
             self._remember_task(task_id)
         return set(self.observed_task_ids)
@@ -329,14 +442,10 @@ class TaskCommandRunner:
                         raise InfrastructureError(
                             "BACKGROUND_EXECUTION_FAILED", "后台执行未形成可读取终态"
                         ) from worker_error
-                    raise InfrastructureError(
-                        "EXECUTION_NOT_TERMINAL", "后台执行尚未进入终态"
-                    )
+                    raise InfrastructureError("EXECUTION_NOT_TERMINAL", "后台执行尚未进入终态")
                 return await TaskCommands(service).project(task_id, execution_id, "STATUS")
 
-    async def get_execution_report(
-        self, task_id: str, execution_id: str
-    ) -> TaskCommandResult:
+    async def get_execution_report(self, task_id: str, execution_id: str) -> TaskCommandResult:
         """按明确 execution_id 读取报告，避免当前版本指针变化导致串版。"""
 
         with TemporaryDirectory(prefix="cnlc-report-") as directory:
@@ -351,11 +460,15 @@ _SAFE_ERRORS = {
     "EXECUTION_NOT_FOUND": "指定执行不存在或不属于当前任务。",
     "REPORT_NOT_FOUND": "没有符合条件的历史报告。",
     "REPORT_NOT_READY": "该版本尚无可用报告。",
-    "NO_EFFECTIVE_CHANGE": "参数与当前版本相同，请提供实际变化的参数。",
+    "NO_EFFECTIVE_CHANGE": "参数与当前版本相同，本次没有产生新的执行。",
     "EMPTY_OVERRIDE": "请明确要修改的参数名称和值。",
     "TASK_EXECUTION_ACTIVE": "当前任务已有执行正在排队或运行，请稍后查询状态。",
     "STALE_EXECUTION_PLAN": "任务版本已变化，请重新提交修改请求。",
     "SESSION_TASK_BINDING_FAILED": "任务归属保存失败，请稍后重试。",
+    "CLARIFICATION_REQUIRED": "请明确要修改的参数名称和值。",
+    "UNSUPPORTED_OPERATION": "当前尚不支持该局部重算或细粒度查询。",
+    "UNSUPPORTED_PARAMETER": "当前参数契约不支持该项。",
+    "SESSION_WELL_NOT_FOUND": "当前 Session 没有该井。",
     "PREVIOUS_TASK_NOT_FOUND": "当前会话没有上一口井的解释任务。",
 }
 
@@ -368,10 +481,10 @@ _TASK_REFERENCE_SCHEMA = {
             "description": "当前任务、上一口井任务、按井号或按可信任务号解析。",
         },
         "value": {
-            "type": "string",
+            "type": ["string", "null"],
             "minLength": 1,
             "maxLength": 128,
-            "description": "WELL_ID 的井号或 TASK_ID 的可信任务号。",
+            "description": "仅 WELL_ID/TASK_ID 使用；CURRENT/PREVIOUS_TASK 必须省略 value。",
         },
     },
     "required": ["kind"],
@@ -380,13 +493,25 @@ _TASK_REFERENCE_SCHEMA = {
 
 
 def _task_input_schema(command_schema: dict[str, Any]) -> dict[str, Any]:
-    """任务工具允许受控引用，同时保留 task_id 兼容旧调用。"""
+    """模型仅使用受控引用；旧 Python 调用仍由 adapter 兼容 task_id。"""
 
     schema: dict[str, Any] = deepcopy(command_schema)
-    schema.setdefault("properties", {})["task_reference"] = _TASK_REFERENCE_SCHEMA
+    schema.setdefault("properties", {}).pop("task_id", None)
+    schema["properties"]["task_reference"] = _TASK_REFERENCE_SCHEMA
     schema["required"] = [item for item in schema.get("required", []) if item != "task_id"]
     schema["additionalProperties"] = False
     return schema
+
+
+def interaction_chunk(code: str, message: str) -> ToolChunk:
+    """固定安全文案的交互结果，不输出异常字符串。"""
+
+    payload = {"error_code": code, "message": message}
+    return ToolChunk(
+        content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))],
+        state=ToolResultState.ERROR,
+        metadata=payload,
+    )
 
 
 class TaskCommandTool(ToolBase):
@@ -424,16 +549,63 @@ class TaskCommandTool(ToolBase):
                 if isinstance(legacy_task_id, str) and legacy_task_id
                 else TaskReference(kind="CURRENT")
             )
+            pending_target = self.runner.pending_clarification()
+            if (
+                kwargs.get("parameter_name") is not None
+                and raw_reference is None
+                and legacy_task_id is None
+                and pending_target is not None
+            ):
+                reference = TaskReference(kind="TASK_ID", value=pending_target.task_id)
             task_id = await self.runner.resolve_task_reference(reference)
+            snapshot = await self.runner.interaction_snapshot(task_id)
+            action: Literal["MODIFY", "FULL_RERUN", "GET_REPORT", "STATUS"] = (
+                "MODIFY"
+                if self.command_type is ModifyInterpretationCommand
+                else "FULL_RERUN"
+                if self.command_type is FullRerunCommand
+                else "GET_REPORT"
+                if self.command_type is GetReportCommand
+                else "STATUS"
+            )
+            decision = InteractionPolicy.decide(
+                snapshot,
+                action,
+                unsupported_parameter=bool(set(kwargs) & {"rw", "sw", "archie_m", "archie_n"}),
+                selector=kwargs.get("selector", "CURRENT")
+                if kwargs.get("execution_id") is None
+                else "EXPLICIT",
+            )
+            if decision.error_code:
+                self.runner.clear_pending()
+                return interaction_chunk(decision.error_code, decision.message)
             command: GetStatusCommand
             if self.command_type is ModifyInterpretationCommand:
+                parameter = kwargs.pop("parameter_name", None)
+                pending = self.runner.pending_clarification()
+                if parameter is not None:
+                    if (
+                        parameter not in {"por", "perm", "sampling_interval"}
+                        or bool(
+                            set(kwargs) - {"por", "perm", "sampling_interval", "prediction_model"}
+                        )
+                        or any(value is not None for value in kwargs.values())
+                        or pending is None
+                        or pending.task_id != task_id
+                    ):
+                        self.runner.clear_pending()
+                        return interaction_chunk(
+                            "CLARIFICATION_REQUIRED", "请明确要修改的参数名称和值。"
+                        )
+                    kwargs = {parameter: pending.known_value}
                 command = ModifyInterpretationCommand(
-                    task_id=task_id,
-                    changes=InterpretationOverride.model_validate(kwargs)
+                    task_id=task_id, changes=InterpretationOverride.model_validate(kwargs)
                 )
             else:
                 command = self.command_type.model_validate({"task_id": task_id, **kwargs})
+            self.runner.clear_pending()
             result = await self.runner.execute(command)
+            self.runner.set_active_task(task_id)
             payload = result.model_dump(mode="json")
             return ToolChunk(
                 content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))],
@@ -445,17 +617,29 @@ class TaskCommandTool(ToolBase):
             message = "参数无效；当前只支持采样间隔、POR、PERM 和预测模型。"
         except ApplicationError as exc:
             code = exc.code if exc.code in _SAFE_ERRORS else "TASK_COMMAND_FAILED"
-            if exc.code == "SESSION_WELL_NOT_FOUND":
-                code, message = exc.code, str(exc)
-            else:
-                message = _SAFE_ERRORS.get(code, "任务操作失败，请检查资料或服务配置。")
+            message = _SAFE_ERRORS.get(code, "任务操作失败，请检查资料或服务配置。")
+            if code == "NO_EFFECTIVE_CHANGE":
+                labels = {
+                    "por": "孔隙度",
+                    "perm": "渗透率",
+                    "sampling_interval": "采样间隔",
+                    "prediction_model": "预测模型",
+                }
+                values = "、".join(
+                    f"{labels[key]}已经是{value}"
+                    for key, value in kwargs.items()
+                    if key in labels and value is not None
+                )
+                message = f"当前{values}，本次没有产生新的执行。"
         except Exception as exc:
             logging.getLogger(__name__).warning("Task command failed: %s", type(exc).__name__)
             code, message = "TASK_COMMAND_FAILED", "任务操作失败，请检查资料或服务配置。"
+        self.runner.clear_pending()
         payload = {"error_code": code, "message": message}
         return ToolChunk(
             content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))],
-            state=ToolResultState.ERROR, metadata=payload,
+            state=ToolResultState.ERROR,
+            metadata=payload,
         )
 
 
@@ -465,14 +649,21 @@ class ModifyWellInterpretationTool(TaskCommandTool):
     name = "modify_well_interpretation"
     description = "修改已有任务的采样间隔、POR、PERM 或专业预测模型并重跑；至少一个实际变化。"
     command_type = ModifyInterpretationCommand
-    input_schema = _task_input_schema({
-        **InterpretationOverride.model_json_schema(),
-        "properties": {
-            "task_id": GetStatusCommand.model_json_schema()["properties"]["task_id"],
-            **InterpretationOverride.model_json_schema()["properties"],
-        },
-        "required": ["task_id"],
-    })
+    input_schema = _task_input_schema(
+        {
+            **InterpretationOverride.model_json_schema(),
+            "properties": {
+                "task_id": GetStatusCommand.model_json_schema()["properties"]["task_id"],
+                **InterpretationOverride.model_json_schema()["properties"],
+                "parameter_name": {
+                    "type": "string",
+                    "enum": ["por", "perm", "sampling_interval"],
+                    "description": "仅紧邻上一轮澄清的参数名补齐；不与新值同时提供。",
+                },
+            },
+            "required": ["task_id"],
+        }
+    )
 
 
 class RerunWellInterpretationTool(TaskCommandTool):
@@ -505,15 +696,97 @@ class GetInterpretationReportTool(TaskCommandTool):
     input_schema = _task_input_schema(GetReportCommand.model_json_schema())
 
 
+class RequestInterpretationClarificationTool(TaskCommandTool):
+    """仅管理交互澄清或能力边界；不创建 Task、Execution 或执行专业业务。"""
+
+    name = "request_interpretation_clarification"
+    description = (
+        "不完整修改、互相冲突的多个操作、未支持的专业能力或参数时调用。"
+        "只记录或返回交互状态，不执行业务。补齐参数名请调用 modify 的 parameter_name。"
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "enum": [
+                    "PARAMETER_NAME",
+                    "CONFLICT",
+                    "UNSUPPORTED_OPERATION",
+                    "UNSUPPORTED_PARAMETER",
+                    "DOMAIN_QUERY",
+                ],
+            },
+            "known_value": {"type": "number"},
+            "task_reference": _TASK_REFERENCE_SCHEMA,
+        },
+        "required": ["reason"],
+        "additionalProperties": False,
+    }
+
+    async def call(self, *args: Any, **kwargs: Any) -> ToolChunk:
+        """缺参数的修改锚定已授权 Task；能力拒绝不读取其它 Session。"""
+
+        self.runner.clear_pending()
+        try:
+            if args or set(kwargs) - {"reason", "known_value", "task_reference"}:
+                raise ValueError("invalid interaction")
+            reason = kwargs.get("reason")
+            if reason not in {
+                "PARAMETER_NAME",
+                "CONFLICT",
+                "UNSUPPORTED_OPERATION",
+                "UNSUPPORTED_PARAMETER",
+                "DOMAIN_QUERY",
+            }:
+                raise ValueError("invalid reason")
+            if reason == "PARAMETER_NAME":
+                reference = TaskReference.model_validate(kwargs.get("task_reference", {}))
+                task_id = await self.runner.resolve_task_reference(reference)
+                snapshot = await self.runner.interaction_snapshot(task_id)
+            else:
+                snapshot = InteractionSnapshot()
+            decision = InteractionPolicy.decide(
+                snapshot,
+                "MODIFY",
+                ambiguous=reason == "PARAMETER_NAME",
+                conflict=reason == "CONFLICT",
+                unsupported_parameter=reason == "UNSUPPORTED_PARAMETER",
+                unsupported_operation=reason in {"UNSUPPORTED_OPERATION", "DOMAIN_QUERY"},
+            )
+            if decision.decision == "CLARIFY" and reason == "PARAMETER_NAME":
+                self.runner.save_pending(reference, task_id, kwargs["known_value"])
+            return interaction_chunk(
+                decision.error_code or "CLARIFICATION_REQUIRED", decision.message
+            )
+        except ApplicationError as exc:
+            return interaction_chunk(
+                exc.code if exc.code in _SAFE_ERRORS else "TASK_COMMAND_FAILED",
+                _SAFE_ERRORS.get(exc.code, "任务操作失败。"),
+            )
+        except (ValueError, KeyError, TypeError):
+            return interaction_chunk("CLARIFICATION_REQUIRED", "请明确要修改的参数名称和值。")
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Interaction failed: %s", type(exc).__name__)
+            return interaction_chunk("TASK_COMMAND_FAILED", "任务操作失败，请稍后重试。")
+
+
 def build_task_tools(runner: TaskCommandRunner | None = None) -> list[ToolBase]:
     """所有工具共用一个会话 runner，不建立进程全局任务仓库。"""
 
     from cnlc_agent.demo.tools import RunWellInterpretationTool
 
     runner = runner if runner is not None else TaskCommandRunner()
-    return [RunWellInterpretationTool(runner), *[
-        tool(runner) for tool in (
-            ModifyWellInterpretationTool, RerunWellInterpretationTool,
-            GetInterpretationStatusTool, GetInterpretationReportTool,
-        )
-    ]]
+    return [
+        RunWellInterpretationTool(runner),
+        *[
+            tool(runner)
+            for tool in (
+                ModifyWellInterpretationTool,
+                RerunWellInterpretationTool,
+                GetInterpretationStatusTool,
+                GetInterpretationReportTool,
+                RequestInterpretationClarificationTool,
+            )
+        ],
+    ]

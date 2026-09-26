@@ -16,6 +16,7 @@
 | 持久化运行设计 | [05-persistence.md](05-persistence.md) | PostgreSQL、Redis、事务、租约与恢复 |
 | 数据库设计 | [07-database-design.md](07-database-design.md) | ER、版本、ToolRun、Binding 和并发控制 |
 | 意图与交互设计 | [08-intent-and-interaction-design.md](08-intent-and-interaction-design.md) | 附件路由、ReAct、五个任务级 Tool |
+| 交互状态机 | [10-interaction-state-machine.md](10-interaction-state-machine.md) | 异常交互、集中 Policy、短期澄清和状态裁决 |
 | 流式进度与 UI | [09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md) | 首次解释 SSE、Telemetry 投影和界面边界 |
 
 ## 历史差距分析（Historical Gap Analysis）
@@ -25,14 +26,14 @@
 
 ## Task 执行记录（Task Execution Record）
 
-`docs/tasks/` 保存每个 Task 的实现与验证记录。当前前后端和首次解释流式联调记录见 [tasks/010-frontend-backend-integration.md](tasks/010-frontend-backend-integration.md)。执行记录说明当时环境与结果，不替代 Current Design。
+`docs/tasks/` 保存每个 Task 的实现与验证记录。当前前后端和首次解释流式联调记录见 [tasks/010-frontend-backend-integration.md](tasks/010-frontend-backend-integration.md)。执行记录说明当时环境与结果，不替代 Current Design。Task 10.3 见 [tasks/010-3-interaction-robustness.md](tasks/010-3-interaction-robustness.md)。
 
 ## 验收（Acceptance）
 
 - [mvp-acceptance.md](mvp-acceptance.md)：MVP 验收口径。
 - 自动化测试和真实 PostgreSQL / Redis 联调结果应与对应 Task 记录一起阅读。
 
-## 当前能力状态（Task 01～10.1）
+## 当前能力状态（Task 01～10.3）
 
 | 能力 | 状态 |
 | --- | --- |
@@ -45,7 +46,10 @@
 | Execution Visualization | 已实现 |
 | Session Binding | 已实现 |
 | Frontend / Backend E2E | 已实现 |
-| First-run Streaming | 已实现 |
+| START / MODIFY / FULL_RERUN Streaming | 已实现 |
+| Multi-well Session / Active Task Resolver | 已实现 |
+| Interaction State / Policy / Pending Clarification | 已实现 |
+| fixture / company_mock 四批次能力 | 已实现（Mock） |
 | Heavy Prediction API | Future / 未实现 |
 | Curve Visualization | Future / 未实现 |
 | Fine-grained Capability | Future / 未实现 |

@@ -1,6 +1,6 @@
 # 测井解释智能体意图识别与交互设计
 
-本文描述当前已实现的自然语言入口。系统没有独立 `IntentClassifier`。真实模式由 AgentScope ReAct Agent 使用 `qwen-plus`，结合固定系统提示、五个任务级 Tool 的描述和 JSON Schema 选择动作；业务参数随后由 Pydantic Command 校验，局部重跑由确定性的 `DependencyResolver` 决定。
+本文描述当前已实现的自然语言入口。系统没有独立 `IntentClassifier`。真实模式由 AgentScope ReAct Agent 使用 `qwen-plus`，结合固定系统提示、五个业务任务级 Tool 与一个纯交互 Tool 的描述和 JSON Schema 选择动作；业务参数随后由 Pydantic Command 校验，局部重跑由确定性的 `DependencyResolver` 决定。
 
 ## 1. 四层边界
 
@@ -20,7 +20,7 @@ flowchart TD
 
 1. **Request Route**：根据当前轮是否有附件做确定性分流。
 2. **Semantic Intent**：纯文本由 ReAct 理解用户想启动、修改、重跑、查状态还是读报告。
-3. **Action**：只允许调用注册的五个任务级 Tool。
+3. **Action**：五个业务任务级 Tool 与一个纯交互澄清 Tool；InteractionPolicy 集中裁决状态可用性。
 4. **Validation and Planning**：Pydantic、Command 和 DependencyResolver 校验参数、归属、并发和依赖；LLM 不能指定 Workflow 起点。
 
 ## 2. 附件路由
@@ -31,7 +31,7 @@ flowchart TD
 
 ## 3. 纯文本 ReAct 路由
 
-没有附件时，`LoggingInterpretationDemoAgent` 是 AgentScope ReAct Agent。真实模式固定使用 `qwen-plus`，允许模型读取对话语义并按 Tool 描述与 JSON Schema 形成调用。Tool 结果中的 `task_id` / `execution_id` 才是可信标识；模型输出本身不构成任务归属或执行事实。
+没有附件时，`LoggingInterpretationDemoAgent` 是 AgentScope ReAct Agent。真实模式固定使用 `qwen-plus`，允许模型读取对话语义并按 Tool 描述与 JSON Schema 形成调用。Task 10.3 在每次推理前注入仓库派生的 InteractionSnapshot；模型可见 Schema 只使用 task_reference，旧 Python task_id 调用保持 adapter 兼容。Tool 结果中的 `task_id` / `execution_id` 才是可信标识；模型输出本身不构成任务归属或执行事实。
 
 | Intent | Task-level Tool | Required Context | 参数 | 只读 | 创建新 Execution |
 | --- | --- | --- | --- | --- | --- |
@@ -46,7 +46,7 @@ flowchart TD
 START、MODIFY 和 FULL_RERUN 的 Task Tool 返回 `QUEUED/RUNNING` 与可信
 `task_id + execution_id` 后，统一进入 `ExecutionReplyStreamer`。ReAct 只负责选择动作；
 W01～W10、专业 Tool、RUN/REUSE 和报告均来自该 Execution 的持久事实与 Telemetry，
-不会再次经过 qwen-plus 生成。STATUS 与 GET_REPORT 是只读动作，继续使用正常 ReAct 回复。
+不会再次经过 qwen-plus 生成。STATUS 与 GET_REPORT 是只读动作，调用 Tool 后按受控读模型直接生成回复。澄清／稳定拒绝也直接输出固定文案，不让模型重复重试或改写。
 
 ### 3.1 意图矩阵
 
@@ -72,7 +72,7 @@ W01～W10、专业 Tool、RUN/REUSE 和报告均来自该 Execution 的持久事
 - `perm`：非负数，正式单位和专业规则待确认；
 - `prediction_model`：受限标识字符串。
 
-自然语言中的百分数必须先转成比例，例如“孔隙度 16%”进入 Command 时是 `por=0.16`。孤立的“0.16”若无法确定指 POR、PERM 还是采样间隔，模型应请求澄清，不能猜测。空修改、类型错误、越界值和没有实际变化都会由确定性校验拒绝。
+自然语言中的百分数必须先转成比例，例如“孔隙度 16%”进入 Command 时是 `por=0.16`。孤立的“0.16”若无法确定指 POR、PERM 还是采样间隔，模型必须调用纯交互工具保存完整 PendingClarification，不能猜测；紧邻下一轮参数名可通过 modify 的 parameter_name 补齐。空修改、类型错误、越界值和没有实际变化都会由确定性校验拒绝。
 
 当前不支持并不得补造以下业务规则：
 
@@ -125,3 +125,18 @@ Task 统一按不存在处理。
 未来若增加 `RECALCULATE_SW`、`REIDENTIFY_LITHOLOGY`、`REGENERATE_REPORT`、`CHANGE_PREDICTION_MODEL` 或 `REINTERPRET_INTERVAL`，应先形成结构化 `OperationRequest(intent, target, parameters, scope, task_id)`，再进入 CapabilityRegistry、DependencyGraph 和 ExecutionPlan，避免无限扩展 System Prompt。
 
 扩展这些能力时仍应保持“ReAct 理解意图、Schema 校验参数、Resolver 决定依赖、Workflow 控制执行”的边界。
+
+## 8. Task 10.3 交互状态控制
+
+正式状态矩阵、策略、纯交互工具 Contract 和 pending 生命周期见
+[10-interaction-state-machine.md](10-interaction-state-machine.md)。
+InteractionSnapshot 是 Binding/Task/Execution/Session State 的派生读模型；没有新表或 migration。
+运行中写操作在交互层返回包含 Execution 版本与步骤的 TASK_EXECUTION_ACTIVE，底层原子保护仍保留。
+澄清只保留紧邻下一轮、最长 10 分钟；无关操作、断流、格式不完整或新 runner 后安全清除。
+Context compression 保留完整 Session State，不从摘要恢复数值。
+
+TaskReference 解析不改变焦点，成功操作才切 active；上一版与上一口井仍严格分离。
+模型一次提出多个写操作时，在执行前拒绝整批，不部分完成后声称全部满足。
+FAILED/BLOCKED/REVIEW_REQUIRED/WARNING 查询输出持久的安全诊断字段。
+专业概念、局部重算和细层段证据查询属于测井领域的未开放能力，不降级为 OUT_OF_DOMAIN。
+同井重新上传仍沿用创建新 Task 的行为；不实现同 Task InputVersion 替换。

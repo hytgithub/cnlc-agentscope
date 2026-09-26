@@ -84,7 +84,7 @@ ExecutionStatus、StepStatus 和 ToolRunStatus 分离。状态 API 查询 Postgr
 
 ## 5. AgentScope 交互边界
 
-`LoggingInterpretationDemoAgent` 是 AgentScope ReAct 交互 Agent，真实模式使用 qwen-plus。业务 `MainAgent` 是 Planner + Orchestrator。ReAct 只能使用五个任务级 Tool；MainAgent、InterpretationAgent、ValidationAgent 的职责和 W01～W10 不因 Web 交互改变。
+`LoggingInterpretationDemoAgent` 是 AgentScope ReAct 交互 Agent，真实模式使用 qwen-plus。业务 `MainAgent` 是 Planner + Orchestrator。ReAct 使用五个业务任务级 Tool 与一个不执行专业业务的纯交互澄清 Tool；MainAgent、InterpretationAgent、ValidationAgent 的职责和 W01～W10 不因 Web 交互改变。
 
 附件首轮由 `UploadInterpretationReply` 确定性处理；纯文本才进入 ReAct。Command 的 Pydantic Schema、Session ownership 和 Resolver 共同构成可信边界。`MockTaskShellModel._command()` 只用于无公网模型的本地联调。
 
@@ -158,3 +158,16 @@ Task Read API 返回当前 Execution 和历史摘要；Execution Read API 返回
 Mock Tool 必须实现正式 Contract、Schema、状态和 ToolRun，报告必须明确 Demo/Mock。真实模型意图已可用 qwen-plus，但专业 Heavy Prediction API、LAS/GDSX 正式接入、真实 Report API、独立 Artifact、曲线可视化、步骤级依赖图和 SW-only 重跑仍是 Future。
 
 不得用 LLM 补造孔隙度、渗透率、Sw、有效厚度阈值或专业公式。正式井数据 Schema 尚未冻结：Pending final well-data schema。
+
+## 10. Interaction State 与 Policy（Task 10.3）
+
+新增 InteractionPhase、InteractionSnapshot、PendingClarification、InteractionDecision 与
+InteractionPolicy。它们只控制任务操作可用性，业务状态仍由 PostgreSQL Execution 保存。
+SessionTaskResolver 继续只负责引用与授权；InteractionStateMiddleware 管理请求轮次、
+动态快照与直接事实回复，并保护模型同轮提出的冲突写操作。
+
+澄清对象存 AgentScope middle_context，一次完整写入，只允许下一轮补齐，最长 10 分钟。
+压缩不依赖摘要；Backend 新 runner 安全丢弃旧 pending，active task 可恢复或 fallback 到最近 Binding。
+START/MODIFY/FULL_RERUN 允许后沿用 ExecutionReplyStreamer；拒绝不创建新 Execution。
+STATUS 新增安全诊断：failed_step、missing_data、warning_count、review_required，无原始异常信息。
+完整矩阵与恢复限制见 [10-interaction-state-machine.md](10-interaction-state-machine.md)。

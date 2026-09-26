@@ -144,6 +144,14 @@ async def test_factory_task_tool_and_read_api_restore_after_restart(
         await first_tools["get_interpretation_status"].runner.wait_for_completion(
             task_id, first["execution_id"]
         )
+        session_context = {}
+        first_runner = first_tools["get_interpretation_status"].runner
+        first_runner.attach_session_runtime_context(session_context)
+        pending = await first_tools["request_interpretation_clarification"].call(
+            reason="PARAMETER_NAME", known_value=0.16,
+        )
+        assert pending.metadata["error_code"] == "CLARIFICATION_REQUIRED"
+        assert "cnlc_pending_clarification" in session_context
         await first_factory.shutdown()
 
         restored_factory = SessionTaskToolFactory(
@@ -155,6 +163,9 @@ async def test_factory_task_tool_and_read_api_restore_after_restart(
             for tool in await restored_factory("alice", "agent-a", "session-a")
         }
         restored_runner = restored_tools["get_interpretation_status"].runner
+        restored_runner.attach_session_runtime_context(session_context)
+        assert restored_runner.pending_clarification() is None
+        assert "cnlc_pending_clarification" not in session_context
         assert task_id in restored_runner.observed_task_ids
         status = await restored_tools["get_interpretation_status"].call(task_id=task_id)
         assert status.state == "success"

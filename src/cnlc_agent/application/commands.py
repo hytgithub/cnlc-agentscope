@@ -69,6 +69,10 @@ class TaskCommandResult(Contract):
     tool_run_summary: JsonObject
     summary: str
     report_markdown: str | None = None
+    failed_step: StepId | None = None
+    missing_data: list[JsonObject] = Field(default_factory=list)
+    warning_count: int = 0
+    review_required: bool = False
 
 
 class TaskCommands:
@@ -86,7 +90,8 @@ class TaskCommands:
         return TaskRequest(task_id=task_id, well_id=task.well_id)
 
     async def modify(
-        self, command: ModifyInterpretationCommand,
+        self,
+        command: ModifyInterpretationCommand,
         materialize: Callable[[InterpretationInputVersion], Awaitable[None]],
     ) -> TaskCommandResult:
         """至少提供一个参数；是否实际变化继续由现有 Resolver 校验。"""
@@ -99,7 +104,8 @@ class TaskCommands:
         return await self.project(command.task_id, state.workflow_execution_id, "MODIFY", True)
 
     async def prepare_modify(
-        self, command: ModifyInterpretationCommand,
+        self,
+        command: ModifyInterpretationCommand,
     ) -> TaskCommandResult:
         """生成计划并只创建 QUEUED Execution，供后台调度器执行。"""
 
@@ -111,7 +117,8 @@ class TaskCommands:
         return await self.project(command.task_id, execution.execution_id, "MODIFY")
 
     async def full_rerun(
-        self, command: FullRerunCommand,
+        self,
+        command: FullRerunCommand,
         materialize: Callable[[InterpretationInputVersion], Awaitable[None]],
     ) -> TaskCommandResult:
         """不传空 Override；已有服务负责继承当前配置。"""
@@ -122,7 +129,8 @@ class TaskCommands:
         return await self.project(command.task_id, state.workflow_execution_id, "FULL_RERUN", True)
 
     async def prepare_full_rerun(
-        self, command: FullRerunCommand,
+        self,
+        command: FullRerunCommand,
     ) -> TaskCommandResult:
         """只提交全量计划；当前有效参数由 Resolver 继承。"""
 
@@ -164,7 +172,9 @@ class TaskCommands:
         return await self.project(command.task_id, selected, "GET_REPORT", True)
 
     async def project(
-        self, task_id: str, execution_id: str,
+        self,
+        task_id: str,
+        execution_id: str,
         command: Literal["START", "MODIFY", "FULL_RERUN", "STATUS", "GET_REPORT"],
         include_report: bool = False,
     ) -> TaskCommandResult:
@@ -178,11 +188,16 @@ class TaskCommands:
         runs = await self.service.list_tool_runs(task_id, execution_id)
         state = execution.state_snapshot
         return TaskCommandResult(
-            command=command, task_id=task_id, well_id=task.well_id,
-            execution_id=execution_id, current_execution_id=task.current_execution_id,
+            command=command,
+            task_id=task_id,
+            well_id=task.well_id,
+            execution_id=execution_id,
+            current_execution_id=task.current_execution_id,
             execution_sequence=execution.sequence,
-            execution_status=execution.status, workflow_status=state.status,
-            current_step=state.current_step, completed_steps=state.completed_steps,
+            execution_status=execution.status,
+            workflow_status=state.status,
+            current_step=state.current_step,
+            completed_steps=state.completed_steps,
             reused_steps=[item.step_id for item in state.reused_steps],
             effective_override=execution.override_snapshot,
             input_version_id=execution.input_version_id,
@@ -191,12 +206,31 @@ class TaskCommands:
             planning_reason=execution.planning_reason,
             started_at=execution.started_at,
             finished_at=execution.finished_at,
-            error_code=execution.error_code,
+            error_code=execution.error_code or (state.errors[-1].code if state.errors else None),
+            failed_step=next(
+                (
+                    item.step_id
+                    for item in reversed(state.executions)
+                    if item.status in {StepStatus.FAILED, StepStatus.BLOCKED}
+                ),
+                None,
+            ),
+            missing_data=[
+                {
+                    "name": item.field,
+                    "affected_step": item.affected_step,
+                    "importance": item.importance,
+                }
+                for item in state.missing_data
+            ],
+            warning_count=len(state.warnings),
+            review_required=state.review_required,
             report_ready=(
                 execution.status in TERMINAL_EXECUTION_STATUSES and bool(execution.markdown)
             ),
             tool_run_summary={
-                "count": len(runs), "last_tool": runs[-1].tool_code if runs else None,
+                "count": len(runs),
+                "last_tool": runs[-1].tool_code if runs else None,
                 "failed_count": sum(run.status == "FAILED" for run in runs),
             },
             summary=(
@@ -205,6 +239,7 @@ class TaskCommands:
             ),
             report_markdown=(
                 await self.service.get_execution_report(task_id, execution_id)
-                if include_report else None
+                if include_report
+                else None
             ),
         )

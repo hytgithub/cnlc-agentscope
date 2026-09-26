@@ -80,7 +80,10 @@ async def test_tools_reject_unknown_and_no_effective_change(data_dir):
     modify = tools["modify_well_interpretation"]
     for parameter in ("sw", "rw", "archie_m", "archie_n", "unknown_parameter", "start_step"):
         result = await modify.call(task_id=first["task_id"], **{parameter: 0.16})
-        assert result.metadata["error_code"] == "INVALID_COMMAND"
+        assert result.metadata["error_code"] == (
+            "UNSUPPORTED_PARAMETER" if parameter in {"sw", "rw", "archie_m", "archie_n"}
+            else "INVALID_COMMAND"
+        )
     assert (await modify.call(task_id=first["task_id"])).metadata["error_code"] == "EMPTY_OVERRIDE"
     changed = await modify.call(task_id=first["task_id"], por=0.16)
     await session.wait_for_completion(first["task_id"], changed.metadata["result"]["execution_id"])
@@ -155,7 +158,7 @@ async def test_postgres_mode_uses_existing_runtime(data_dir, monkeypatch):
     first = started.metadata["result"]
     result = await tools["get_interpretation_status"].call(task_id=first["task_id"])
     assert result.state == "success"
-    assert contexts == ["postgres-redis", "postgres-redis", "postgres-redis"]
+    assert len(contexts) >= 3 and set(contexts) == {"postgres-redis"}
     assert await session.repository.get_task(first["task_id"]) is None
 
 
