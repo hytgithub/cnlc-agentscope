@@ -113,7 +113,7 @@ class UploadInterpretationReply(MiddlewareBase):
         yield ThinkingBlockDeltaEvent(
             reply_id=reply_id,
             block_id=block_id,
-            delta=f"开始解释井 {fixture.well.well_id}\n\n正在读取并校验上传资料……\n\n"
+            delta=f"开始解释井 {fixture.well.well_id}\n\n✓ 上传资料读取与校验完成\n\n"
             "Demo / Mock：使用上传资料中的预设专业结果，不能作为真实测井解释结论。\n\n",
         )
         self.tool.upload = fixture, instruction

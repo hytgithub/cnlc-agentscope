@@ -114,6 +114,8 @@ async def test_upload_streams_execution_until_report(data_dir):
     progress_block = reply.get_content_blocks("thinking")[0]
     progress = progress_block.thinking
     assert text.startswith("# 上传的专属演示井测井评价报告")
+    assert "✓ 上传资料读取与校验完成" in progress
+    assert "正在读取并校验上传资料" not in progress
     assert progress_block.finished_at is not None
     positions = [progress.index(f"  ▶ W{i:02}") for i in range(1, 11)]
     assert positions == sorted(positions)

@@ -546,6 +546,11 @@ export const ASMessageBubble = memo(ASMessageBubbleComponent);
 function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 	const { t } = useTranslation();
 	const isRunning = !block.finished_at;
+	// 已持久化的旧回复曾把同步完成的上传解析写成“正在”；显示时纠正历史文案。
+	const thinking = block.thinking.replace(
+		'正在读取并校验上传资料……',
+		'✓ 上传资料读取与校验完成',
+	);
 
 	// Tick once per second while running so the elapsed time updates live.
 	const [now, setNow] = useState(() => Date.now());
@@ -586,7 +591,7 @@ function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 					isAnimating={isRunning}
 					className="text-muted-foreground bg-muted p-2 rounded text-sm"
 				>
-					{block.thinking}
+					{thinking}
 				</Markdown>
 			</CollapsibleContent>
 		</Collapsible>

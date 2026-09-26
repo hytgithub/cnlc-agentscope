@@ -106,6 +106,8 @@ SSE 断开只取消当前观察协程。`ExecutionDispatcher.wait` 的 `shield` 
 
 补充修复：AgentScope Web 的 Thinking 折叠区原先默认关闭，导致事件虽已渲染但用户只能看到“思考中”。现在流式执行期间默认展开，任务完成后保留本轮展开状态；历史消息在页面重新加载后仍可按需展开，避免长报告页面一次铺开全部历史过程。
 
+上传文件在 ThinkingBlock 创建前已经完成同步解析和校验，因此开场状态固定显示“上传资料读取与校验完成”。前端同时兼容已持久化的旧回复，把旧的“正在读取并校验上传资料”纠正为完成状态，避免历史消息在 Execution 终态后继续显示过期状态。
+
 ## Console、Network 与日志
 
 - 浏览器 Console 没有 JavaScript error、Unhandled Promise、React key、Query、CORS 或 404 polling loop。
