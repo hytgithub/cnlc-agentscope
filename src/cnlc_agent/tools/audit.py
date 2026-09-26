@@ -17,13 +17,28 @@ ASSIGNED_SECRET = re.compile(
     r"(?i)(?:api.?key|token|password|secret|authorization|credential)\s*[:=]\s*\S+"
 )
 BULK_FIELDS = {
-    "depths", "curves", "values", "raw_data", "processed_data", "payload", "report",
+    "depths",
+    "curves",
+    "values",
+    "raw_data",
+    "processed_data",
+    "payload",
+    "report",
     "instruction",
 }
 METADATA_KEYS = {
-    "is_mock", "source", "fixture_source", "execution_id", "input_version_id",
-    "prediction_model", "prediction_source", "effective_parameters", "parameter_propagated",
-    "professionally_recalculated", "preprocessing",
+    "is_mock",
+    "source",
+    "fixture_source",
+    "execution_id",
+    "input_version_id",
+    "prediction_model",
+    "prediction_source",
+    "effective_parameters",
+    "parameter_propagated",
+    "professionally_recalculated",
+    "preprocessing",
+    "projected_parameters",
 }
 
 

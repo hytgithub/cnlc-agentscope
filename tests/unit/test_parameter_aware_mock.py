@@ -1,4 +1,4 @@
-"""验证参数到达真实调用边界，并且 Mock 不擅自改变专业预设数值。"""
+"""验证参数到达真实调用边界，Mock 只投影显式覆盖值且不冒充专业复算。"""
 
 import json
 
@@ -92,7 +92,10 @@ async def test_multiround_parameters_reach_tools_models_and_metadata(data_dir, m
             assert output.data["is_mock"] is True
             assert state.workflow_execution_id in output.data["source"]
         assert {name for name, _, _ in calls} >= {
-            "identify_lithology", "evaluate_petrophysics", "calculate_sw", "merge_intervals"
+            "identify_lithology",
+            "evaluate_petrophysics",
+            "calculate_sw",
+            "merge_intervals",
         }
         for model_input in models:
             assert model_input.context["execution_id"] == state.workflow_execution_id
@@ -101,7 +104,18 @@ async def test_multiround_parameters_reach_tools_models_and_metadata(data_dir, m
             assert "processed_data" not in model_input.context
             assert "raw_data" not in model_input.context
             assert "executions" not in model_input.context
-        assert state.petrophysics_result.result == fixture.outputs["petrophysics"].result
+        expected_petrophysics = fixture.outputs["petrophysics"].result.copy()
+        if expected.por is not None:
+            expected_petrophysics["porosity"] = {
+                **expected_petrophysics["porosity"],
+                "value": expected.por,
+            }
+        if expected.perm is not None:
+            expected_petrophysics["permeability"] = {
+                **expected_petrophysics["permeability"],
+                "value": expected.perm,
+            }
+        assert state.petrophysics_result.result == expected_petrophysics
         assert state.fluid_result.result["sw_result"]["result"] == fixture.outputs["sw"].result
         if start in {StepId.W01, StepId.W02}:
             preprocess = state.qc_result.result["preprocessing"]
@@ -126,7 +140,9 @@ async def test_prediction_identifier_never_changes_qwen_gateway(data_dir, monkey
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         gateway = OpenAICompatibleModelGateway(
-            base_url="https://example.test/v1", api_key="test-only", model_name="qwen-plus",
+            base_url="https://example.test/v1",
+            api_key="test-only",
+            model_name="qwen-plus",
             client=client,
         )
         monkeypatch.setattr(
@@ -142,7 +158,8 @@ async def test_prediction_identifier_never_changes_qwen_gateway(data_dir, monkey
 
         await app.run_with_input(request, fixture, materialize)
         state, _ = await app.rerun_planned(
-            request, changes=InterpretationOverride(prediction_model="prediction-v2"),
+            request,
+            changes=InterpretationOverride(prediction_model="prediction-v2"),
             materialize=materialize,
         )
         assert state.status == StepStatus.SUCCESS
@@ -155,7 +172,7 @@ async def test_prediction_identifier_never_changes_qwen_gateway(data_dir, monkey
         assert gateway.model_name == "qwen-plus"
 
 
-async def test_mock_only_annotates_copies_and_preserves_fixture(fixture_data):
+async def test_mock_projects_explicit_values_on_copies_and_preserves_fixture(fixture_data):
     fixture = MockFixture.model_validate(fixture_data)
     before = fixture.model_dump_json()
 
@@ -169,14 +186,54 @@ async def test_mock_only_annotates_copies_and_preserves_fixture(fixture_data):
             execution_id=f"exec-{model}",
             effective_override=InterpretationOverride(por=0.16, perm=0.16, prediction_model=model),
         )
-        output = await tool.execute(ToolInput(
-            task_id="task", trace_id="trace", well_id=fixture.well.well_id, step_id=StepId.W05,
-            parameters=context.model_dump(mode="json"),
-        ))
-        assert output.data["result"] == fixture.outputs["petrophysics"].result
+        output = await tool.execute(
+            ToolInput(
+                task_id="task",
+                trace_id="trace",
+                well_id=fixture.well.well_id,
+                step_id=StepId.W05,
+                parameters=context.model_dump(mode="json"),
+            )
+        )
+        assert output.data["result"]["porosity"]["value"] == 0.16
+        assert output.data["result"]["permeability"]["value"] == 0.16
+        assert output.metadata["projected_parameters"] == {"por": 0.16, "perm": 0.16}
+        assert output.metadata["professionally_recalculated"] is False
+        assert any("Demo Override" in item for item in output.data["evidence"])
         assert output.metadata["prediction_model"] == model
         output.data["result"]["test_mutation"] = True
-        assert fixture.model_dump_json() == before
+    assert fixture.model_dump_json() == before
+
+
+async def test_por_override_is_persisted_in_state_and_report(data_dir, fixture_data):
+    """报告必须读取本 Execution 的 W05 投影结果，不能继续显示 Fixture 原值。"""
+
+    fixture_data["outputs"]["petrophysics"]["result"]["porosity"]["value"] = 0.115
+    fixture_data["outputs"]["petrophysics"]["evidence"] = ["POR层段均值约11.50%"]
+    fixture = MockFixture.model_validate(fixture_data)
+    (data_dir / "WELL_MOCK_001.json").write_text(
+        json.dumps(fixture_data, ensure_ascii=False), encoding="utf-8"
+    )
+    app = build_application(AppSettings(mock_data_dir=data_dir, _env_file=None))
+    request = TaskRequest(well_id=fixture.well.well_id)
+
+    async def materialize(version):
+        (data_dir / f"{version.well_id}.json").write_text(version.payload.model_dump_json())
+
+    await app.run_with_input(request, fixture, materialize)
+    state, report = await app.rerun_planned(
+        request,
+        changes=InterpretationOverride(por=0.18),
+        materialize=materialize,
+    )
+
+    assert state.petrophysics_result.result["porosity"] == {
+        "value": 0.18,
+        "unit": "fraction",
+    }
+    assert any("孔隙度=18.00%" in item for item in state.petrophysics_result.evidence)
+    assert "18.00%" in report
+    assert "11.50%" not in report
 
 
 async def test_legacy_full_rerun_also_populates_state_context(data_dir):

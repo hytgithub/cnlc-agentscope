@@ -55,7 +55,7 @@ class MockResultTool:
         self.prediction = prediction if prediction is not None else MockPredictionProvider()
 
     async def execute(self, request: ToolInput) -> ToolOutput:
-        """回放指定阶段的预设结果，不执行任何专业计算。"""
+        """回放预设结果；W05 可投影用户指定值，但不冒充专业复算。"""
 
         fixture = await self.repository.load(request.well_id)
         result = fixture.outputs.get(self.result_key)
@@ -66,9 +66,47 @@ class MockResultTool:
         # 专业数值实际来自 Fixture，预测上下文不能覆盖结果来源。
         metadata["source"] = self.source
         metadata["fixture_source"] = result.source
-        # 修改返回副本的来源标签；预设物性、Sw、岩性、层段数值保持原样。
+        # 只修改返回副本，输入 Fixture 和历史 Execution 始终保持不可变。
         result = result.model_copy(deep=True)
         result.source = f"mock:parameter-aware:{context.execution_id or 'unbound'}"
+        if self.result_key == "petrophysics":
+            projected = self._project_petrophysics_override(result.result, context)
+            if projected:
+                markers = {
+                    "por": ("por", "孔隙度"),
+                    "perm": ("perm", "渗透率"),
+                }
+                result.evidence = [
+                    item
+                    for item in result.evidence
+                    if not any(
+                        marker in item.casefold()
+                        for field in projected
+                        for marker in markers[field]
+                    )
+                ]
+                result.evidence.extend(
+                    self._override_evidence(field, value) for field, value in projected.items()
+                )
+                retained_warnings = [
+                    item
+                    for item in result.warnings
+                    if not any(
+                        marker in item.casefold()
+                        for field in projected
+                        for marker in markers[field]
+                    )
+                ]
+                if len(retained_warnings) != len(result.warnings):
+                    retained_warnings.append(
+                        "当前物性值包含用户指定的 Demo Override 投影；"
+                        "其他物性仍来自 Fixture，均未经过专业算法复算"
+                    )
+                result.warnings = retained_warnings
+                projected_metadata: JsonObject = {
+                    field: value for field, value in projected.items()
+                }
+                metadata["projected_parameters"] = projected_metadata
         if self.result_key == "qc":
             # 插值、离散曲线和缺失值规则尚未确认，只证明参数到达 W03。
             preprocess: JsonObject = {
@@ -84,3 +122,29 @@ class MockResultTool:
             warnings=result.warnings,
             metadata=metadata,
         )
+
+    @staticmethod
+    def _project_petrophysics_override(
+        payload: JsonObject, context: ExecutionContext
+    ) -> dict[str, float]:
+        """按原结果单位替换显式 POR/PERM；不推导其他物性或饱和度。"""
+
+        projected: dict[str, float] = {}
+        for field, result_key in (("por", "porosity"), ("perm", "permeability")):
+            value = getattr(context.effective_override, field)
+            existing = payload.get(result_key)
+            if value is None or not isinstance(existing, dict):
+                continue
+            measurement = existing.copy()
+            measurement["value"] = value
+            payload[result_key] = measurement
+            projected[field] = value
+        return projected
+
+    @staticmethod
+    def _override_evidence(field: str, value: float) -> str:
+        """记录用户输入的演示投影事实，避免与 Fixture 原值混在同一证据中。"""
+
+        if field == "por":
+            return f"用户指定 Demo Override：孔隙度={value:.2%}（未执行专业复算）"
+        return f"用户指定 Demo Override：渗透率={value:g}（沿用 Fixture 单位，未执行专业复算）"
