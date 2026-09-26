@@ -412,24 +412,24 @@ Retry
 预期：
 
 ```text
-`PARTIAL_CONFLICT`（部分冲突）
+PARTIAL_CONFLICT（部分冲突）
 ↓
-WARNING
+WARNING（完成但有告警）
 ↓
 允许进入最终检查
 ```
 
 ### Case 07：Validation 发现严重冲突
 
-预期：
+当前实现预期：
 
 ```text
-`SERIOUS_CONFLICT`（严重冲突）
+SERIOUS_CONFLICT（严重冲突）
 ↓
-Rollback
-↓
-W06 或 W07
+REVIEW_REQUIRED（需要人工复核）
 ```
+
+当前版本不会自动回退 W06/W07；自动 Rollback（回退重算）属于后续能力。
 
 ### Case 08：达到最大 Rollback 次数
 
@@ -448,7 +448,7 @@ W06 或 W07
 
 ## 22. 人工复核状态验收
 
-V0.1 至少支持 REVIEW_REQUIRED 逻辑状态。
+V0.1 至少支持 `REVIEW_REQUIRED`（需要人工复核）逻辑状态。
 
 系统需要能够停止自动执行、保存当前状态并记录为什么需要 Review。
 
@@ -539,7 +539,7 @@ MQ
 [ ] Web 页面能够完成基本交互
 [ ] 缺失数据场景可以正确处理
 [ ] Tool 失败场景可以正确处理
-[ ] Validation Conflict 可以触发 Rollback / Review
+[ ] Validation Conflict 可以触发受控 Review（人工复核）；未来启用 Rollback 时需满足受控回退规则
 [ ] Retry / Rollback 不会无限循环
 [ ] Trace 可以看到主要执行链
 [ ] 核心测试通过

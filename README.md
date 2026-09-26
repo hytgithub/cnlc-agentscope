@@ -47,7 +47,7 @@ Demo Mode 将演示资料视为完整，W03/W04/W05/W08 使用 fixture Mock Tool
 uv run cnlc-agent --data-dir mock_data --output-dir outputs --well-id WELL_MOCK_001
 ```
 
-退出码：`0` 表示演示链路 SUCCESS/WARNING，`1` 表示 FAILED/BLOCKED/REVIEW_REQUIRED，
+退出码：`0` 表示演示链路 `SUCCESS`（执行成功）/`WARNING`（完成但有告警），`1` 表示 `FAILED`（执行失败）/`BLOCKED`（被阻断）/`REVIEW_REQUIRED`（需要人工复核），
 `2` 表示配置、输入或输出错误。模型默认为 Mock；真实模式配置缺失会明确报错，不会静默回退。
 
 ## 验证
@@ -157,7 +157,7 @@ Demo Skip 和结构化 JSON 保持不变。失败任务继续输出诊断摘要�
 uv run pytest tests/integration/test_demo_report_e2e.py -v
 ```
 
-该测试覆盖成功、WARNING、JSON 契约、Markdown 关键结果，以及模拟模型鉴权失败时
+该测试覆盖成功、`WARNING`（完成但有告警）、JSON 契约、Markdown 关键结果，以及模拟模型鉴权失败时
 CLI、日志和报告不泄漏测试密钥或上游原始异常。全部离线，不消耗公网模型额度。
 
 **集成状态（2026-09-21）：** Task 005 和 Report 已合入 `demo/2026-09-22`。

@@ -242,7 +242,7 @@ Workflow 不承担复杂专业推理。
 
 ## 15. Retry / Rollback 规则
 
-Retry 和 Rollback 必须有明确原因、次数限制、Trace 和状态记录。超过限制后，应进入 REVIEW_REQUIRED 或明确失败状态，禁止无限执行。
+Retry 和 Rollback 必须有明确原因、次数限制、Trace 和状态记录。超过限制后，应进入 `REVIEW_REQUIRED`（需要人工复核）或明确失败状态，禁止无限执行。
 
 ## 16. InterpretationState 开发规则
 
