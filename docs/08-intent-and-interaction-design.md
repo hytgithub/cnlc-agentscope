@@ -84,7 +84,25 @@ W01～W10、专业 Tool、RUN/REUSE 和报告均来自该 Execution 的持久事
 
 ## 5. 标识、归属和越界请求
 
-首次 ToolResult 返回的 `task_id` 和 `execution_id` 会进入会话上下文。后续动作只能使用受信 ToolResult 中的 ID，并由服务端以 `(user_id, agent_id, session_id)` 查询 SessionTaskBinding。内存集合 `observed_task_ids` 只加速命中，不能授权。错误 user、agent、session 或 Task 统一按不存在处理。
+同一 Session 是 `1:N InterpretationTask`。`active_task_id` 保存在 AgentScope
+Session State 的 `middle_context` 中，只表示对话焦点，不进入
+InterpretationTask 或数据库列。`SessionTaskResolver` 从 SessionTaskBinding
+的稳定排序构建 Task Summary，支持：
+
+- `CURRENT`：active task；状态丢失时 fallback 到当前 Session 最近绑定的 Task；
+- `PREVIOUS_TASK`：active task 之前绑定的 Task；
+- `WELL_ID`：当前 Session 内同井号最近创建的 Task；
+- `TASK_ID`：只有四元组 Binding 验证通过才可用。
+
+“上一版”是 active task 的上一个 Execution，不跨井；“上一口井”是
+`PREVIOUS_TASK`，报告默认取 `LATEST_SUCCESSFUL`。明确访问某井成功后，
+该 Task 成为 active task，后续未指定井的修改作用于它。
+
+首次 ToolResult 返回的 `task_id` 和 `execution_id` 会进入会话上下文，
+但不再用“最近 ToolResult”代替任务解析。服务端以
+`(user_id, agent_id, session_id)` 查询 SessionTaskBinding。内存集合
+`observed_task_ids` 只加速命中，不能授权。错误 user、agent、session 或
+Task 统一按不存在处理。
 
 天气、股票、写故事、通用代码等与单井常规测井解释和任务操作无关的请求不调用业务 Tool，由 Agent 返回受限领域说明。ReAct 不能直接调用 `identify_lithology`、`calculate_sw` 等专业底层 Tool，也不能修改 W01～W10 顺序。
 

@@ -144,6 +144,11 @@ flowchart TD
 - **Interpretation Panel**：当前/历史 Execution、W01～W10 状态、四阶段 RUN/REUSE 视图、有效参数、ToolRun 列表和报告。
 - **History**：切换历史 Execution 后保持选中版本，后台刷新当前任务不会强制跳回当前。
 
+同一 Session 可绑定多个 InterpretationTask。当前 Panel 继续展示聊天中
+最近成功解析的 active task，不假设 `Session = exactly one Task`。本阶段
+通过自然语言的 CURRENT / PREVIOUS_TASK / WELL_ID 切换 Task，不新增复杂的
+多井列表 UI；Panel 保留未来增加井 / Task Selector 的空间。
+
 未来可在右侧增加 GR、RT、DEN、CNL、AC、SP、CAL 等测井曲线、深度轨迹、解释层段、储层区间、岩性、流体、有效厚度和解释成果绘图。当前 Read API 没有冻结绘图数据契约，也没有选择绘图库。Curve Visualization 是 Future；应先定义曲线点、深度轴、单位、采样、缺失值、历史版本对齐和大数据传输边界，再实现 UI。Panel 应保留可扩展的可视化区域，技术选型待绘图数据契约确定后决定。
 
 ## 8. 展示节拍

@@ -30,6 +30,8 @@ _STATUS_PATTERNS = (
     re.compile(r"(?:查看|当前)?进度|进度(?:怎么样|如何)"),
     re.compile(r"(?:执行|当前)状态"),
 )
+_WELL_ID_PATTERN = re.compile(r"\b(WELL_[A-Za-z0-9_-]+)\b", re.IGNORECASE)
+_PREVIOUS_TASK_PHRASES = ("上一口井", "之前那口井", "前一口井")
 
 _SUMMARY_TASK_CONTEXT_PATTERN = re.compile(
     r"<cnlc-task-context>(?P<payload>\{.*?\})</cnlc-task-context>",
@@ -46,8 +48,9 @@ _SUMMARY_FIELDS = {
 DEMO_SYSTEM_PROMPT = """你是单井常规测井解释任务的交互入口，只处理测井解释及相关任务操作。
 支持开始解释、修改参数并重跑、全流程重跑、查询状态、查询当前或历史报告。
 上传由接入层确定性解析；明确提供已知 Fixture 井号时可以调用 run_well_interpretation。
-后续从已有 Tool result 中读取 task_id、execution_id、well_id，不要求用户手输这些标识。
-没有可信 task_id 时，提示“请先上传井资料或开始一次解释任务”，绝不编造标识。
+同一 Session 可能包含多口井，不得简单把最近 Tool result 的 task_id 用于所有请求。
+任务选择必须使用 task_reference 交给受控 Session Task Resolver，不得自行构造 UUID。
+默认当前井用 CURRENT；“上一口井”用 PREVIOUS_TASK；明确井号用 WELL_ID。
 修改参数使用 modify_well_interpretation，仅支持 sampling_interval、por、perm、prediction_model。
 用户未说参数名称（例如“改成0.16”）时先询问，不猜 POR 或 PERM。
 明确的孔隙度16%可以转为 por=0.16；PERM 单位未确认，不擅自换算。
@@ -55,8 +58,8 @@ prediction_model 是专业预测配置，不得改变 qwen-plus。Rw、Archie m/
 “重新计算含水饱和度”应说明尚不支持步骤级重跑，可以全流程重跑或修改受支持参数后重跑；
 不要因此自行调用重跑或编造参数。用户明确要求全部重跑时调用 rerun_well_interpretation。
 查询状态必须调用 get_interpretation_status 并依据持久事实回答，不能从聊天记忆推测。
-上一版报告优先用 selector="PREVIOUS" 查当前井的前一个 Execution；如果当前井只有 Execution #1，
-则查询会话中上一口井的 CURRENT 报告。任务标识只能来自可信 Tool result；
+“上一版报告”始终是当前 active task 的 selector="PREVIOUS"，绝不跨井。
+“上一口井的报告”用 PREVIOUS_TASK + LATEST_SUCCESSFUL，指定井号用 WELL_ID。
 当前版 CURRENT，最近成功版 LATEST_SUCCESSFUL。报告原文来自 Tool，完整展示，不改写专业结论。
 你只决定用户意图；不得自行计算、调用内部专业 Tool、决定 W01-W10 顺序、执行起点或 RUN/REUSE。
 开始、修改和全量重跑创建 Execution 后，由系统持续展示真实执行过程和对应报告。
@@ -199,23 +202,6 @@ class MockTaskShellModel(ChatModelBase):
                 content=[TextBlock(text=self._render_result(current_results[-1]))],
                 is_last=True,
             )
-        historical_results = [
-            block
-            for message in messages
-            for block in message.content
-            if isinstance(block, ToolResultBlock)
-        ]
-        task_contexts = self._trusted_task_contexts(messages, historical_results)
-        task_id = (
-            str(task_contexts[0]["task_id"])
-            if task_contexts
-            else self._summary_task_id(messages)
-        )
-        if task_id is None:
-            return ChatResponse(
-                content=[TextBlock(text="请先上传井资料或开始一次解释任务。")],
-                is_last=True,
-            )
         name, parameters = self._command(instruction)
         if name is None:
             if "含水饱和度" in instruction and any(
@@ -236,14 +222,12 @@ class MockTaskShellModel(ChatModelBase):
                 content=[TextBlock(text="当前 Agent 只处理单井常规测井解释及相关任务操作。")],
                 is_last=True,
             )
-        if name == "get_interpretation_report" and parameters.get("selector") == "PREVIOUS":
-            task_id, parameters = self._previous_report_target(task_contexts)
         return ChatResponse(
             content=[
                 ToolCallBlock(
                     id=uuid4().hex,
                     name=name,
-                    input=json.dumps({"task_id": task_id, **parameters}, ensure_ascii=False),
+                    input=json.dumps(parameters, ensure_ascii=False),
                 )
             ],
             is_last=True,
@@ -267,16 +251,6 @@ class MockTaskShellModel(ChatModelBase):
         )
         parsed = json.loads(text)
         return parsed if isinstance(parsed, dict) else {}
-
-    @classmethod
-    def _latest_task_id(cls, blocks: list[ToolResultBlock]) -> str | None:
-        """从最近可信 Tool Result 读取 task_id，禁止从自然语言猜测。"""
-
-        for block in reversed(blocks):
-            task_id = cls._payload(block).get("task_id")
-            if isinstance(task_id, str) and task_id:
-                return task_id
-        return None
 
     @classmethod
     def _summary_contexts(cls, messages: list[Msg]) -> list[dict[str, Any]]:
@@ -344,18 +318,6 @@ class MockTaskShellModel(ChatModelBase):
             append(context)
         return contexts
 
-    @staticmethod
-    def _previous_report_target(
-        contexts: list[dict[str, Any]],
-    ) -> tuple[str, dict[str, Any]]:
-        """当前井无前一版时，返回会话中上一口井的当前报告。"""
-
-        current = contexts[0]
-        sequence = current.get("execution_sequence")
-        if sequence == 1 and len(contexts) > 1:
-            return str(contexts[1]["task_id"]), {"selector": "CURRENT"}
-        return str(current["task_id"]), {"selector": "PREVIOUS"}
-
     @classmethod
     def _summary_task_context(cls, messages: list[Msg]) -> dict[str, Any]:
         """从 Tool 结果或既有受控摘要提取最小任务上下文，避免压缩后丢失绑定。"""
@@ -366,25 +328,36 @@ class MockTaskShellModel(ChatModelBase):
         # 保留最近四口井，使长会话压缩后仍可返回上一口井的报告。
         return {**contexts[0], "recent_tasks": contexts[:4]}
 
-    @classmethod
-    def _summary_task_id(cls, messages: list[Msg]) -> str | None:
-        """只读取本模型生成的摘要标记，不把普通用户文本当作可信 task_id。"""
-
-        contexts = cls._summary_contexts(messages)
-        return str(contexts[0]["task_id"]) if contexts else None
-
     @staticmethod
     def _command(instruction: str) -> tuple[str | None, dict[str, Any]]:
         """把 Mock 联调指令映射到现有五个任务级 Tool。"""
 
+        well_match = _WELL_ID_PATTERN.search(instruction)
+        reference: dict[str, Any] = {"kind": "CURRENT"}
+        if any(phrase in instruction for phrase in _PREVIOUS_TASK_PHRASES):
+            reference = {"kind": "PREVIOUS_TASK"}
+        elif well_match:
+            reference = {"kind": "WELL_ID", "value": well_match.group(1)}
+        task_reference = {"task_reference": reference}
+        if (
+            any(phrase in instruction for phrase in _PREVIOUS_TASK_PHRASES)
+            and "报告" in instruction
+        ):
+            return "get_interpretation_report", {
+                **task_reference,
+                "selector": "LATEST_SUCCESSFUL",
+            }
         if "上一版" in instruction and "报告" in instruction:
-            return "get_interpretation_report", {"selector": "PREVIOUS"}
+            return "get_interpretation_report", {**task_reference, "selector": "PREVIOUS"}
         if "报告" in instruction:
-            return "get_interpretation_report", {"selector": "CURRENT"}
+            selector = "LATEST_SUCCESSFUL" if well_match else "CURRENT"
+            return "get_interpretation_report", {**task_reference, "selector": selector}
+        if well_match and "切回" in instruction:
+            return "get_interpretation_status", task_reference
         if "全部" in instruction and ("重跑" in instruction or "重新跑" in instruction):
-            return "rerun_well_interpretation", {}
+            return "rerun_well_interpretation", task_reference
         if any(pattern.search(instruction) for pattern in _STATUS_PATTERNS):
-            return "get_interpretation_status", {}
+            return "get_interpretation_status", task_reference
         if "重新解释" in instruction or "修改" in instruction or "改成" in instruction:
             changes: dict[str, Any] = {}
             value = re.search(r"(?:0?\.\d+|\d+(?:\.\d+)?%)", instruction)
@@ -396,7 +369,7 @@ class MockTaskShellModel(ChatModelBase):
                 if "渗透率" in instruction:
                     changes["perm"] = number
             if changes:
-                return "modify_well_interpretation", changes
+                return "modify_well_interpretation", {**task_reference, **changes}
         return None, {}
 
     @classmethod
@@ -503,3 +476,4 @@ class LoggingInterpretationDemoAgent(Agent):
             context_config=context_config,
             react_config=react_config,
         )
+        runner.attach_session_runtime_context(self.state.middle_context)

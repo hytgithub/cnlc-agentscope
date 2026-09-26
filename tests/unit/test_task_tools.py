@@ -155,7 +155,7 @@ async def test_postgres_mode_uses_existing_runtime(data_dir, monkeypatch):
     first = started.metadata["result"]
     result = await tools["get_interpretation_status"].call(task_id=first["task_id"])
     assert result.state == "success"
-    assert contexts == ["postgres-redis", "postgres-redis"]
+    assert contexts == ["postgres-redis", "postgres-redis", "postgres-redis"]
     assert await session.repository.get_task(first["task_id"]) is None
 
 
@@ -216,6 +216,66 @@ async def test_postgres_factory_restores_binding_for_status_and_modify(data_dir,
     assert await restored_factory.get_or_restore_runner(
         "alice", "agent-a", "session-b"
     ) is None
+    await restored_factory.shutdown()
+
+
+async def test_factory_restart_restores_multiple_tasks_and_previous_well(
+    data_dir, fixture_data, monkeypatch
+):
+    """进程级 runner 丢失后，Binding 恢复多井顺序并 fallback 到最近井。"""
+
+    repository = InMemoryTaskRepository()
+
+    @asynccontextmanager
+    async def runtime(settings, persistence, connections):
+        del persistence, connections
+        app = build_application(settings, task_repository=repository)
+        try:
+            yield app
+        finally:
+            await app.close()
+
+    monkeypatch.setattr("cnlc_agent.demo.task_tools.application_runtime", runtime)
+    settings = AppSettings(
+        mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None
+    )
+    persistence = PersistenceSettings(persistence="postgres-redis", _env_file=None)
+    identity = ("alice", "agent-a", "multi-well-session")
+
+    first_factory = SessionTaskToolFactory(settings=settings, persistence=persistence)
+    first_tools = {tool.name: tool for tool in await first_factory(*identity)}
+    started_a = await first_tools["run_well_interpretation"].call(
+        well_id="WELL_MOCK_001"
+    )
+    task_a = started_a.metadata["result"]
+    runner_a = first_tools["get_interpretation_status"].runner
+    await runner_a.wait_for_completion(task_a["task_id"], task_a["execution_id"])
+
+    fixture_b_data = json.loads(json.dumps(fixture_data))
+    fixture_b_data["well"]["well_id"] = "WELL_MOCK_002"
+    fixture_b_data["well"]["name"] = "虚构演示井 002"
+    start_tool = first_tools["run_well_interpretation"]
+    start_tool.upload = MockFixture.model_validate(fixture_b_data), "帮我解释第二口井"
+    started_b = await start_tool.call(well_id="WELL_MOCK_002")
+    start_tool.upload = None
+    task_b = started_b.metadata["result"]
+    await runner_a.wait_for_completion(task_b["task_id"], task_b["execution_id"])
+    await first_factory.shutdown()
+
+    restored_factory = SessionTaskToolFactory(settings=settings, persistence=persistence)
+    restored_tools = {tool.name: tool for tool in await restored_factory(*identity)}
+    restored_runner = restored_tools["get_interpretation_status"].runner
+    assert restored_runner.active_task_id is None
+    current = await restored_tools["get_interpretation_status"].call(
+        task_reference={"kind": "CURRENT"}
+    )
+    assert current.metadata["result"]["task_id"] == task_b["task_id"]
+    previous = await restored_tools["get_interpretation_report"].call(
+        task_reference={"kind": "PREVIOUS_TASK"},
+        selector="LATEST_SUCCESSFUL",
+    )
+    assert previous.metadata["result"]["task_id"] == task_a["task_id"]
+    assert restored_runner.active_task_id == task_a["task_id"]
     await restored_factory.shutdown()
 
 
