@@ -245,6 +245,21 @@ class ExecutionReplyStreamer:
                         delta="\n解释流程已进入人工复核\n",
                     )
                     final_text = "解释流程已进入人工复核，请在任务面板查看执行事实。"
+                    # 复核终态已有诊断报告时展示本版报告，不能伪装成验证通过的正式结论。
+                    if completed.report_ready:
+                        try:
+                            report_result = await self._get_report(task_id, execution_id)
+                            if report_result.report_markdown:
+                                report = (
+                                    "# 人工复核诊断报告\n\n"
+                                    "> 本次解释需要人工复核；以下为诊断结果，"
+                                    "不是已通过验证的正式解释结论。\n\n"
+                                    + report_result.report_markdown
+                                )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            completion_error = True
                 else:
                     code = completed.error_code or "INTERPRETATION_FAILED"
                     yield ThinkingBlockDeltaEvent(

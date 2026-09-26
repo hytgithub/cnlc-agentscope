@@ -122,6 +122,11 @@ sequenceDiagram
 
 报告按 Markdown 一级到三级标题切成多个 `TextBlockDelta`。`CNLC_STREAM_REPORT_CHUNK_DELAY_SECONDS` 当前默认 `0.12` 秒，只让相邻章节进入不同渲染帧，不改变持久化报告。
 
+过程的折叠按钮使用原生 button，正文通过原生 CollapsibleContent 容器接收 hidden 和 aria 关联，
+不能把要求转发 DOM 属性的 asChild 直接交给 Markdown 渲染组件。过程标题旁显示计时，
+过程正文最高 24rem 并可独立滚动；报告在正文容器之外单独标为“解释报告”，折叠过程不会隐藏报告。
+REVIEW_REQUIRED 如已有本版诊断报告，也在聊天中流式展示并明确标注人工复核，不能把诊断报告作为正式成功结论。
+
 MODIFY 开头展示 ToolResult 中非空的有效 override；`reused_steps` 来自该 Execution 的状态快照，按静态步骤元数据展示为“已复用”，不会伪装成重新执行。FULL_RERUN 的计划不含复用步骤，W01～W10 全部依照真实 Telemetry 展示。最终报告始终通过本轮 ToolResult 返回的明确 `execution_id` 读取。
 
 ## 6. SSE 断开与重新打开

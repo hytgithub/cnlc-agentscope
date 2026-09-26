@@ -442,6 +442,7 @@ function ASMessageBubbleComponent({ message }: MessageBubbleProps) {
 	);
 
 	const blocks = groupToolCalls(message.content);
+	const hasProgress = message.content.some(isInterpretationProgress);
 
 	// What the copy button hands over — the prose of the message, without
 	// the tool calls and attachments around it.
@@ -463,7 +464,7 @@ function ASMessageBubbleComponent({ message }: MessageBubbleProps) {
 					.map((block, index) => (
 						<Bubble key={index} variant={isUser ? 'muted' : 'ghost'}>
 							<BubbleContent>
-								<ASBlock block={block} />
+								<ASBlock block={block} interpretationReply={hasProgress} />
 							</BubbleContent>
 						</Bubble>
 					))}
@@ -497,32 +498,42 @@ function ASMessageBubbleComponent({ message }: MessageBubbleProps) {
 					)
 				) : (
 					<MessageFooter className="gap-1 font-mono">
-						<Badge
-							variant="secondary"
-							aria-label={isRunning ? t('messageBubble.running') : undefined}
-						>
-							{isRunning ? (
-								<Loader2 data-icon="inline-start" className="animate-spin" />
-							) : (
-								<CheckCircle data-icon="inline-start" />
-							)}
-							<span className="tabular-nums tracking-tighter">{elapsedText}</span>
-							{hasUsage && (
-								<>
-									<ArrowUp data-icon="inline-start" className="ml-1" />
-									<span className="tabular-nums">
-										{formatNumber(message.usage?.input_tokens ?? 0)}
+						{(!hasProgress || hasUsage || audioBlocks.length > 0) && (
+							<Badge
+								variant="secondary"
+								aria-label={isRunning ? t('messageBubble.running') : undefined}
+							>
+								{!hasProgress &&
+									(isRunning ? (
+										<Loader2
+											data-icon="inline-start"
+											className="animate-spin"
+										/>
+									) : (
+										<CheckCircle data-icon="inline-start" />
+									))}
+								{!hasProgress && (
+									<span className="tabular-nums tracking-tighter">
+										{elapsedText}
 									</span>
-									<ArrowDown data-icon="inline-start" className="ml-1" />
-									<span className="tabular-nums">
-										{formatNumber(message.usage?.output_tokens ?? 0)}
-									</span>
-								</>
-							)}
-							{audioBlocks.map((block) => (
-								<AudioInlineControl key={block.id} block={block} />
-							))}
-						</Badge>
+								)}
+								{hasUsage && (
+									<>
+										<ArrowUp data-icon="inline-start" className="ml-1" />
+										<span className="tabular-nums">
+											{formatNumber(message.usage?.input_tokens ?? 0)}
+										</span>
+										<ArrowDown data-icon="inline-start" className="ml-1" />
+										<span className="tabular-nums">
+											{formatNumber(message.usage?.output_tokens ?? 0)}
+										</span>
+									</>
+								)}
+								{audioBlocks.map((block) => (
+									<AudioInlineControl key={block.id} block={block} />
+								))}
+							</Badge>
+						)}
 						{plainText && <CopyButton text={plainText} />}
 					</MessageFooter>
 				)}
@@ -549,10 +560,7 @@ function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 	const isRunning = !block.finished_at;
 	const isProgress = isInterpretationProgress(block);
 	// 已持久化的旧回复曾把同步完成的上传解析写成“正在”；显示时纠正历史文案。
-	const thinking = block.thinking.replace(
-		'正在读取并校验上传资料……',
-		'✓ 上传资料读取与校验完成',
-	);
+	const thinking = block.thinking.replace('正在读取并校验上传资料……', '✓ 上传资料读取与校验完成');
 
 	// Tick once per second while running so the elapsed time updates live.
 	const [now, setNow] = useState(() => Date.now());
@@ -569,27 +577,28 @@ function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 	// 业务过程在历史会话中也默认展开；用户仍可手动折叠，普通思考保持原行为。
 	return (
 		<Collapsible defaultOpen={isProgress || isRunning}>
-			<CollapsibleTrigger asChild>
-				<div
-					className={cn(
-						'group w-full flex items-center gap-2 text-left text-sm text-muted-foreground cursor-pointer',
-						isRunning && 'shimmer',
+			<CollapsibleTrigger
+				type="button"
+				className={cn(
+					'group w-full flex items-center gap-2 text-left text-sm text-muted-foreground cursor-pointer',
+					isRunning && 'shimmer',
+				)}
+			>
+				<span>
+					{t(
+						isProgress
+							? 'messageBubble.interpretationProgress'
+							: elapsedText === '0s'
+								? 'messageBubble.thinking'
+								: 'messageBubble.thinkingFor',
+						{ duration: elapsedText },
 					)}
-				>
-					<span>
-						{t(
-							isProgress
-								? 'messageBubble.interpretationProgress'
-								: elapsedText === '0s'
-									? 'messageBubble.thinking'
-									: 'messageBubble.thinkingFor',
-							{ duration: elapsedText },
-						)}
-					</span>
-					<ChevronRight className="hidden group-hover:flex group-data-[state=open]:flex size-3 shrink-0 transition-transform group-data-[state=open]:rotate-90" />
-				</div>
+				</span>
+				{isProgress && <span className="tabular-nums">{elapsedText}</span>}
+				<ChevronRight className="hidden group-hover:flex group-data-[state=open]:flex size-3 shrink-0 transition-transform group-data-[state=open]:rotate-90" />
 			</CollapsibleTrigger>
-			<CollapsibleContent asChild>
+			{/* 原生容器承接 hidden、id 与 aria 关联；Markdown 不保证转发这些 DOM 属性。 */}
+			<CollapsibleContent className={cn(isProgress && 'max-h-96 overflow-y-auto')}>
 				<Markdown
 					animated
 					isAnimating={isRunning}
@@ -604,17 +613,29 @@ function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 
 interface ASBlockProps {
 	block: ExtendedContentBlock;
+	interpretationReply?: boolean;
 }
 
-export function ASBlock({ block, ...props }: ASBlockProps) {
+export function ASBlock({ block, interpretationReply = false, ...props }: ASBlockProps) {
 	const { t } = useTranslation();
 
 	switch (block.type) {
 		case 'text':
 			return (
-				<Markdown animated isAnimating={!block.finished_at} {...props}>
-					{block.text}
-				</Markdown>
+				<section>
+					{interpretationReply && (
+						<h3 className="mb-3 font-medium">
+							{t(
+								block.text.trimStart().startsWith('#')
+									? 'messageBubble.interpretationReport'
+									: 'messageBubble.interpretationResult',
+							)}
+						</h3>
+					)}
+					<Markdown animated isAnimating={!block.finished_at} {...props}>
+						{block.text}
+					</Markdown>
+				</section>
 			);
 		case 'data': {
 			const dataType = block.source.media_type.split('/')[0];

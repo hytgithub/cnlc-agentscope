@@ -479,3 +479,18 @@ async def test_tool_failure_streams_failure_and_stops_next_step(data_dir, monkey
     assert "解释执行失败" in reply.get_text_content()
     assert not reply.get_text_content().startswith("#")
     assert isinstance(events[-1], ReplyEndEvent)
+
+
+async def test_review_streams_current_diagnostic_report(fixture_data, monkeypatch):
+    """进入复核也展示本版已有诊断报告，不能显示成功报告或借用历史版本。"""
+    monkeypatch.setenv("CNLC_PROFESSIONAL_PROVIDER", "company_mock")
+    fixture_data["validation"]["validation_status"] = "INSUFFICIENT_EVIDENCE"
+    events, reply = await collect_reply(uploaded_message(json.dumps(fixture_data).encode()))
+    progress = reply.get_content_blocks("thinking")[0].thinking
+    assert "W09" in progress and "进入人工复核" in progress
+    assert "▶ W10" not in progress
+    text = reply.get_text_content()
+    assert text.startswith("# 人工复核诊断报告")
+    assert "不是已通过验证的正式解释结论" in text
+    assert "REVIEW_REQUIRED" in text
+    assert isinstance(events[-1], ReplyEndEvent)

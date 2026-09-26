@@ -110,6 +110,8 @@
 		"thinking": "Thinking",
 		"thinkingFor": "Thinking for {{duration}}",
 		"interpretationProgress": "Interpretation progress",
+		"interpretationReport": "Interpretation report",
+		"interpretationResult": "Interpretation result",
 		"audioGenerating": "Generating audio…",
 		"playAudio": "Play audio",
 		"pauseAudio": "Pause audio",
