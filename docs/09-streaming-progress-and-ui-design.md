@@ -118,7 +118,7 @@ sequenceDiagram
 
 ## 5. Thinking 与最终报告
 
-执行过程写入 `ThinkingBlock`，前端在本轮流式执行时默认展开，让用户看到阶段、步骤、Tool 和报告生成状态。最终 Markdown 写入独立 `TextBlock`，与过程文本分开。报告来自当前 `execution_id` 的 `interpretation_execution.markdown`，不会由外层 LLM 二次改写。
+执行过程写入 `ThinkingBlock`，前端将固定业务开场的块标为“解释过程”，在流式执行及历史会话重新加载时均默认展开，让用户看到阶段、步骤、Tool 和报告生成状态；用户可以手动折叠。普通模型思考仍使用原展示规则。有业务过程时，聊天展示层省略 START/MODIFY/FULL_RERUN 的外层 ToolCall/ToolResult 提交快照，避免将静态 QUEUED 卡片误认为当前状态；原始消息不变，无过程的旧消息及只读工具结果仍显示。最终 Markdown 写入独立 `TextBlock`，与过程文本分开。报告来自当前 `execution_id` 的 `interpretation_execution.markdown`，不会由外层 LLM 二次改写。
 
 报告按 Markdown 一级到三级标题切成多个 `TextBlockDelta`。`CNLC_STREAM_REPORT_CHUNK_DELAY_SECONDS` 当前默认 `0.12` 秒，只让相邻章节进入不同渲染帧，不改变持久化报告。
 

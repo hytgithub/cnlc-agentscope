@@ -8,7 +8,7 @@
 - 提交名称：`feat: harden interaction state handling`；最终 SHA 见本提交及任务完成回复。
 - 本次只处理 Interaction Layer、必要的安全状态读模型与回归测试。未修改 W01–W10、
   公司批次依赖、external_call_id、DERIVED ToolRun、公司客户端或结果适配器。
-- 未修改前端、main，未创建 PR。
+- 初始实现未修改前端；后续按用户要求修正过程展示，见下文。未修改 main，未创建 PR。
 
 ## 实现与核心设计
 
@@ -184,12 +184,31 @@ Worker 仍继承请求观察器。未修改业务 Workflow、持久化或专业�
 
 本次实测不代表真实公司专业算法或 Heavy API 的验收。
 
+## 过程展示修正（2026-09-26）
+
+用户要求聊天区直接展示数据解编、数据预处理、工具调用等过程。
+原实现仅在实时流中默认展开 ThinkingBlock，历史会话重新加载时折叠，
+且外层任务工具仍展示提交时的 QUEUED 卡片，容易被理解为最终状态。
+
+- 固定业务开场的 ThinkingBlock 标题改为“解释过程”，实时及历史消息默认展开；仍可手动折叠。
+- 有业务过程时，仅在聊天展示投影中省略 START/MODIFY/FULL_RERUN 的外层提交工具快照。
+  原始消息、专业 ToolRun、右侧历史和报告保持完整；无过程的旧回复、错误正文、只读结果可见。
+- 普通模型思考仍沿用原渲染；识别仅使用后端固定过程前缀，不基于任意用户输入分类。
+- 无新增文件。修改 ASMessageBubble.tsx、messageVisibility.ts、tool-renderers/index.tsx、
+  zh.json、en.json、tests/messageVisibility.test.ts，及本报告和 09-streaming-progress-and-ui-design.md。
+- 前端单测 5 passed（含新增的过程投影及旧回复/只读结果回归）；frontend build 通过，
+  有现有 chunk 大小提示；三份修改的生产 TS/TSX 文件 eslint 和 git diff --check 通过。
+- 实际浏览器刷新后，当前会话三段业务过程（首次解释、参数重跑及用户后续上传）
+  均显示“解释过程”并具有 aria-expanded=true，正文包含数据解编、预处理和 company 工具调用；
+  聊天不再有“任务已提交”卡片。此次不新增业务执行，不改后端，不重复全量后端测试。
+- 本次无新增下一阶段依赖，无架构变更。No Architecture Issue found.
+
 ## 未完成内容与下一阶段依赖
 
 - 同 Task 更新 InputVersion、曲线补齐后从中间恢复仍未实现；同井新上传仍创建新 Task。
 - 不实现独立 IntentClassifier、Skill、CapabilityGraph、Sw-only、Compare、Query/Evidence 系统、
   Pause/Resume/Cancel、执行队列或 WPLM/GDSX 主链接入。
-- 前端未修改；本轮已实际启动并完成上述浏览器联调，未运行前端 build/lint。
+- 前端过程展示已按上述要求修正，已运行前端单测、build 和修改文件 lint。
 - 前端 AttachmentGroup 的 React key 提示可在前端维护任务中修复。
 - 全仓既有 lint/type/format 门禁问题需要独立清理任务。
 - 后续细粒度查询/重算与输入替换需要各自明确 Contract 和 Application policy；

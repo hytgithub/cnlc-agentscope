@@ -24,6 +24,7 @@ import {
 import * as mime from 'mime-types';
 import { memo, useEffect, useRef, useState } from 'react';
 
+import { isInterpretationProgress } from './messageVisibility';
 import { renderToolCall } from './tool-renderers';
 import { countDiffStats, DiffStats, getResultDiff } from './tool-renderers/_shared';
 import type { TFunction, ToolCallWithResult } from './tool-renderers/types';
@@ -546,6 +547,7 @@ export const ASMessageBubble = memo(ASMessageBubbleComponent);
 function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 	const { t } = useTranslation();
 	const isRunning = !block.finished_at;
+	const isProgress = isInterpretationProgress(block);
 	// 已持久化的旧回复曾把同步完成的上传解析写成“正在”；显示时纠正历史文案。
 	const thinking = block.thinking.replace(
 		'正在读取并校验上传资料……',
@@ -564,9 +566,9 @@ function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 	const endMs = isRunning ? now : new Date(block.finished_at!).getTime();
 	const elapsedSeconds = Math.max(0, (endMs - startMs) / 1000);
 	const elapsedText = formatTime(elapsedSeconds);
-	// 流式执行期间直接展示业务进度；完成后保留用户在本轮回复中的展开状态。
+	// 业务过程在历史会话中也默认展开；用户仍可手动折叠，普通思考保持原行为。
 	return (
-		<Collapsible defaultOpen={isRunning}>
+		<Collapsible defaultOpen={isProgress || isRunning}>
 			<CollapsibleTrigger asChild>
 				<div
 					className={cn(
@@ -576,9 +578,11 @@ function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 				>
 					<span>
 						{t(
-							elapsedText === '0s'
-								? 'messageBubble.thinking'
-								: 'messageBubble.thinkingFor',
+							isProgress
+								? 'messageBubble.interpretationProgress'
+								: elapsedText === '0s'
+									? 'messageBubble.thinking'
+									: 'messageBubble.thinkingFor',
 							{ duration: elapsedText },
 						)}
 					</span>

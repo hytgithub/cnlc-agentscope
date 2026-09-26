@@ -109,6 +109,7 @@
 	"messageBubble": {
 		"thinking": "Thinking",
 		"thinkingFor": "Thinking for {{duration}}",
+		"interpretationProgress": "Interpretation progress",
 		"audioGenerating": "Generating audio…",
 		"playAudio": "Play audio",
 		"pauseAudio": "Pause audio",

@@ -109,6 +109,7 @@
 	"messageBubble": {
 		"thinking": "思考中",
 		"thinkingFor": "思考 {{duration}}",
+		"interpretationProgress": "解释过程",
 		"audioGenerating": "正在生成音频…",
 		"playAudio": "播放音频",
 		"pauseAudio": "暂停音频",

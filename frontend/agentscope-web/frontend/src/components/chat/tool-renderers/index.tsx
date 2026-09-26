@@ -26,7 +26,7 @@ const renderers: Record<string, ToolRenderer> = {
 	Glob: GlobRenderer,
 	Grep: GrepRenderer,
 	TaskCreate: TaskCreateRenderer,
-	// 五个任务级工具都使用紧凑卡片；持续进度由右侧只读面板展示。
+	// 任务结果使用紧凑卡片；有业务过程的写工具提交快照由聊天展示层省略。
 	run_well_interpretation: RunWellInterpretationRenderer,
 	modify_well_interpretation: RunWellInterpretationRenderer,
 	rerun_well_interpretation: RunWellInterpretationRenderer,
