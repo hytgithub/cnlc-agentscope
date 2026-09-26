@@ -24,6 +24,7 @@ from cnlc_agent.application.bootstrap import build_application
 from cnlc_agent.application.commands import GetStatusCommand
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
 from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
+from cnlc_agent.demo.upload_reply import UploadInterpretationReply
 from cnlc_agent.demo.uploads import MAX_UPLOAD_BYTES, UploadError, parse_upload
 from cnlc_agent.domain.errors import ToolError
 from cnlc_agent.domain.inputs import fixture_digest
@@ -73,6 +74,7 @@ def demo_agent() -> LoggingInterpretationDemoAgent:
         system_prompt="",
         model=cast(ChatModelBase, SimpleNamespace(model="qwen-plus")),
         toolkit=Toolkit(tools=build_task_tools()),
+        stream_step_delay_seconds=0,
     )
 
 
@@ -136,6 +138,49 @@ async def test_upload_streams_execution_until_report(data_dir):
     assert tool_end_index < reply_end_index
     assert isinstance(events[-1], ReplyEndEvent)
     assert event_observer.get() is None
+
+
+async def test_upload_paces_each_completed_workflow_step(data_dir):
+    delays: list[float] = []
+
+    async def record_delay(seconds: float) -> None:
+        delays.append(seconds)
+
+    agent = demo_agent()
+    tool = agent.toolkit.tool_groups[0].tools[0]
+    middleware = UploadInterpretationReply(
+        tool,
+        step_delay_seconds=1,
+        sleep=record_delay,
+    )
+
+    async def unused_next_handler(**kwargs):
+        del kwargs
+        raise AssertionError("上传消息不应进入后续中间件")
+        yield
+
+    try:
+        events = [
+            event
+            async for event in middleware.on_reply(
+                agent,
+                {
+                    "inputs": uploaded_message(
+                        (data_dir / "WELL_MOCK_001.json").read_bytes()
+                    )
+                },
+                unused_next_handler,
+            )
+        ]
+        result = next(e for e in events if isinstance(e, ToolResultEndEvent))
+        assert events.index(result) < next(
+            index for index, event in enumerate(events) if isinstance(event, ReplyEndEvent)
+        )
+        assert delays == [1] * 10
+    finally:
+        runner = tool._runner
+        assert isinstance(runner, TaskCommandRunner)
+        await runner.dispatcher.shutdown()
 
 
 async def test_upload_persists_normalized_input_before_temporary_file_is_removed(
@@ -272,8 +317,6 @@ async def test_invalid_upload_has_safe_reply_and_does_not_start_workflow(content
 
 
 async def test_no_attachment_delegates_to_next_handler():
-    from cnlc_agent.demo.upload_reply import UploadInterpretationReply
-
     agent = demo_agent()
     middleware = UploadInterpretationReply(agent.toolkit.tool_groups[0].tools[0])
     message = UserMsg(name="user", content="把孔隙度改成0.16")

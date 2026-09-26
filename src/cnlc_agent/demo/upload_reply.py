@@ -3,7 +3,7 @@
 import asyncio
 import json
 import re
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from typing import Any
 from uuid import uuid4
@@ -49,8 +49,24 @@ def _report_chunks(markdown: str) -> list[str]:
 class UploadInterpretationReply(MiddlewareBase):
     """把本轮上传映射为一次业务 Tool 调用，不再交给外层 LLM 改写报告。"""
 
-    def __init__(self, tool: RunWellInterpretationTool) -> None:
+    def __init__(
+        self,
+        tool: RunWellInterpretationTool,
+        *,
+        step_delay_seconds: float = 1.0,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        if step_delay_seconds < 0:
+            raise ValueError("步骤展示间隔不能为负数")
         self.tool = tool
+        self.step_delay_seconds = step_delay_seconds
+        self._sleep = sleep
+
+    async def _pace_step(self) -> None:
+        """仅控制 SSE 展示节奏，不阻塞后台 Workflow 或修改业务状态。"""
+
+        if self.step_delay_seconds > 0:
+            await self._sleep(self.step_delay_seconds)
 
     async def on_reply(
         self,
@@ -119,8 +135,12 @@ class UploadInterpretationReply(MiddlewareBase):
         def observe(name: str, attributes: JsonObject) -> None:
             """把当前 Worker 的既有 Telemetry 转成有限的安全文本。"""
 
+            ended_steps_before = len(projector.ended_steps)
             for text in projector.project(name, attributes):
                 queue.put_nowait(("progress", text))
+            # 每个真实步骤终态后插入展示节拍；队列顺序保证完成文案先于等待出现。
+            if len(projector.ended_steps) > ended_steps_before:
+                queue.put_nowait(("step_completed", None))
 
         async def execute() -> None:
             """在请求级 ContextVar 中安装观察器并执行 Tool。"""
@@ -137,7 +157,7 @@ class UploadInterpretationReply(MiddlewareBase):
         completion_task: asyncio.Task[Any] | None = None
         queue_task: asyncio.Task[tuple[str, Any]] | None = None
         result: ToolResponse | None = None
-        buffered_progress: list[str] = []
+        buffered_progress: list[tuple[str, Any]] = []
         try:
             # 先完整取得 QUEUED Tool Result，让 Panel 尽早获得 task/execution 标识。
             while True:
@@ -145,8 +165,8 @@ class UploadInterpretationReply(MiddlewareBase):
                 if kind == "submission_done":
                     await submission_task
                     break
-                if kind == "progress":
-                    buffered_progress.append(value)
+                if kind in {"progress", "step_completed"}:
+                    buffered_progress.append((kind, value))
                 elif isinstance(value, ToolResponse):
                     result = value
                 else:
@@ -161,8 +181,13 @@ class UploadInterpretationReply(MiddlewareBase):
                 state=result.state if result else ToolResultState.ERROR,
                 metadata=result.metadata if result else {},
             )
-            for text in buffered_progress:
-                yield ThinkingBlockDeltaEvent(reply_id=reply_id, block_id=block_id, delta=text)
+            for kind, value in buffered_progress:
+                if kind == "progress":
+                    yield ThinkingBlockDeltaEvent(
+                        reply_id=reply_id, block_id=block_id, delta=value
+                    )
+                else:
+                    await self._pace_step()
 
             payload = result.metadata.get("result", {}) if result else {}
             task_id = payload.get("task_id")
@@ -194,6 +219,8 @@ class UploadInterpretationReply(MiddlewareBase):
                                 yield ThinkingBlockDeltaEvent(
                                     reply_id=reply_id, block_id=block_id, delta=value
                                 )
+                            elif kind == "step_completed":
+                                await self._pace_step()
                         else:
                             queue_task.cancel()
                             with suppress(asyncio.CancelledError):
@@ -211,6 +238,8 @@ class UploadInterpretationReply(MiddlewareBase):
                         yield ThinkingBlockDeltaEvent(
                             reply_id=reply_id, block_id=block_id, delta=value
                         )
+                    elif kind == "step_completed":
+                        await self._pace_step()
 
             final_text = "解释任务失败，请检查井资料或服务配置后重试。"
             report: str | None = None

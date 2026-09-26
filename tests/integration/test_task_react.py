@@ -111,7 +111,11 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
     )
     model = ScriptedTaskModel()
     agent = LoggingInterpretationDemoAgent(
-        name="demo", system_prompt="", model=model, toolkit=Toolkit(tools=build_task_tools(runner))
+        name="demo",
+        system_prompt="",
+        model=model,
+        toolkit=Toolkit(tools=build_task_tools(runner)),
+        stream_step_delay_seconds=0,
     )
     events = [event async for event in agent.reply_stream(upload_message(data_dir))]
     first = next(e for e in events if isinstance(e, ToolResultEndEvent)).metadata["result"]

@@ -22,6 +22,7 @@ class AppSettings(BaseSettings):
     model_timeout_seconds: float = Field(default=30, gt=0)
     model_max_retries: int = Field(default=2, ge=0, le=5)
     model_retry_backoff_seconds: float = Field(default=0.25, ge=0, le=5)
+    stream_step_delay_seconds: float = Field(default=1.0, ge=0, le=5)
 
 
 class ConnectionSettings(BaseSettings):

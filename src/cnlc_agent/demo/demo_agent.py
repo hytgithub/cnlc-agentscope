@@ -17,6 +17,7 @@ from agentscope.tool import ToolChoice, Toolkit
 from agentscope.workspace import Offloader
 from pydantic import BaseModel, ConfigDict
 
+from cnlc_agent.config.settings import AppSettings
 from cnlc_agent.demo.tools import RUN_TOOL_NAME, RunWellInterpretationTool
 from cnlc_agent.demo.upload_reply import UploadInterpretationReply
 
@@ -264,6 +265,7 @@ class LoggingInterpretationDemoAgent(Agent):
         model_config: ModelConfig | None = None,
         context_config: ContextConfig | None = None,
         react_config: ReActConfig | None = None,
+        stream_step_delay_seconds: float | None = None,
         **kwargs: object,
     ) -> None:
         # 忽略前端自定义名称和提示词，保证 Demo 始终使用项目约束的系统提示。
@@ -288,7 +290,17 @@ class LoggingInterpretationDemoAgent(Agent):
             system_prompt=DEMO_SYSTEM_PROMPT,
             model=model,
             toolkit=Toolkit(tools=tools),
-            middlewares=[UploadInterpretationReply(tool), *(middlewares or [])],
+            middlewares=[
+                UploadInterpretationReply(
+                    tool,
+                    step_delay_seconds=(
+                        AppSettings().stream_step_delay_seconds
+                        if stream_step_delay_seconds is None
+                        else stream_step_delay_seconds
+                    ),
+                ),
+                *(middlewares or []),
+            ],
             state=state,
             offloader=offloader,
             model_config=model_config,

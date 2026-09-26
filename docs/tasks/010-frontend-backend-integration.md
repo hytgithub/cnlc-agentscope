@@ -98,7 +98,7 @@ Execution #6 最终 `SUCCESS`，有效参数仍为 POR/PERM 0.16，四阶段全�
 
 新行为仍先发送包含 `task_id`、`execution_id` 和 `QUEUED` 的 `ToolResultEnd`，使 Interpretation Panel 能尽早打开；随后保持同一条 AgentScope SSE 回复，消费后台 Worker 继承的 `event_observer`，按真实事件依次展示业务阶段、W01-W10、6 个专业 Tool 及报告生成状态。Execution 进入持久终态后，回复先排空已入队事件，再按本轮 `execution_id` 读取 Markdown 报告，报告输出完成后才发送 `ReplyEnd`。
 
-实时展示复用 `workflow.step.start`、`state.change`、`workflow.result`、`tool.start`、`tool.result`、`tool.error`、`report.start` 和 `report.end`。展示投影位于 `src/cnlc_agent/demo/progress.py`，只读取和去重事件，不控制 Workflow。没有新增 EventBus、数据库表、轮询接口或模拟 sleep。
+实时展示复用 `workflow.step.start`、`state.change`、`workflow.result`、`tool.start`、`tool.result`、`tool.error`、`report.start` 和 `report.end`。展示投影位于 `src/cnlc_agent/demo/progress.py`，只读取和去重事件，不控制 Workflow。首次上传的 SSE 展示层在每个真实步骤终态后按 `CNLC_STREAM_STEP_DELAY_SECONDS` 停留，默认 1 秒；后台 Workflow、Execution 和 ToolRun 仍按真实速度执行。没有新增 EventBus、数据库表或轮询接口。
 
 SSE 断开只取消当前观察协程。`ExecutionDispatcher.wait` 的 `shield` 保证后台 Worker 不被取消；自动测试覆盖了取得 `QUEUED` 后关闭流，Execution 仍继续到 `SUCCESS`。页面重新打开仍由 PostgreSQL、SessionTaskBinding 和现有 Read API 恢复 Panel，不做 SSE replay。
 
