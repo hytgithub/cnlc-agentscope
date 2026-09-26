@@ -100,6 +100,8 @@ Execution #6 最终 `SUCCESS`，有效参数仍为 POR/PERM 0.16，四阶段全�
 
 实时展示复用 `workflow.step.start`、`state.change`、`workflow.result`、`tool.start`、`tool.result`、`tool.error`、`report.start` 和 `report.end`。展示投影位于 `src/cnlc_agent/demo/progress.py`，只读取和去重事件，不控制 Workflow。首次上传的 SSE 展示层在每个真实步骤终态后按 `CNLC_STREAM_STEP_DELAY_SECONDS` 停留，默认 1 秒；后台 Workflow、Execution 和 ToolRun 仍按真实速度执行。没有新增 EventBus、数据库表或轮询接口。
 
+Markdown 报告按标题切成多个 `TextBlockDelta`，相邻章节按 `CNLC_STREAM_REPORT_CHUNK_DELAY_SECONDS` 间隔发送，默认 0.12 秒，避免浏览器在同一渲染帧中合并成一次性输出。该间隔只控制 SSE 展示，不重新生成或改写持久化报告。
+
 SSE 断开只取消当前观察协程。`ExecutionDispatcher.wait` 的 `shield` 保证后台 Worker 不被取消；自动测试覆盖了取得 `QUEUED` 后关闭流，Execution 仍继续到 `SUCCESS`。页面重新打开仍由 PostgreSQL、SessionTaskBinding 和现有 Read API 恢复 Panel，不做 SSE replay。
 
 真实浏览器使用现有 AgentScope Session 和正式 `/chat/` 上传协议提交 `WELL_MOCK_001.json`。聊天 Thinking 区实际渲染 W01-W10 的开始和完成、6 个 Tool 的开始和成功、报告开始和完成，随后显示本轮 Markdown 报告；右侧 Panel 同时显示 `SUCCESS`、10/10、6 个 ToolRun 和报告，浏览器 Console 无 error。内置浏览器的原生文件选择器仍无法由当前自动化驱动注入文件，因此协议提交后在同一真实页面完成渲染验收。

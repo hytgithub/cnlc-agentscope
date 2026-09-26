@@ -266,6 +266,7 @@ class LoggingInterpretationDemoAgent(Agent):
         context_config: ContextConfig | None = None,
         react_config: ReActConfig | None = None,
         stream_step_delay_seconds: float | None = None,
+        stream_report_chunk_delay_seconds: float | None = None,
         **kwargs: object,
     ) -> None:
         # 忽略前端自定义名称和提示词，保证 Demo 始终使用项目约束的系统提示。
@@ -297,6 +298,11 @@ class LoggingInterpretationDemoAgent(Agent):
                         AppSettings().stream_step_delay_seconds
                         if stream_step_delay_seconds is None
                         else stream_step_delay_seconds
+                    ),
+                    report_chunk_delay_seconds=(
+                        AppSettings().stream_report_chunk_delay_seconds
+                        if stream_report_chunk_delay_seconds is None
+                        else stream_report_chunk_delay_seconds
                     ),
                 ),
                 *(middlewares or []),

@@ -75,6 +75,7 @@ def demo_agent() -> LoggingInterpretationDemoAgent:
         model=cast(ChatModelBase, SimpleNamespace(model="qwen-plus")),
         toolkit=Toolkit(tools=build_task_tools()),
         stream_step_delay_seconds=0,
+        stream_report_chunk_delay_seconds=0,
     )
 
 
@@ -153,6 +154,7 @@ async def test_upload_paces_each_completed_workflow_step(data_dir):
     middleware = UploadInterpretationReply(
         tool,
         step_delay_seconds=1,
+        report_chunk_delay_seconds=0,
         sleep=record_delay,
     )
 
@@ -179,6 +181,48 @@ async def test_upload_paces_each_completed_workflow_step(data_dir):
             index for index, event in enumerate(events) if isinstance(event, ReplyEndEvent)
         )
         assert delays == [1] * 10
+    finally:
+        runner = tool._runner
+        assert isinstance(runner, TaskCommandRunner)
+        await runner.dispatcher.shutdown()
+
+
+async def test_upload_paces_each_report_chunk(data_dir):
+    delays: list[float] = []
+
+    async def record_delay(seconds: float) -> None:
+        delays.append(seconds)
+
+    agent = demo_agent()
+    tool = agent.toolkit.tool_groups[0].tools[0]
+    middleware = UploadInterpretationReply(
+        tool,
+        step_delay_seconds=0,
+        report_chunk_delay_seconds=0.12,
+        sleep=record_delay,
+    )
+
+    async def unused_next_handler(**kwargs):
+        del kwargs
+        raise AssertionError("上传消息不应进入后续中间件")
+        yield
+
+    try:
+        events = [
+            event
+            async for event in middleware.on_reply(
+                agent,
+                {
+                    "inputs": uploaded_message(
+                        (data_dir / "WELL_MOCK_001.json").read_bytes()
+                    )
+                },
+                unused_next_handler,
+            )
+        ]
+        report_deltas = [event for event in events if isinstance(event, TextBlockDeltaEvent)]
+        assert len(report_deltas) > 1
+        assert delays == [0.12] * (len(report_deltas) - 1)
     finally:
         runner = tool._runner
         assert isinstance(runner, TaskCommandRunner)

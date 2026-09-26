@@ -21,6 +21,7 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
     monkeypatch.setenv("CNLC_MODEL_PROVIDER", "mock")
     monkeypatch.setenv("CNLC_PERSISTENCE", "memory")
     monkeypatch.setenv("CNLC_STREAM_STEP_DELAY_SECONDS", "0")
+    monkeypatch.setenv("CNLC_STREAM_REPORT_CHUNK_DELAY_SECONDS", "0")
     redis = FakeRedis(decode_responses=True)
     monkeypatch.setattr(
         "cnlc_agent.demo.agentscope_app._redis_storage",

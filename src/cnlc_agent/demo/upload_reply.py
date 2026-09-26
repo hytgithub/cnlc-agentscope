@@ -54,12 +54,14 @@ class UploadInterpretationReply(MiddlewareBase):
         tool: RunWellInterpretationTool,
         *,
         step_delay_seconds: float = 1.0,
+        report_chunk_delay_seconds: float = 0.12,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        if step_delay_seconds < 0:
-            raise ValueError("步骤展示间隔不能为负数")
+        if step_delay_seconds < 0 or report_chunk_delay_seconds < 0:
+            raise ValueError("流式展示间隔不能为负数")
         self.tool = tool
         self.step_delay_seconds = step_delay_seconds
+        self.report_chunk_delay_seconds = report_chunk_delay_seconds
         self._sleep = sleep
 
     async def _pace_step(self) -> None:
@@ -67,6 +69,12 @@ class UploadInterpretationReply(MiddlewareBase):
 
         if self.step_delay_seconds > 0:
             await self._sleep(self.step_delay_seconds)
+
+    async def _pace_report_chunk(self) -> None:
+        """让相邻报告章节分属不同的可见渲染帧。"""
+
+        if self.report_chunk_delay_seconds > 0:
+            await self._sleep(self.report_chunk_delay_seconds)
 
     async def on_reply(
         self,
@@ -294,8 +302,11 @@ class UploadInterpretationReply(MiddlewareBase):
             yield ThinkingBlockEndEvent(reply_id=reply_id, block_id=block_id)
             report_id = uuid4().hex
             yield TextBlockStartEvent(reply_id=reply_id, block_id=report_id)
-            for chunk in _report_chunks(report or final_text):
+            report_chunks = _report_chunks(report or final_text)
+            for index, chunk in enumerate(report_chunks):
                 yield TextBlockDeltaEvent(reply_id=reply_id, block_id=report_id, delta=chunk)
+                if index < len(report_chunks) - 1:
+                    await self._pace_report_chunk()
             yield TextBlockEndEvent(reply_id=reply_id, block_id=report_id)
             yield ReplyEndEvent(
                 session_id=session_id,
