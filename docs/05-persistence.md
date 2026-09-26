@@ -1,5 +1,7 @@
 # PostgreSQL / Redis 持久化运行设计
 
+Execution、Workflow 和 ToolRun 状态的中文含义见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
+
 本文说明当前持久化运行边界。表、字段、关系和 migration 历史统一见 [07-database-design.md](07-database-design.md)，这里不重复定义 Schema。
 
 ## 1. 基础设施与职责
@@ -14,7 +16,7 @@ Redis 过期或清空不会删除 PostgreSQL 中的版本、报告或任务归�
 
 ## 2. 版本和写入路径
 
-首次上传先校验并规范化输入，创建 Task、InputVersion 和 `QUEUED` Execution，再保存 SessionTaskBinding。局部或全量重跑读取 Task 当前指针、最近成功 Execution 和输入摘要，经 DependencyResolver 得到计划，并原子追加新 Execution。历史输入、执行、参数快照、ToolRun 和报告不会被当前版本覆盖。
+首次上传先校验并规范化输入，创建 Task、InputVersion 和 `QUEUED`（排队等待）Execution，再保存 SessionTaskBinding。局部或全量重跑读取 Task 当前指针、最近成功 Execution 和输入摘要，经 DependencyResolver 得到计划，并原子追加新 Execution。历史输入、执行、参数快照、ToolRun 和报告不会被当前版本覆盖。
 
 Workflow 检查点先写 PostgreSQL，再尝试写 Redis。Redis 写失败会被分类并使流程形成明确失败事实；数据库检查点失败时不写缓存，避免 Redis 出现比 durable fact 更新的假状态。PostgreSQL 与 Redis 没有分布式事务，读取业务历史始终以 PostgreSQL 为准。
 
@@ -28,9 +30,9 @@ Task、InputVersion、Execution、ToolRun 和 Binding 的写入均依赖数据�
 
 ## 4. 后台执行、租约和崩溃恢复
 
-任务级 Tool 只创建 `QUEUED` Execution 并提交到 `InProcessExecutionDispatcher`。Worker 原子 claim 后进入 `RUNNING`，记录 `lease_owner`、`lease_expires_at` 和 `started_at`；运行期间按租约周期约三分之一续租。终态写入需匹配当前 Worker、有效租约和 Task 当前指针，然后写 `finished_at`、清租约并保存最终报告。
+任务级 Tool 只创建 `QUEUED`（排队等待）Execution 并提交到 `InProcessExecutionDispatcher`。Worker 原子 claim 后进入 `RUNNING`（正在执行），记录 `lease_owner`、`lease_expires_at` 和 `started_at`；运行期间按租约周期约三分之一续租。终态写入需匹配当前 Worker、有效租约和 Task 当前指针，然后写 `finished_at`、清租约并保存最终报告。
 
-服务启动和运行期间会扫描过期 RUNNING。扫描使用行锁和 `SKIP LOCKED`，只把失联执行标为 `FAILED` 并写安全错误码，不自动重放可能有外部副作用的 Workflow。应用正常退出会取消并等待本进程 Worker，让 Worker 尝试形成明确终态。
+服务启动和运行期间会扫描过期 `RUNNING`（正在执行）。扫描使用行锁和 `SKIP LOCKED`，只把失联执行标为 `FAILED`（执行失败） 并写安全错误码，不自动重放可能有外部副作用的 Workflow。应用正常退出会取消并等待本进程 Worker，让 Worker 尝试形成明确终态。
 
 当前没有分布式任务队列，也没有跨进程接管未完成 Workflow。可恢复的是持久事实、任务归属、历史状态和报告；不是从任意 Python 调用栈断点继续。
 
@@ -66,7 +68,7 @@ uv run python -m cnlc_agent.demo.agentscope_app
 - 数据库不可用或事务失败：明确失败，不写 Redis 假成功。
 - Redis 写入失败：保留 PostgreSQL 已写事实，并按 Workflow 错误边界形成失败状态。
 - Worker claim 前异常：尝试 claim 后以 `BACKGROUND_EXECUTION_FAILED` 终结。
-- Worker 失联：租约过期恢复为 FAILED，不自动重跑。
+- Worker 失联：租约过期恢复为 `FAILED`（执行失败），不自动重跑。
 - 报告失败：Execution 保留状态和诊断；后续新版本可只运行报告阶段，但不会覆盖旧版本。
 - Binding 保存失败：首次任务不向会话宣称可用，返回稳定 `SESSION_TASK_BINDING_FAILED`。
 

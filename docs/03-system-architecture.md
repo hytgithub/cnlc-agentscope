@@ -1,5 +1,7 @@
 # 测井解释智能体总体技术架构（Current Design）
 
+状态、枚举、规划动作和流程节点的中文说明统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。本文首次出现的重要代码值同时给出中文含义。
+
 ## 1. 文档目的
 
 本文档描述当前已经实现并作为后续开发基线的总体技术架构。
@@ -283,7 +285,7 @@ Application Layer 当前负责：
 - Session ↔ Task ownership；
 - Command 参数校验；
 - ExecutionPlan；
-- RUN / REUSE 规划；
+- RUN（重新执行）/ REUSE（复用已有结果） 规划；
 - 后台 Execution 提交；
 - Execution / ToolRun / Report 读模型；
 - 持久化协调与稳定错误码。
@@ -337,9 +339,9 @@ Report
 
 | 变化 | 当前执行策略 |
 | --- | --- |
-| 首次解释 / 全量重跑 / 新输入 | W01～W10 RUN |
-| sampling_interval | W01 REUSE；W02～W10 RUN |
-| por / perm / prediction_model | W01～W03 REUSE；W04～W10 RUN |
+| 首次解释 / 全量重跑 / 新输入 | W01～W10 RUN（重新执行） |
+| sampling_interval | W01 REUSE（复用）；W02～W10 RUN（重新执行） |
+| por / perm / prediction_model | W01～W03 REUSE（复用）；W04～W10 RUN（重新执行） |
 | 无需专业重算 | 可复用结果，仅重新生成报告 |
 
 当前没有 arbitrary step rerun，也没有 SW-only 重算。
@@ -415,12 +417,10 @@ merge_intervals
 
 Tool execution mode 支持：
 
-```text
-MOCK
-REAL
-VIRTUAL
-DERIVED
-```
+- `MOCK`（模拟执行）：演示或测试结果，不代表真实专业计算。
+- `REAL`（真实执行）：真实工具、算法或外部服务执行。
+- `VIRTUAL`（虚拟/逻辑执行）：逻辑上的工具调用，不代表独立外部调用。
+- `DERIVED`（派生结果）：由一次共享调用结果拆分、投影得到。
 
 当前专业结果仍以 Mock / Demo 为主，Heavy Prediction API 尚未接入。
 
@@ -496,7 +496,7 @@ Redis 当前主要承担：
 任务级写操作先创建：
 
 ```text
-Execution = QUEUED
+Execution = QUEUED（排队等待）
 ```
 
 然后提交 `InProcessExecutionDispatcher`。
@@ -504,11 +504,12 @@ Execution = QUEUED
 Worker 生命周期：
 
 ```text
-QUEUED
+QUEUED（排队等待）
 ↓ claim
-RUNNING
+RUNNING（正在执行）
 ↓ heartbeat / lease renew
-SUCCESS / WARNING / FAILED / BLOCKED / REVIEW_REQUIRED
+SUCCESS（执行成功） / WARNING（完成但有告警） / FAILED（执行失败）
+/ BLOCKED（被阻断） / REVIEW_REQUIRED（需要人工复核）
 ```
 
 同一 Task 通过数据库行锁、`expected_current_execution_id` 和活跃 Execution 检查避免并发覆盖。
@@ -578,7 +579,7 @@ SSE 断开不会取消后台 Worker。重新打开页面通过 PostgreSQL、Sess
 当前右侧 Interpretation Panel 从 Read API 展示：
 
 - 当前 / 历史 Execution；
-- 四阶段 RUN / REUSE；
+- 四阶段 RUN（重新执行）/ REUSE（复用已有结果）；
 - W01～W10；
 - ToolRun；
 - Override；
@@ -825,7 +826,7 @@ DependencyResolver / ExecutionPlan
 ↓
 new Execution
 ↓
-RUN / REUSE
+RUN（重新执行）/ REUSE（复用已有结果）
 ↓
 Workflow / Report
 ```

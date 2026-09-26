@@ -1,5 +1,7 @@
 # 公司能力四大步骤接入（当前 Mock 返回）
 
+状态和 Tool 执行模式中文说明见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
+
 实现位置是 `cnlc-agentscope`。`qwen-agent-main` 只用于查看调用协议，不需要启动。
 本次保持 W01–W10 顺序和现有前端，增加四个批量能力入口；入口直接返回现有
 `MockFixture` 或本次上传的 JSON 中相应结果，不访问公司服务。
@@ -37,7 +39,7 @@ CNLC_PROFESSIONAL_PROVIDER=company_mock
 
 - `tools/company_batches.py` 的 `MockCompanyBatchProvider.execute` 就是当前 return Mock 的位置。
 - 同一次执行、相同输入版本和参数共享一份批量响应；不同执行或参数不会串用。
-- 批量工具记录为 MOCK，消费结果的细分工具记录为 DERIVED，共享 `external_call_id`。
+- 批量工具记录为 `MOCK`（模拟执行），消费结果的细分工具记录为 `DERIVED`（派生结果），共享 `external_call_id`；`DERIVED` 不代表又发起了一次独立公司 API 调用。
 - 结果携带 `is_mock=true`。批量请求成功不代表所有细分结果成功；缺项、失败、
   必需曲线缺失和严重验证冲突继续触发失败、阻塞或人工复核。
 - 工具超时沿用 `CNLC_TOOL_TIMEOUT_SECONDS`，当前不进行网络请求。

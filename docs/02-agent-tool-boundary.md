@@ -1,5 +1,7 @@
 # Agent / Workflow / Tool 职责边界设计
 
+状态、枚举和流程节点的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。本文保留英文代码值用于和实现、日志及测试对应。
+
 ## 1. 文档目的
 
 本文档定义测井解释智能体中以下能力的职责边界：
@@ -408,12 +410,10 @@ ValidationAgent 综合：
 
 判断：
 
-```text
-CONSISTENT
-PARTIAL_CONFLICT
-SERIOUS_CONFLICT
-INSUFFICIENT_EVIDENCE
-```
+- `CONSISTENT`（证据一致）
+- `PARTIAL_CONFLICT`（部分冲突）
+- `SERIOUS_CONFLICT`（严重冲突）
+- `INSUFFICIENT_EVIDENCE`（证据不足：现有独立证据不足以验证当前解释，并不等于解释结论一定错误）
 
 ### W10 最终一致性检查
 

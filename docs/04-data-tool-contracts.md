@@ -1,5 +1,7 @@
 # 数据与工具契约：当前可执行基线
 
+状态与枚举中文说明见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
+
 本文件描述已实现的 `0.1-skeleton` 契约，不冻结正式专业数据格式。
 **Pending final well-data schema.** 项目方提供真实脱敏样例后再修订字段、单位及业务规则。
 不改变三个 Agent、W01–W10 顺序和基础设施选型。
@@ -72,17 +74,17 @@ InterpretationState 由 Workflow 修改，保留执行记录、修改前后值�
 | merge_intervals | W08 | 返回层段结果 | StageResult | MockResultTool / intervals |
 
 统一 ToolCaller 重新校验返回信封，包括已构造但内部容器被修改的模型实例。
-成功信封只接受 SUCCESS/WARNING 且 errors 为空；data 的业务结构继续由消费节点验证。
+成功信封只接受 `SUCCESS`（执行成功）/`WARNING`（完成但有告警），且 errors 为空；data 的业务结构继续由消费节点验证。
 这不是 Agent 的正式工具权限矩阵，后续 Runtime 接入时另行定义。
 
 | 错误 | 含义 | 当前行为 |
 |---|---|---|
 | TOOL_TIMEOUT | 超过配置的调用时间 | 标记可重试，当前 Workflow 仍终止 |
-| INVALID_TOOL_OUTPUT | 返回值不符合信封 Schema | 当前节点 FAILED，无后续成功结果 |
-| TOOL_FAILED | 未分类工具执行异常 | 当前节点 FAILED |
-| TOOL_REPORTED_FAILURE | 非成功状态或带 errors | 当前节点 FAILED |
+| INVALID_TOOL_OUTPUT | 返回值不符合信封 Schema | 当前节点 `FAILED`（执行失败），无后续成功结果 |
+| TOOL_FAILED | 未分类工具执行异常 | 当前节点 `FAILED`（执行失败） |
+| TOOL_REPORTED_FAILURE | 非成功状态或带 errors | 当前节点 `FAILED`（执行失败） |
 | WELL_NOT_FOUND / INVALID_FIXTURE | 数据读取或结构失败 | 保留原 ApplicationError 分类 |
-| MOCK_TOOL_RESULT_MISSING | 缺少预设工具结果 | 当前节点 FAILED |
+| MOCK_TOOL_RESULT_MISSING | 缺少预设工具结果 | 当前节点 `FAILED`（执行失败） |
 
 超时由 `CNLC_TOOL_TIMEOUT_SECONDS` 控制，默认 10 秒。
 Task 02 不新增 Retry、Rollback 或专业计算公式。

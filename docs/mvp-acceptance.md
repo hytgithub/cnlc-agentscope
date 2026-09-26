@@ -1,5 +1,7 @@
 # 测井解释 Agent V0.1 MVP 验收标准
 
+状态、枚举和验证结论的中文定义见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
+
 ## 1. 文档目的
 
 本文档定义测井解释 Agent 第一阶段 V0.1 的验收标准。
@@ -151,7 +153,7 @@ MainAgent 不应直接手写孔隙度、Sw 或绕过 Workflow 修改最终解释
 6. 标记 Conflicting Evidence；
 7. 给出 Recommended Action；
 8. 必要时提出 Rollback Target；
-9. 必要时标记 REVIEW_REQUIRED。
+9. 必要时标记 `REVIEW_REQUIRED`（需要人工复核）。
 
 ValidationAgent 不应直接覆盖解释结果。
 
@@ -173,13 +175,11 @@ Review
 
 至少能够正确处理：
 
-```text
-SUCCESS
-WARNING
-FAILED
-BLOCKED
-REVIEW_REQUIRED
-```
+- `SUCCESS`（执行成功）
+- `WARNING`（完成但有告警）
+- `FAILED`（执行失败）
+- `BLOCKED`（被阻断）
+- `REVIEW_REQUIRED`（需要人工复核）
 
 ## 10. InterpretationState 验收标准
 
@@ -374,18 +374,18 @@ Required 数据完整。
 预期：
 
 ```text
-W01 → W10 → SUCCESS
+W01 → W10 → `SUCCESS`（执行成功）
 ```
 
 并生成 JSON 和 Markdown。
 
 ### Case 02：缺少 Recommended 数据
 
-预期 WARNING，Workflow 继续执行，最终报告中可见缺失信息。
+预期 `WARNING`（完成但有告警），Workflow 继续执行，最终报告中可见缺失信息。
 
 ### Case 03：缺少 Required 数据
 
-预期对应步骤 BLOCKED，不得由 LLM 编造结果继续执行，并记录 missing_data 和 affected_step。
+预期对应步骤 `BLOCKED`（被阻断），不得由 LLM 编造结果继续执行，并记录 missing_data 和 affected_step。
 
 ### Case 04：Tool 调用失败
 
@@ -398,7 +398,7 @@ Retry
 ↓
 达到限制
 ↓
-FAILED / REVIEW_REQUIRED
+`FAILED`（执行失败）/ `REVIEW_REQUIRED`（需要人工复核）
 ```
 
 不能静默失败。
@@ -412,7 +412,7 @@ FAILED / REVIEW_REQUIRED
 预期：
 
 ```text
-PARTIAL_CONFLICT
+`PARTIAL_CONFLICT`（部分冲突）
 ↓
 WARNING
 ↓
@@ -424,7 +424,7 @@ WARNING
 预期：
 
 ```text
-SERIOUS_CONFLICT
+`SERIOUS_CONFLICT`（严重冲突）
 ↓
 Rollback
 ↓
@@ -433,7 +433,7 @@ W06 或 W07
 
 ### Case 08：达到最大 Rollback 次数
 
-预期停止自动循环，状态 REVIEW_REQUIRED。
+预期停止自动循环，状态 `REVIEW_REQUIRED`（需要人工复核）。
 
 ## 21. Retry / Rollback 验收标准
 
@@ -515,7 +515,7 @@ MQ
 8. InterpretationAgent 完成解释；
 9. ValidationAgent 完成验证；
 10. Final Check；
-11. Task SUCCESS；
+11. Task `SUCCESS`（执行成功）；
 12. 查看 JSON；
 13. 查看 Markdown Report；
 14. 查看基础 Trace。

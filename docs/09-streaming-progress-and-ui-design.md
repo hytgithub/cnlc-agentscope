@@ -1,6 +1,8 @@
 # 测井解释过程流式展示与前端职责设计
 
-本文记录 Task 10.2 后的统一执行型交互。旧实现只有首次上传会保持 SSE；MODIFY 和 FULL_RERUN 在返回 `QUEUED` 后立即结束。当前 START、MODIFY 和 FULL_RERUN 都复用 `ExecutionReplyStreamer`，保持同一条 AgentScope SSE 回复，直到本轮 Execution 的最终报告已读取并发送。
+状态、动作、任务引用和 RUN/REUSE 的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
+
+本文记录 Task 10.2 后的统一执行型交互。旧实现只有首次上传会保持 SSE；`MODIFY`（修改参数并重跑）和 `FULL_RERUN`（全量重跑）在返回 `QUEUED`（排队等待）后立即结束。当前 `START`（开始解释）、`MODIFY` 和 `FULL_RERUN` 都复用 `ExecutionReplyStreamer`，保持同一条 AgentScope SSE 回复，直到本轮 Execution 的最终报告已读取并发送。
 
 ## 1. 当前首次解释时序
 
@@ -118,14 +120,14 @@ sequenceDiagram
 
 ## 5. Thinking 与最终报告
 
-执行过程写入 `ThinkingBlock`，前端将固定业务开场的块标为“解释过程”，在流式执行及历史会话重新加载时均默认展开，让用户看到阶段、步骤、Tool 和报告生成状态；用户可以手动折叠。普通模型思考仍使用原展示规则。有业务过程时，聊天展示层省略 START/MODIFY/FULL_RERUN 的外层 ToolCall/ToolResult 提交快照，避免将静态 QUEUED 卡片误认为当前状态；原始消息不变，无过程的旧消息及只读工具结果仍显示。最终 Markdown 写入独立 `TextBlock`，与过程文本分开。报告来自当前 `execution_id` 的 `interpretation_execution.markdown`，不会由外层 LLM 二次改写。
+执行过程写入 `ThinkingBlock`，前端将固定业务开场的块标为“解释过程”，在流式执行及历史会话重新加载时均默认展开，让用户看到阶段、步骤、Tool 和报告生成状态；用户可以手动折叠。普通模型思考仍使用原展示规则。有业务过程时，聊天展示层省略 START（开始解释）/MODIFY（修改参数并重跑）/FULL_RERUN（全量重跑） 的外层 ToolCall/ToolResult 提交快照，避免将静态 QUEUED 卡片误认为当前状态；原始消息不变，无过程的旧消息及只读工具结果仍显示。最终 Markdown 写入独立 `TextBlock`，与过程文本分开。报告来自当前 `execution_id` 的 `interpretation_execution.markdown`，不会由外层 LLM 二次改写。
 
 报告按 Markdown 一级到三级标题切成多个 `TextBlockDelta`。`CNLC_STREAM_REPORT_CHUNK_DELAY_SECONDS` 当前默认 `0.12` 秒，只让相邻章节进入不同渲染帧，不改变持久化报告。
 
 过程的折叠按钮使用原生 button，正文通过原生 CollapsibleContent 容器接收 hidden 和 aria 关联，
 不能把要求转发 DOM 属性的 asChild 直接交给 Markdown 渲染组件。过程标题旁显示计时，
 过程正文最高 24rem 并可独立滚动；报告在正文容器之外单独标为“解释报告”，折叠过程不会隐藏报告。
-REVIEW_REQUIRED 如已有本版诊断报告，也在聊天中流式展示并明确标注人工复核，不能把诊断报告作为正式成功结论。
+`REVIEW_REQUIRED`（需要人工复核）如已有本版诊断报告，也在聊天中流式展示并明确标注人工复核，不能把诊断报告作为正式成功结论。
 
 MODIFY 开头展示 ToolResult 中非空的有效 override；`reused_steps` 来自该 Execution 的状态快照，按静态步骤元数据展示为“已复用”，不会伪装成重新执行。FULL_RERUN 的计划不含复用步骤，W01～W10 全部依照真实 Telemetry 展示。最终报告始终通过本轮 ToolResult 返回的明确 `execution_id` 读取。
 
@@ -145,13 +147,13 @@ flowchart TD
 
 ## 7. 页面职责
 
-- **聊天区**：自然语言、START/MODIFY/FULL_RERUN 的实时 Thinking、最终报告和任务级 Tool 调用。
-- **Interpretation Panel**：当前/历史 Execution、W01～W10 状态、四阶段 RUN/REUSE 视图、有效参数、ToolRun 列表和报告。
+- **聊天区**：自然语言、START（开始解释）/MODIFY（修改参数并重跑）/FULL_RERUN（全量重跑） 的实时 Thinking、最终报告和任务级 Tool 调用。
+- **Interpretation Panel**：当前/历史 Execution、W01～W10 状态、四阶段 RUN（重新执行）/REUSE（复用已有结果） 视图、有效参数、ToolRun 列表和报告。
 - **History**：切换历史 Execution 后保持选中版本，后台刷新当前任务不会强制跳回当前。
 
 同一 Session 可绑定多个 InterpretationTask。当前 Panel 继续展示聊天中
 最近成功解析的 active task，不假设 `Session = exactly one Task`。本阶段
-通过自然语言的 CURRENT / PREVIOUS_TASK / WELL_ID 切换 Task，不新增复杂的
+通过自然语言的 CURRENT（当前井）/ PREVIOUS_TASK（上一口井）/ WELL_ID（按井号指定） 切换 Task，不新增复杂的
 多井列表 UI；Panel 保留未来增加井 / Task Selector 的空间。
 
 未来可在右侧增加 GR、RT、DEN、CNL、AC、SP、CAL 等测井曲线、深度轨迹、解释层段、储层区间、岩性、流体、有效厚度和解释成果绘图。当前 Read API 没有冻结绘图数据契约，也没有选择绘图库。Curve Visualization 是 Future；应先定义曲线点、深度轴、单位、采样、缺失值、历史版本对齐和大数据传输边界，再实现 UI。Panel 应保留可扩展的可视化区域，技术选型待绘图数据契约确定后决定。

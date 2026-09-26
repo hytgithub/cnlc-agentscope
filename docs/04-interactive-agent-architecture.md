@@ -1,5 +1,7 @@
 # 交互式测井解释智能体整体架构设计
 
+状态、枚举、执行阶段和动作码的中文说明见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
+
 ## 1. 当前架构结论
 
 系统采用 **ReAct for Interaction，Workflow for Execution**：AgentScope ReAct 负责理解自然语言并调用受限的任务级 Tool；业务 `MainAgent` 负责规划和编排现有 `InterpretationWorkflow`；Workflow 固定控制 W01～W10；专业 Tool 执行确定性或 Mock 算法；模型不决定步骤顺序或重跑起点。
@@ -59,18 +61,18 @@ Task 表示一口井的持续工作，Execution 表示一次完整或局部执�
 
 当前 Override 字段只有 `sampling_interval`、`por`、`perm` 和 `prediction_model`。ExecutionPlan 是应用层只读计划对象，包含四个 Planner View：
 
-| Planner View | 步骤 |
-| --- | --- |
-| DATA_DECODE | W01 |
-| PREPROCESS | W02～W03 |
-| INTERPRET | W04～W10 |
-| REPORT | W10 后的报告装配与生成 |
+| Planner View | 中文含义 | 步骤 |
+| --- | --- | --- |
+| `DATA_DECODE` | 数据加载 / 解编阶段 | W01 |
+| `PREPROCESS` | 数据预处理与质量控制阶段 | W02～W03 |
+| `INTERPRET` | 专业解释阶段 | W04～W10 |
+| `REPORT` | 报告生成阶段 | W10 后的报告装配与生成 |
 
-四阶段用于规划、RUN/REUSE 和 UI 聚合，不是平行 Workflow，也没有独立 StageRun 表。局部重跑只允许从 W01、W02、W04 或报告边界开始。详细数据设计见 [07-database-design.md](07-database-design.md)，执行规则见 [05-interactive-agent-detailed-design.md](05-interactive-agent-detailed-design.md)。
+四阶段用于规划、`RUN`（重新执行）/`REUSE`（复用已有结果）和 UI 聚合，不是平行 Workflow，也没有独立 StageRun 表。局部重跑只允许从 W01、W02、W04 或报告边界开始。详细数据设计见 [07-database-design.md](07-database-design.md)，执行规则见 [05-interactive-agent-detailed-design.md](05-interactive-agent-detailed-design.md)。
 
 ## 6. 后台执行和可恢复边界
 
-命令创建 `QUEUED` Execution 后立即提交 in-process dispatcher。Worker claim、续租并写唯一终态；Task 行锁、预期当前执行 ID 和 `TASK_EXECUTION_ACTIVE` 防止同一 Task 并发覆盖。过期租约标记为 FAILED，不自动重放 Workflow。
+命令创建 `QUEUED`（排队等待）Execution 后立即提交 in-process dispatcher。Worker claim 后进入 `RUNNING`（正在执行）、续租并写唯一终态；Task 行锁、预期当前执行 ID 和 `TASK_EXECUTION_ACTIVE` 防止同一 Task 并发覆盖。过期租约标记为 `FAILED`（执行失败），不自动重放 Workflow。
 
 SessionTaskBinding 已由 migration `0006` 落库。Backend 重启时从 PostgreSQL 恢复 ownership；右侧面板通过只读 API 查询 Task、Execution、ToolRun 和报告。Redis 与进程内集合都不是任务归属的 canonical source。
 
@@ -82,7 +84,7 @@ SessionTaskBinding 已由 migration `0006` 落库。Backend 重启时从 Postgre
 
 ## 8. Logical Tool 与 Provider
 
-当前六个可视化专业 ToolRun 是 `get_well_data`、`check_curve_quality`、`identify_lithology`、`evaluate_petrophysics`、`calculate_sw`、`merge_intervals`。Mock 必须实现正式 Tool Contract 和输出 Schema；`execution_mode` 明确记录 `MOCK / REAL / VIRTUAL / DERIVED`。
+当前六个可视化专业 ToolRun 是 `get_well_data`、`check_curve_quality`、`identify_lithology`、`evaluate_petrophysics`、`calculate_sw`、`merge_intervals`。Mock 必须实现正式 Tool Contract 和输出 Schema；`execution_mode` 明确记录 `MOCK`（模拟执行）/ `REAL`（真实执行）/ `VIRTUAL`（虚拟/逻辑执行）/ `DERIVED`（派生结果）。
 
 Heavy Prediction API 当前未接入。未来应通过独立 PredictionProvider / Gateway 适配，把外部综合调用投影为受审计的 ToolRun；`prediction_model` 表示专业预测模型选择，不等于替换外层 qwen-plus。当前也没有真实 Report API。
 
