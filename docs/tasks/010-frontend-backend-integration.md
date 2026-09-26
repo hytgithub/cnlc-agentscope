@@ -104,6 +104,8 @@ SSE 断开只取消当前观察协程。`ExecutionDispatcher.wait` 的 `shield` 
 
 真实浏览器使用现有 AgentScope Session 和正式 `/chat/` 上传协议提交 `WELL_MOCK_001.json`。聊天 Thinking 区实际渲染 W01-W10 的开始和完成、6 个 Tool 的开始和成功、报告开始和完成，随后显示本轮 Markdown 报告；右侧 Panel 同时显示 `SUCCESS`、10/10、6 个 ToolRun 和报告，浏览器 Console 无 error。内置浏览器的原生文件选择器仍无法由当前自动化驱动注入文件，因此协议提交后在同一真实页面完成渲染验收。
 
+补充修复：AgentScope Web 的 Thinking 折叠区原先默认关闭，导致事件虽已渲染但用户只能看到“思考中”。现在流式执行期间默认展开，任务完成后保留本轮展开状态；历史消息在页面重新加载后仍可按需展开，避免长报告页面一次铺开全部历史过程。
+
 ## Console、Network 与日志
 
 - 浏览器 Console 没有 JavaScript error、Unhandled Promise、React key、Query、CORS 或 404 polling loop。

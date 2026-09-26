@@ -559,8 +559,9 @@ function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 	const endMs = isRunning ? now : new Date(block.finished_at!).getTime();
 	const elapsedSeconds = Math.max(0, (endMs - startMs) / 1000);
 	const elapsedText = formatTime(elapsedSeconds);
+	// 流式执行期间直接展示业务进度；完成后保留用户在本轮回复中的展开状态。
 	return (
-		<Collapsible>
+		<Collapsible defaultOpen={isRunning}>
 			<CollapsibleTrigger asChild>
 				<div
 					className={cn(
