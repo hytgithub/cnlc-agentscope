@@ -55,7 +55,8 @@ prediction_model 是专业预测配置，不得改变 qwen-plus。Rw、Archie m/
 “重新计算含水饱和度”应说明尚不支持步骤级重跑，可以全流程重跑或修改受支持参数后重跑；
 不要因此自行调用重跑或编造参数。用户明确要求全部重跑时调用 rerun_well_interpretation。
 查询状态必须调用 get_interpretation_status 并依据持久事实回答，不能从聊天记忆推测。
-上一版报告调用 get_interpretation_report(selector="PREVIOUS")，不要猜 execution_id；
+上一版报告优先用 selector="PREVIOUS" 查当前井的前一个 Execution；如果当前井只有 Execution #1，
+则查询会话中上一口井的 CURRENT 报告。任务标识只能来自可信 Tool result；
 当前版 CURRENT，最近成功版 LATEST_SUCCESSFUL。报告原文来自 Tool，完整展示，不改写专业结论。
 你只决定用户意图；不得自行计算、调用内部专业 Tool、决定 W01-W10 顺序、执行起点或 RUN/REUSE。
 开始、修改和全量重跑创建 Execution 后，由系统持续展示真实执行过程和对应报告。
@@ -204,7 +205,12 @@ class MockTaskShellModel(ChatModelBase):
             for block in message.content
             if isinstance(block, ToolResultBlock)
         ]
-        task_id = self._latest_task_id(historical_results) or self._summary_task_id(messages)
+        task_contexts = self._trusted_task_contexts(messages, historical_results)
+        task_id = (
+            str(task_contexts[0]["task_id"])
+            if task_contexts
+            else self._summary_task_id(messages)
+        )
         if task_id is None:
             return ChatResponse(
                 content=[TextBlock(text="请先上传井资料或开始一次解释任务。")],
@@ -230,6 +236,8 @@ class MockTaskShellModel(ChatModelBase):
                 content=[TextBlock(text="当前 Agent 只处理单井常规测井解释及相关任务操作。")],
                 is_last=True,
             )
+        if name == "get_interpretation_report" and parameters.get("selector") == "PREVIOUS":
+            task_id, parameters = self._previous_report_target(task_contexts)
         return ChatResponse(
             content=[
                 ToolCallBlock(
@@ -271,41 +279,8 @@ class MockTaskShellModel(ChatModelBase):
         return None
 
     @classmethod
-    def _summary_task_context(cls, messages: list[Msg]) -> dict[str, Any]:
-        """从 Tool 结果或既有受控摘要提取最小任务上下文，避免压缩后丢失绑定。"""
-
-        blocks = [
-            block
-            for message in messages
-            for block in message.content
-            if isinstance(block, ToolResultBlock)
-        ]
-        for block in reversed(blocks):
-            payload = cls._payload(block)
-            task_id = payload.get("task_id")
-            if isinstance(task_id, str) and task_id:
-                return {
-                    key: payload[key]
-                    for key in ("task_id", "execution_id", "well_id", "execution_sequence")
-                    if payload.get(key) is not None
-                }
-        for message in reversed(messages):
-            text = message.get_text_content() or ""
-            if not text.startswith("<system-info>Here is a summary of your previous work"):
-                continue
-            match = _SUMMARY_TASK_CONTEXT_PATTERN.search(text)
-            if match:
-                try:
-                    payload = json.loads(match.group("payload"))
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(payload, dict) and isinstance(payload.get("task_id"), str):
-                    return payload
-        return {}
-
-    @classmethod
-    def _summary_task_id(cls, messages: list[Msg]) -> str | None:
-        """只读取本模型生成的摘要标记，不把普通用户文本当作可信 task_id。"""
+    def _summary_contexts(cls, messages: list[Msg]) -> list[dict[str, Any]]:
+        """只从官方摘要消息读取由本模型写入的任务上下文。"""
 
         for message in reversed(messages):
             text = message.get_text_content() or ""
@@ -318,10 +293,85 @@ class MockTaskShellModel(ChatModelBase):
                 payload = json.loads(match.group("payload"))
             except json.JSONDecodeError:
                 continue
-            task_id = payload.get("task_id") if isinstance(payload, dict) else None
-            if isinstance(task_id, str) and task_id:
-                return task_id
-        return None
+            if not isinstance(payload, dict):
+                continue
+            candidates = payload.get("recent_tasks")
+            if not isinstance(candidates, list):
+                candidates = [payload]
+            return [
+                candidate
+                for candidate in candidates
+                if isinstance(candidate, dict)
+                and isinstance(candidate.get("task_id"), str)
+                and candidate["task_id"]
+            ]
+        return []
+
+    @classmethod
+    def _trusted_task_contexts(
+        cls,
+        messages: list[Msg],
+        blocks: list[ToolResultBlock] | None = None,
+    ) -> list[dict[str, Any]]:
+        """按最近使用顺序保留不同井任务，仅信任 Tool 结果和受控摘要。"""
+
+        results = blocks
+        if results is None:
+            results = [
+                block
+                for message in messages
+                for block in message.content
+                if isinstance(block, ToolResultBlock)
+            ]
+        contexts: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def append(payload: dict[str, Any]) -> None:
+            task_id = payload.get("task_id")
+            if not isinstance(task_id, str) or not task_id or task_id in seen:
+                return
+            context = {
+                key: payload[key]
+                for key in ("task_id", "execution_id", "well_id", "execution_sequence")
+                if payload.get(key) is not None
+            }
+            contexts.append(context)
+            seen.add(task_id)
+
+        for block in reversed(results):
+            append(cls._payload(block))
+        for context in cls._summary_contexts(messages):
+            append(context)
+        return contexts
+
+    @staticmethod
+    def _previous_report_target(
+        contexts: list[dict[str, Any]],
+    ) -> tuple[str, dict[str, Any]]:
+        """当前井无前一版时，返回会话中上一口井的当前报告。"""
+
+        current = contexts[0]
+        sequence = current.get("execution_sequence")
+        if sequence == 1 and len(contexts) > 1:
+            return str(contexts[1]["task_id"]), {"selector": "CURRENT"}
+        return str(current["task_id"]), {"selector": "PREVIOUS"}
+
+    @classmethod
+    def _summary_task_context(cls, messages: list[Msg]) -> dict[str, Any]:
+        """从 Tool 结果或既有受控摘要提取最小任务上下文，避免压缩后丢失绑定。"""
+
+        contexts = cls._trusted_task_contexts(messages)
+        if not contexts:
+            return {}
+        # 保留最近四口井，使长会话压缩后仍可返回上一口井的报告。
+        return {**contexts[0], "recent_tasks": contexts[:4]}
+
+    @classmethod
+    def _summary_task_id(cls, messages: list[Msg]) -> str | None:
+        """只读取本模型生成的摘要标记，不把普通用户文本当作可信 task_id。"""
+
+        contexts = cls._summary_contexts(messages)
+        return str(contexts[0]["task_id"]) if contexts else None
 
     @staticmethod
     def _command(instruction: str) -> tuple[str | None, dict[str, Any]]:
@@ -354,6 +404,8 @@ class MockTaskShellModel(ChatModelBase):
         """回复只复述 Tool 的持久事实，不推断专业结果。"""
 
         payload = cls._payload(block)
+        if payload.get("error_code"):
+            return str(payload.get("message") or "任务操作失败，请检查资料或服务配置。")
         if report := payload.get("report_markdown"):
             return str(report)
         sequence = payload.get("execution_sequence")

@@ -97,22 +97,30 @@ class ScriptedTaskModel(ChatModelBase):
         )
 
 
-def upload_message(data_dir):
+def fixture_upload_message(payload: dict, filename: str = "well.json") -> UserMsg:
+    """把已校验的 Mock Fixture 封装成官方附件消息。"""
+
     return UserMsg(
         name="user",
         content=[
             TextBlock(text="帮我解释一下这口井"),
             DataBlock(
-                name="well.json",
+                name=filename,
                 source={
                     "type": "base64",
                     "media_type": "application/json",
                     "data": base64.b64encode(
-                        (data_dir / "WELL_MOCK_001.json").read_bytes()
+                        json.dumps(payload, ensure_ascii=False).encode()
                     ).decode(),
                 },
             ),
         ],
+    )
+
+
+def upload_message(data_dir):
+    return fixture_upload_message(
+        json.loads((data_dir / "WELL_MOCK_001.json").read_text(encoding="utf-8"))
     )
 
 
@@ -371,6 +379,107 @@ async def test_mock_shell_supports_context_compression_and_keeps_task_identity(d
         assert modified["task_id"] == first["task_id"]
         assert modified["reused_steps"] == ["W01", "W02", "W03"]
         assert modified["effective_override"]["por"] == 0.16
+    finally:
+        await runner.dispatcher.shutdown()
+
+
+async def test_mock_shell_previous_report_falls_back_to_previous_well(
+    data_dir, fixture_data
+):
+    """当第二口井只有首版时，“上一版”返回前一口井报告。"""
+
+    runner = TaskCommandRunner(
+        AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),
+        PersistenceSettings(persistence="memory", _env_file=None),
+    )
+    agent = LoggingInterpretationDemoAgent(
+        name="demo",
+        system_prompt="",
+        model=MockTaskShellModel(),
+        toolkit=Toolkit(tools=build_task_tools(runner)),
+        stream_step_delay_seconds=0,
+        stream_report_chunk_delay_seconds=0,
+    )
+    second_fixture = json.loads(json.dumps(fixture_data))
+    second_fixture["well"]["well_id"] = "WELL_MOCK_002"
+    second_fixture["well"]["name"] = "虚构演示井 002"
+    try:
+        first_events = [event async for event in agent.reply_stream(upload_message(data_dir))]
+        first = next(
+            event for event in first_events if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        await runner.wait_for_completion(first["task_id"], first["execution_id"])
+        first_report = await runner.repository.get_execution_report(first["execution_id"])
+
+        second_events = [
+            event
+            async for event in agent.reply_stream(
+                fixture_upload_message(second_fixture, "WELL_MOCK_002.json")
+            )
+        ]
+        second = next(
+            event for event in second_events if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        await runner.wait_for_completion(second["task_id"], second["execution_id"])
+        # 压缩会话后仍须保留最近多井绑定，不依赖未压缩的 Tool 块。
+        await agent.compress_context(
+            context_config=ContextConfig(trigger_ratio=0.01, reserve_ratio=0.005)
+        )
+        assert agent.state.summary is not None
+
+        events = [
+            event
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="上一版报告")
+            )
+        ]
+        result = next(
+            event for event in events if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        assert first["task_id"] != second["task_id"]
+        assert result["task_id"] == first["task_id"]
+        assert result["execution_id"] == first["execution_id"]
+        assert result["report_markdown"] == first_report
+        assert agent.state.context[-1].get_text_content() == first_report
+    finally:
+        await runner.dispatcher.shutdown()
+
+
+async def test_mock_shell_renders_missing_previous_report_without_none(data_dir):
+    """单口井只有首版时，展示安全错误文案而非 None 占位。"""
+
+    runner = TaskCommandRunner(
+        AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),
+        PersistenceSettings(persistence="memory", _env_file=None),
+    )
+    agent = LoggingInterpretationDemoAgent(
+        name="demo",
+        system_prompt="",
+        model=MockTaskShellModel(),
+        toolkit=Toolkit(tools=build_task_tools(runner)),
+        stream_step_delay_seconds=0,
+        stream_report_chunk_delay_seconds=0,
+    )
+    try:
+        initial = [event async for event in agent.reply_stream(upload_message(data_dir))]
+        first = next(
+            event for event in initial if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        await runner.wait_for_completion(first["task_id"], first["execution_id"])
+
+        events = [
+            event
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="上一版报告")
+            )
+        ]
+        tool_result = next(
+            event for event in events if isinstance(event, ToolResultEndEvent)
+        )
+        reply = agent.state.context[-1].get_text_content() or ""
+        assert tool_result.state == "error"
+        assert "没有符合条件的历史报告" in reply
+        assert "None" not in reply
     finally:
         await runner.dispatcher.shutdown()
 
