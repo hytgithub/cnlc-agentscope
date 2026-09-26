@@ -1,121 +1,79 @@
-# PostgreSQL / Redis 最小持久化
+# PostgreSQL / Redis 持久化运行设计
 
-Task 03 接入真实 SDK 与持久化实现，业务数据、专业工具和模型仍为 Mock。
-本次不实现 AgentScope Runtime、真实模型、Web、自动恢复或分布式任务调度。
+本文说明当前持久化运行边界。表、字段、关系和 migration 历史统一见 [07-database-design.md](07-database-design.md)，这里不重复定义 Schema。
 
-## 1. 数据边界
+## 1. 基础设施与职责
 
-| 数据 | 保存位置 | 行为 |
-|---|---|---|
-| Task ID、Well ID、当前状态和时间 | PostgreSQL interpretation_task | 可按 task_id 查询；well_id/status 有索引 |
-| 原始资料、阶段结果、执行记录、状态修改历史 | 同表 snapshot JSONB | 每个节点前后保存完整 InterpretationState |
-| 最终/诊断 Markdown | 同表 markdown TEXT | 与最终 JSON 快照同事务提交 |
-| 运行时快照 | Redis | 每次 SET 同时设置 TTL；过期可从 PostgreSQL 查询历史 |
-| Mock 井资料源 | mock_data 文件 | WellRepository 继续使用 fixture；不是正式井数据平台 |
+正式持久模式使用 SQLAlchemy asyncio + asyncpg 访问 PostgreSQL，使用 redis-py asyncio 访问 Redis，使用 Alembic 显式管理 migration。Repository 和 StateStore 隔离 SDK；Agent、Workflow 和专业 Tool 不直接持有数据库连接。
 
-采用单表最小实现，未冻结专业结果 Schema，因此不提前拆分大量业务表。
-Schema 稳定后可通过 Alembic 逐步拆表；不是放弃数据库设计。
+- PostgreSQL 保存 Task、InputVersion、Execution、ToolRun、SessionTaskBinding、报告、执行租约及审计事实，是 canonical source。
+- Redis 保存可丢弃的 `InterpretationState` 运行检查点；AgentScope 另用 Redis 保存聊天 Session、消息和服务凭证。
+- 进程内 `observed_task_ids` 和 dispatcher task 仅用于加速与调度，不是业务事实。
 
-## 2. 写入顺序和故障处理
+Redis 过期或清空不会删除 PostgreSQL 中的版本、报告或任务归属。PostgreSQL 写入失败时必须返回基础设施错误，不能伪造成功，也不能静默降级到 memory。
 
-1. 任务服务先在 PostgreSQL 创建 PENDING 任务，主键冲突返回 TASK_EXISTS。
-2. Workflow 每个节点执行前后：先提交 PostgreSQL 快照，再写 Redis。
-3. 完整流程或业务失败后，任务服务同事务保存最终快照和 Markdown。
-4. Redis 写入失败：停止流程，从持久化快照形成 FAILED 诊断并保存到 PostgreSQL。
-5. 数据库不可用：明确抛出 InfrastructureError，不返回成功，不降级到内存。
+## 2. 版本和写入路径
 
-PostgreSQL 与 Redis 之间没有分布式事务。Redis 故障时可能保留旧值，历史查询以 PostgreSQL
-为准。中途崩溃可能留下未完成快照；markdown 为空表示报告尚未完成，历史 CLI 返回
-REPORT_NOT_READY。当前不自动抢占/恢复任务，不允许重新使用旧 task_id 开始执行。
+首次上传先校验并规范化输入，创建 Task、InputVersion 和 `QUEUED` Execution，再保存 SessionTaskBinding。局部或全量重跑读取 Task 当前指针、最近成功 Execution 和输入摘要，经 DependencyResolver 得到计划，并原子追加新 Execution。历史输入、执行、参数快照、ToolRun 和报告不会被当前版本覆盖。
 
-重复任务 ID 通过数据库唯一约束拒绝，避免两个服务同时执行同一新任务。
-不同任务可以使用各自 Session 并行；本阶段不提供任务队列、锁续期和自动故障转移。
+Workflow 检查点先写 PostgreSQL，再尝试写 Redis。Redis 写失败会被分类并使流程形成明确失败事实；数据库检查点失败时不写缓存，避免 Redis 出现比 durable fact 更新的假状态。PostgreSQL 与 Redis 没有分布式事务，读取业务历史始终以 PostgreSQL 为准。
 
-Redis key 为 `<CNLC_REDIS_PREFIX>:state:<task_id 的 SHA-256>`，默认 TTL 86400 秒。
-SET 使用 ex 原子设置过期，每次保存刷新 TTL；TTL 应长于单个步骤可能的最长运行时间。
-数据库长期保存结果，Redis 清空不等于丢失最终报告。当前 get 返回 None 表示缓存缺失。
+报告与产生它的 Execution 同版本保存到 `interpretation_execution.markdown`。Task 的状态、快照和 Markdown 是兼容当前视图。报告尚未形成时不会从聊天文本或缓存拼装。
 
-## 3. 本地运行
+## 3. 事务、并发和锁
 
-需要 Docker Compose、Python 3.11 和 uv。在仓库根目录执行：
+同一 Task 创建新 Execution 时，Repository 在数据库事务内以 `SELECT FOR UPDATE` 锁 Task，校验 `expected_current_execution_id`，并检查当前 Execution 是否活跃。旧计划被拒绝，活跃冲突返回 `TASK_EXECUTION_ACTIVE`；成功后在同一临界区分配连续 sequence 并更新当前指针。
 
-```bash
-cp .env.example .env
-```
+Task、InputVersion、Execution、ToolRun 和 Binding 的写入均依赖数据库约束。Repository 将可预期的唯一约束、归属和并发冲突转换为稳定错误码，不向浏览器暴露驱动异常或连接信息。AsyncSession 不跨并发任务共享。
 
-编辑 `.env`：
+## 4. 后台执行、租约和崩溃恢复
 
-```dotenv
-CNLC_PERSISTENCE=postgres-redis
-POSTGRES_PASSWORD=自行设置的本地密码
-DATABASE_URL=postgresql+asyncpg://cnlc:URL编码后的同一密码@127.0.0.1:5432/cnlc
-REDIS_URL=redis://127.0.0.1:6379/0
-```
+任务级 Tool 只创建 `QUEUED` Execution 并提交到 `InProcessExecutionDispatcher`。Worker 原子 claim 后进入 `RUNNING`，记录 `lease_owner`、`lease_expires_at` 和 `started_at`；运行期间按租约周期约三分之一续租。终态写入需匹配当前 Worker、有效租约和 Task 当前指针，然后写 `finished_at`、清租约并保存最终报告。
 
-DATABASE_URL 中密码含 `@`、`:`、`/` 等字符时必须做 URL 编码；不把字面示例当真实连接信息。
-连接地址不写入源码和 alembic.ini，日志不输出连接串。
+服务启动和运行期间会扫描过期 RUNNING。扫描使用行锁和 `SKIP LOCKED`，只把失联执行标为 `FAILED` 并写安全错误码，不自动重放可能有外部副作用的 Workflow。应用正常退出会取消并等待本进程 Worker，让 Worker 尝试形成明确终态。
+
+当前没有分布式任务队列，也没有跨进程接管未完成 Workflow。可恢复的是持久事实、任务归属、历史状态和报告；不是从任意 Python 调用栈断点继续。
+
+## 5. Session Binding 与 Web 恢复
+
+PostgreSQL 的 `(user_id, agent_id, session_id, task_id)` Binding 是业务 ownership。Backend 重启后，SessionTaskToolFactory 可从 Binding 恢复 runner 的任务集合；Read API 再按 Task 和 Execution 查询面板、历史、ToolRun 和报告。错误用户、Agent、Session 或 Execution 归属统一拒绝。
+
+AgentScope 的 Redis Session 可恢复聊天消息；即使相关业务缓存缺失，业务读模型仍必须从 PostgreSQL 构造。SSE 断开不会取消受 `shield` 保护的后台 Worker，重开页面通过 Read API 查看持久事实；当前没有 SSE replay。
+
+## 6. Redis 缓存
+
+运行快照 Key 为 `<CNLC_REDIS_PREFIX>:state:<task_id SHA-256>`，避免在 Key 中暴露原始 ID。SET 原子附带 TTL，每次保存刷新过期时间。缺失返回 `None`；损坏快照和网络错误分类为稳定 `InfrastructureError`，不吞掉异常。
+
+默认 TTL、租约、恢复轮询和连接地址由配置统一管理。Redis 数据可以丢失；PostgreSQL 事实不应依赖缓存存活。
+
+## 7. 配置与 migration
+
+正式模式设置 `CNLC_PERSISTENCE=postgres-redis`，并提供 `DATABASE_URL` 与 `REDIS_URL`。数据库连接必须使用 `postgresql+asyncpg`。密码、Token 和 API Key 只从未纳入版本控制的环境配置读取，使用 SecretStr 包装，日志不得输出连接串、驱动原文或密钥。
+
+Alembic migration `0001`～`0006` 必须由部署或开发者显式执行；应用启动不自动改表。迁移顺序和含义见数据库设计。内存模式只用于离线 Demo 和单元测试，不能冒充跨进程持久化。
+
+示例：
 
 ```bash
 uv sync --locked --dev
 docker compose up -d --wait
 uv run alembic upgrade head
-uv run cnlc-agent --well-id WELL_MOCK_001
+uv run python -m cnlc_agent.demo.agentscope_app
 ```
 
-Compose 的数据库端口仅绑定本机，PostgreSQL 使用具名卷；Redis 为可丢弃缓存。
-应用在主机运行，迁移由开发者显式执行，不在启动时自动改表。
-可用 POSTGRES_PORT / REDIS_PORT 修改本机端口，并同步修改连接 URL。
+## 8. 故障语义
 
-输出仍为 JSON + Markdown。业务模式显示 mock，表示解释内容来自 Mock；持久化由
-CNLC_PERSISTENCE 独立选择，不要把 mock 误认为数据库必然是内存。
+- 数据库不可用或事务失败：明确失败，不写 Redis 假成功。
+- Redis 写入失败：保留 PostgreSQL 已写事实，并按 Workflow 错误边界形成失败状态。
+- Worker claim 前异常：尝试 claim 后以 `BACKGROUND_EXECUTION_FAILED` 终结。
+- Worker 失联：租约过期恢复为 FAILED，不自动重跑。
+- 报告失败：Execution 保留状态和诊断；后续新版本可只运行报告阶段，但不会覆盖旧版本。
+- Binding 保存失败：首次任务不向会话宣称可用，返回稳定 `SESSION_TASK_BINDING_FAILED`。
 
-进程重启后查询历史（将 task_id 替换成运行输出的实际值）：
+所有异常至少包含分类、日志、Trace 和是否影响执行的明确结果。日志只记录安全错误码和异常类型。
 
-```bash
-uv run cnlc-agent --task-id <task_id> --output-dir history
-```
+## 9. 测试与边界
 
-使用新的输出目录，避免覆盖已导出的文件。非安全文件名的 task_id 使用散列值作为目录名，
-JSON 仍保留原 ID。不存在的任务返回 TASK_NOT_FOUND；未生成报告返回 REPORT_NOT_READY。
-失败任务有诊断报告时仍可查询，进程退出码为 1；基础设施/配置错误退出码为 2。
+单元测试覆盖缓存、版本序列、并发创建、claim/heartbeat/finish、租约过期、故障分类和资源关闭。真实集成测试在专用 PostgreSQL/Redis 上覆盖 migration、InputVersion/Override 跨 Repository 恢复、原子 claim、过期回收、Session Binding 重启恢复和 Read API。
 
-离线演示：设置 `CNLC_PERSISTENCE=memory`。真实模式缺少地址会直接报错，不自动降级。
-
-## 4. 测试
-
-```bash
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy
-```
-
-真实集成测试需专用测试数据库和 Redis；测试会执行 `alembic upgrade head`，创建随机 ID 的
-任务，结束时仅清理自己的任务和缓存键，不清空共享数据库或 Redis。
-
-在本地环境设置 CNLC_TEST_DATABASE_URL、CNLC_TEST_REDIS_URL 为专用测试服务地址后执行：
-
-```bash
-uv run pytest tests/integration/test_real_persistence.py -v
-```
-
-该测试验证迁移重复执行、真实 Workflow、重复 ID 拒绝、跨进程历史查询、失败报告持久化、
-Redis TTL 和缓存损坏。地址缺失会显式 skip；配置了地址但服务不可用则失败。
-不能把 skip 当作真实服务验收通过。
-
-首次执行环境没有 Docker/PostgreSQL/Redis 服务，系统安装受权限限制。
-2026-09-21 用户在本地运行真实集成测试并提供输出：3 passed in 8.77s。
-环境为 macOS / Python 3.11.15 / pytest 9.1.1；已补齐本阶段真实服务验证。
-普通测试已覆盖适配器调用、真实客户端连接拒绝、故障分类、资源关闭和流程终止；
-迁移 SQL 离线生成通过不等于迁移已在数据库执行。
-
-## 5. 待完成
-
-- 本阶段真实服务测试已通过（用户提供的执行结果）；后续代码变更继续回归验证。
-- 后续独立任务接入内部模型与 AgentScope Runtime。
-- Retry/Rollback、崩溃恢复、任务锁、Web、OpenTelemetry 仍未实现。
-- Pending final well-data schema：正式业务字段和算法需项目方确认。
-
-实现参考官方 [SQLAlchemy asyncio](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html)
-和 [redis-py asyncio](https://redis.readthedocs.io/en/stable/examples/asyncio_examples.html)；
-连接池按异步上下文关闭，ORM Session 不在多个并发任务之间共享。
+当前仍是 in-process dispatcher；分布式队列、自动副作用重放、Heavy Prediction API、独立 Report Artifact 生命周期和最终井数据 Schema 均属于 Future。Pending final well-data schema。

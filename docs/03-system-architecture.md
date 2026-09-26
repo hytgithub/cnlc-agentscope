@@ -31,6 +31,19 @@ V0.1 第一目标仍然是：
 
 > 跑通完整测井解释 Agent 技术链路。
 
+### 1.1 当前交互实现补充
+
+当前 Web 入口中的 `LoggingInterpretationDemoAgent` 是 **AgentScope ReAct Agent**，负责自然语言意图与五个任务级 Tool 的选择；业务 `MainAgent` 仍是 **Planner + Orchestrator**，负责启动和协调 W01～W10 Workflow。二者职责不同，不能把 Web ReAct Agent 与业务 MainAgent 视为同一对象。
+
+当前交互架构、数据库、意图和流式展示的细化设计分别见：
+
+- [04-interactive-agent-architecture.md](04-interactive-agent-architecture.md)
+- [07-database-design.md](07-database-design.md)
+- [08-intent-and-interaction-design.md](08-intent-and-interaction-design.md)
+- [09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md)
+
+`06-interactive-agent-gap-analysis.md` 是历史差距分析，不作为当前能力事实来源。
+
 ## 2. 技术基线
 
 V0.1 采用以下技术基线。
@@ -110,7 +123,13 @@ Telemetry
 ┌──────────────────────────────────────────────┐
 │              Agent Service / API             │
 │                                             │
-│       Session / Request / Task API           │
+│ Session / Request / Read API / SSE           │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│ LoggingInterpretationDemoAgent               │
+│ AgentScope ReAct + Task-level Tools          │
 └──────────────────────┬───────────────────────┘
                        │
                        ▼

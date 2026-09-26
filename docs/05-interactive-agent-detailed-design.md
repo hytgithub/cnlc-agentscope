@@ -1,854 +1,150 @@
-# 交互式测井解释智能体详细设计与 E2E 验收基线
-
-版本：v1.0  
-目标：作为 Codex 开始实施代码前的详细设计基线  
-范围：一期可交互式 Demo，重点验证自然语言交互、参数修改、局部/全量重跑、工具过程展示、报告生成与结果追溯。
-
----
-
-## 1. 建设目标
-
-一期目标不是一次性实现全部真实测井算法，而是先建立一个完整、可验证的交互闭环：
-
-```text
-用户自然语言输入
-    ↓
-AgentScope 交互层（渐进升级现有 LoggingInterpretationDemoAgent）
-    ↓
-意图识别 / 参数提取
-    ↓
-任务级 Tool
-    ↓
-TaskService
-    ↓
-DependencyResolver
-    ↓
-ExecutionPlan
-    ↓
-复用状态装配
-    ↓
-现有业务 MainAgent → InterpretationWorkflow → W01～W10
-    ↓
-Logical Tool / Mock / Virtual / Real
-    ↓
-解释结果
-    ↓
-独立 REPORT：ReportAssembler / ReportGenerator
-```
+# 交互式测井解释智能体详细设计与 E2E 基线
 
-一期重点验证：
+## 1. 设计目标
 
-1. 用户能够通过自然语言发起一口井的解释任务；
-2. 用户能够修改采样间隔、预测模型、POR/PERM 等解释参数；
-3. 系统能够自动判断局部重跑范围；
-4. 系统能够执行全量重跑；
-5. 前端能够展示阶段状态与工具调用轨迹；
-6. 工具尚未实现时可以使用 Mock；
-7. 第三方 Heavy API 返回结果可以映射为 Virtual Tool；
-8. 每次重新解释生成新的 Execution 与报告，不覆盖历史结果；
-9. 用户可以查询当前执行进度；
-10. 为后续接入真实第三方 Prediction API / Report API 保留稳定接口。
+交互式入口允许用户首次上传、修改受支持参数、全量重跑、查询状态和读取当前或历史报告。每次业务执行有独立版本和审计轨迹；自然语言只选择任务动作，W01～W10 顺序和局部复用由确定性代码控制。
 
----
+相关权威设计：
 
-## 2. 总体设计原则
+- 数据库实体、字段、并发和 migration：[07-database-design.md](07-database-design.md)
+- 意图、参数和任务级 Tool：[08-intent-and-interaction-design.md](08-intent-and-interaction-design.md)
+- 首次上传 SSE 与 UI：[09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md)
+- 运行时持久化：[05-persistence.md](05-persistence.md)
 
-### 2.1 Agent 负责交互，不负责专业流程
+本文只说明对象职责、执行规划和 E2E 约束，不重复上述字段表和事件表。
 
-AgentScope 交互层负责：
+## 2. 核心对象
 
-- 理解自然语言；
-- 识别用户意图；
-- 提取参数；
-- 识别当前操作对象；
-- 调用任务级 Tool；
-- 查询任务状态并回复用户。
+### 2.1 InterpretationTask
 
-Agent 不负责：
+一口井的持续任务。保存井标识、当前 Execution、最近成功 Execution、当前 InputVersion，以及兼容当前视图。Task 本身不代表某次执行结果。
 
-- 自行决定四阶段执行顺序；
-- 自行判断哪些阶段失效；
-- 自行维护真实 Task 状态；
-- 直接操作底层专业 Tool；
-- 自行构造测井解释结果。
+### 2.2 InterpretationInputVersion
 
-核心原则：
+一份通过 Schema 校验的规范化输入快照。UPLOAD 和 FIXTURE 使用同一 Contract，SHA-256 用于判断内容是否改变。Worker 从 payload 重新物化临时输入，不依赖上传路径。
 
-> ReAct for Interaction，Workflow for Execution。
+### 2.3 Execution
 
-现有 `agents/main_agent.py::MainAgent` 是业务编排类，不是 AgentScope ReAct Agent；真正的 Web 外壳是 `LoggingInterpretationDemoAgent`。目标是改造该交互外壳并增加任务级命令，继续由业务 MainAgent 启动 `InterpretationWorkflow`。`InterpretationAgent` 与 `ValidationAgent` 保持 W06/W07、W09 的现有职责。
+一次首轮、局部或全量解释版本。包含输入引用、有效 Override、执行起点、成功来源、规划原因、`InterpretationState` 快照、租约、终态和 Markdown。任何重跑都新增 Execution，不覆盖历史。
 
-### 2.2 Workflow 负责确定性执行
+### 2.4 ExecutionPlan 与四阶段视图
 
-四阶段是 Execution、局部重跑、状态展示的上层视图，对现有 W01～W10 与报告链作如下映射：
+`DependencyResolver` 生成只读 `ExecutionPlan`，四个阶段依次为 DATA_DECODE、PREPROCESS、INTERPRET、REPORT，每个动作是 RUN 或 REUSE，且 REUSE 只能构成连续前缀。执行边界会重新校验 `expected_current_execution_id` 和来源输入，防止过期计划落库。
 
-```text
-DATA_DECODE
-└── W01
-PREPROCESS
-├── W02
-└── W03
-INTERPRET
-├── W04、W05、W06、W07、W08、W09
-└── W10：最终一致性 / 结构检查
-REPORT
-└── W01～W10 完成后，由 ReportAssembler / ReportGenerator 独立承担
-```
+四阶段是 **Planner View / Read Model**。当前没有独立 StageRun 表；W01～W10 的 `StepExecution` 和 `reused_steps` 才是细节事实。
 
-W01～W10 保持现有业务顺序，不新建第二套四阶段 Workflow。当前 `InterpretationWorkflow.run(...)` 总从 W01 开始；局部重跑目标是对其入口做受控的最小扩展，而不是重写处理器。
+### 2.5 ToolRun
 
-每一次实际执行由 `ExecutionPlan` 决定：
+ToolRun 已实现并由 migration `0004` 持久化。Workflow 在专业 Tool 开始时写 RUNNING，在结果或异常时写终态、输入输出快照、来源和安全错误信息。ToolRun 属于 Execution，UI 可按历史版本读取。
 
-```text
-RUN / REUSE / SKIP
-```
+### 2.6 InterpretationOverride
 
-### 2.3 Tool 属于阶段内部能力
+只包含 `sampling_interval`、`por`、`perm`、`prediction_model`。每个 Execution 保存有效快照，不改写 InputVersion。新字段必须先加入依赖影响表；缺少映射时明确报错，不能默认从某一步重跑。
 
-Tool 不等同于一级 Workflow 节点。
+### 2.7 SessionTaskBinding
 
-四阶段可聚合现有步骤和 Tool；下文列出的 Logical ToolSet 是目标候选，不代表当前 Demo 均已实现。现状清单以 `docs/06-interactive-agent-gap-analysis.md` 为准。
+Binding 已由 migration `0006` 实现。完整 `(user_id, agent_id, session_id)` 决定 Task ownership；`observed_task_ids` 只是会话 runner 的加速缓存。Backend 重启后从 PostgreSQL 恢复绑定，旧 Session 可继续查询和修改原 Task。
 
-Logical Tool 可以是：
+## 3. 规划与复用
 
-- `REAL`：真实原子 Tool；
-- `MOCK`：Demo 模拟结果；
-- `VIRTUAL`：从第三方 Heavy API 返回结果中映射出来；
-- `DERIVED`：根据已有结果通过确定性逻辑推导得到。
+最近成功来源必须同时满足：Execution 为 SUCCESS/WARNING、有报告、引用的 InputVersion 属于同一 Task 且一致。当前执行用于确定用户正在修改的有效参数，最近成功执行用于确定哪些结果可靠可复用。
 
----
+| 请求 | 规划结果 |
+| --- | --- |
+| 首次解释 | W01～W10 RUN，报告 RUN |
+| 新输入内容摘要不同 | W01～W10 RUN，报告 RUN |
+| 修改采样间隔 | W01 REUSE；W02～W10 RUN；报告 RUN |
+| 修改 POR / PERM / prediction_model | W01～W03 REUSE；W04～W10 RUN；报告 RUN |
+| 显式全量重跑 | 所有步骤 RUN，并继承当前有效参数 |
+| 参数改回可靠来源值且无需重算 | W01～W10 结果复用，只生成新报告 |
 
-## 3. 核心数据模型
+复用时，新 `InterpretationState` 显式记录 `ReusedStep` 和 source execution；不会把旧 Execution 直接改成当前版本。当前不支持任意步骤起点、SW-only 重算或暂停/恢复。
 
-目标保留 6 个核心业务对象，但不要求一期一次性全部建表或实现。Task 01 先扩展现有 Task 持久化并新增 Execution；Task 02 增加 Input Version 与 Override；StageRun、ToolRun 和 Artifact 引用按 Gap Analysis 后续 Task 渐进实施。
+## 4. 执行生命周期
 
-### 3.1 InterpretationTask
+1. 应用服务创建 `QUEUED` Execution，并原子更新 Task 当前指针。
+2. in-process dispatcher 立即返回给命令调用者并启动 Worker。
+3. Worker claim 后进入 RUNNING，持有可续租 lease。
+4. MainAgent 根据 `start_step` 和复用快照启动现有 InterpretationWorkflow。
+5. Workflow 按 W01～W10 固定顺序执行或跳过已复用前缀，写状态和 ToolRun。
+6. Workflow 终态允许时生成报告，并写本 Execution 的 Markdown。
+7. Worker 用同一租约身份写 SUCCESS、WARNING、FAILED、BLOCKED 或 REVIEW_REQUIRED。
 
-代表一口井的一次持续交互解释任务。
+ExecutionStatus、StepStatus 和 ToolRunStatus 分离。状态 API 查询 PostgreSQL 事实，不从聊天内容、LLM 回复或 dispatcher 内存推断。
 
-同一口井在一次持续交互过程中，第一次解释、修改采样间隔、修改 POR/PERM、更换预测模型、全量重跑，都属于同一个 Task。
+## 5. AgentScope 交互边界
 
-### 3.2 Execution
+`LoggingInterpretationDemoAgent` 是 AgentScope ReAct 交互 Agent，真实模式使用 qwen-plus。业务 `MainAgent` 是 Planner + Orchestrator。ReAct 只能使用五个任务级 Tool；MainAgent、InterpretationAgent、ValidationAgent 的职责和 W01～W10 不因 Web 交互改变。
 
-代表一次真正执行解释流程的运行实例。
+附件首轮由 `UploadInterpretationReply` 确定性处理；纯文本才进入 ReAct。Command 的 Pydantic Schema、Session ownership 和 Resolver 共同构成可信边界。`MockTaskShellModel._command()` 只用于无公网模型的本地联调。
 
-每次真正触发重跑，都创建一个新的 Execution：
+## 6. 后台执行与流式回复
 
-```text
-EXEC_001  第一次完整解释
-EXEC_002  修改 POR/PERM 后重跑
-EXEC_003  更换预测模型后重跑
-EXEC_004  全量重跑
-```
+任务提交和任务完成是两个时点。任务级 Tool 的 `ToolResultEnd` 可以在 QUEUED 时返回；Read API 和面板可立即取得 Task/Execution 标识。首次附件回复会继续等待本进程 Worker，并把真实 Telemetry 投影到 ThinkingBlock，随后读取本 Execution 的 Markdown 到 TextBlock，最后发送 ReplyEnd。
 
-历史 Execution 不覆盖、不修改。
+等待使用 `asyncio.shield`，SSE 断开不会取消 Worker。后台状态、租约和报告都落 PostgreSQL；重新打开页面由 Binding 和 Read API 恢复。当前没有事件日志表或 SSE replay。
 
-### 3.3 StageRun
+## 7. Read Model 与 Web
 
-目标上每个 Execution 有四阶段状态。首先按固定映射聚合现有 `InterpretationState.executions` 中的 `StepExecution`，REPORT 由现有报告链状态补足；需要持久化复用来源和阶段生命周期时再补 StageRun 记录：
+Task Read API 返回当前 Execution 和历史摘要；Execution Read API 返回指定历史版本详情。展示模型包括：
 
-```text
-DATA_DECODE
-PREPROCESS
-INTERPRET
-REPORT
-```
+- Execution sequence、生命周期、规划原因、起点和来源；
+- 四阶段 RUN/REUSE 聚合；
+- W01～W10 运行/复用状态；
+- 有效 Override 和 InputVersion；
+- ToolRun 列表和统计；
+- 本 Execution 报告。
 
-局部重跑示例：
+用户停留在历史版本时，后台轮询不会强制跳回当前。前端轮询只读 API，终态停止；查询状态的自然语言请求则经 ReAct 调用任务级 Tool。
 
-```text
-EXEC_002
-
-DATA_DECODE   REUSED
-PREPROCESS    REUSED
-INTERPRET     COMPLETED
-REPORT        COMPLETED
-```
-
-### 3.4 ToolRun
-
-后续在现有 `ToolCaller` 调用边界增加 ToolRun，记录业务工具轨迹，不把已有日志 Trace 或 AgentScope 高层 Tool 消息误作持久 ToolRun。字段包括：
-
-- tool_code；
-- stage；
-- status；
-- execution_mode；
-- input_snapshot；
-- output_snapshot；
-- source；
-- source_external_call_id；
-- started_at；
-- finished_at；
-- error。
-
-### 3.5 InterpretationOverride
-
-用户修改的解释参数采用 Override，不修改原始数据。
-
-例如：
-
-```text
-OVERRIDE_V002
-POR  = 0.16
-PERM = 0.16
-source = USER
-```
-
-### 3.6 Artifact
-
-目标上统一表示流程产生的重要文件或结果：
-
-```text
-Decoded Data Artifact
-Preprocessed Input Artifact
-Prediction Input Artifact
-Prediction Output Artifact
-Normalized Interpretation Result
-Report Artifact
-```
-
-一期先记录受控 URI/路径、类型、输入摘要及来源 Execution 等最小 Artifact 引用；上传原文件必须可恢复供重跑使用，不立即建设通用 Artifact 大表。
-
----
-
-## 4. 四阶段 Execution 视图与契约
-
-以下阶段边界不改变现有十步 Workflow。当前 W03 只回放 Mock QC 并将 `raw_data` 原样赋给 `processed_data`，尚无真正重采样；采样间隔的目标行为不得被描述为已实现。W10 仅做最终一致性/结构检查，REPORT 在其后独立运行。
-
-### 4.1 DATA_DECODE
-
-目标：把数据库数据或上传文件转换为系统可识别的标准井数据。
-
-输入：
-
-```text
-well_id
-或
-source_file
-```
-
-Logical Tool：
-
-```text
-load_well_data
-parse_well_file
-recognize_materials
-recognize_curves
-identify_curve_roles
-extract_well_metadata
-```
-
-输出：
-
-```text
-DecodedWellData
-```
-
-核心解释输入候选：
-
-```text
-DEPTH
-GR
-CAL
-AC
-DEN
-CNL
-RT
-SP
-```
-
-历史解释/派生数据：
-
-```text
-POR
-PERM
-SH
-SW
-SOG
-```
-
-默认不得直接作为新的原始预测输入，应记录为 `REFERENCE_RESULT / HISTORICAL_RESULT / DERIVED_RESULT`。
-
-可复用条件：原始文件、数据源、well_id、曲线映射、曲线角色均未变化。
-
-### 4.2 PREPROCESS
-
-目标：将 DecodedWellData 处理成可用于智能处理的稳定输入版本。
-
-输入：
-
-```text
-DecodedWellData
-+
-PreprocessConfig
-```
-
-一期重点参数：
-
-```text
-sampling_interval
-```
-
-Logical Tool：
-
-```text
-check_completeness
-check_curve_quality
-analyze_caliper
-crossplot_analysis
-standardize_curve_names
-convert_units
-resample_curves
-align_depth
-build_interpretation_input
-```
-
-输出：
-
-```text
-InterpretationInputVersion
-```
-
-至少包含：
-
-- input_version；
-- well_id；
-- sampling_interval；
-- depth_range；
-- input_curves；
-- reference_curves；
-- preprocessed_file_path；
-- source_execution_id。
-
-可复用条件：DecodedWellData、sampling_interval、预处理配置均未变化。
-
-### 4.3 INTERPRET
-
-目标：基于输入数据、用户 Override 和模型选择完成智能解释。
-
-输入：
-
-```text
-InterpretationInputVersion
-+
-InterpretationOverride
-+
-PredictionModel
-```
-
-Logical Tool：
-
-```text
-apply_interpretation_overrides
-select_prediction_model
-build_prediction_input
-invoke_prediction_model
-parse_prediction_output
-identify_lithology
-evaluate_petrophysics
-calculate_sw
-identify_fluid
-classify_layer
-merge_intervals
-multi_source_review
-```
-
-未来第三方 Heavy API 预计采用文件交互，具体协议尚待确认，因此目标上增加：
-
-```text
-PredictionInputBuilder
-```
-
-用于：
-
-```text
-InterpretationInputVersion
-+
-Override
-+
-Model Config
-        ↓
-PredictionInputArtifact
-```
-
-现有 `ModelGateway`（`MockModelGateway` / `OpenAICompatibleModelGateway`）供 qwen-plus 或 Mock LLM 使用，继续支持 W06/W07 等能力。未来专业预测的三种模型通过独立 `PredictionProvider` / `PredictionGateway` 管理：
-
-```text
-PredictionGateway
-    ├─ MODEL_A Adapter
-    ├─ MODEL_B Adapter
-    └─ MODEL_C Adapter
-```
-
-用户说“换成模型B”时，新 Execution 修改 `prediction_model=MODEL_B`；不改变 qwen-plus 的 `ModelGateway` 配置。两个 Gateway 不合并，也不重构已验收的模型访问层。
-
-第三方输出文件统一经：
-
-```text
-PredictionResultParser
-```
-
-转换为：
-
-```text
-NormalizedInterpretationResult
-```
-
-再映射为 Logical Tool 结果：
-
-```text
-identify_lithology        VIRTUAL
-evaluate_petrophysics     VIRTUAL
-calculate_sw              VIRTUAL
-identify_fluid            VIRTUAL
-classify_layer            VIRTUAL
-merge_intervals           VIRTUAL
-```
-
-如果真实 Heavy API 尚未接入，则使用 `MOCK`。
-
-最终输出：
-
-```text
-InterpretationResult
-```
-
-可复用条件：InputVersion、Override、PredictionModel、智能处理配置均未变化。
-
-### 4.4 REPORT
-
-目标：在 W10 完成后，根据 InterpretationResult 生成最终解释报告。当前由 `ReportAssembler` / `ReportGenerator` 读取 `InterpretationState` 生成 JSON / Markdown；Report API 是后续 Provider，不是现有能力。
-
-输入：
-
-```text
-InterpretationResult
-+
-ReportConfig
-```
-
-Logical Tool：
-
-```text
-prepare_report_payload
-invoke_report_api
-resolve_report_artifact
-```
-
-上述是后续外部 Report API 的候选逻辑能力；一期先包装现有报告链，并按 execution_id 保存新旧报告。
-
-输出：
-
-```text
-ReportArtifact
-```
-
-历史报告不可覆盖：
-
-```text
-EXEC_001 → REPORT_001
-EXEC_002 → REPORT_002
-EXEC_003 → REPORT_003
-```
-
----
-
-## 5. 参数影响与局部重跑规则
-
-| 变化内容 | DATA_DECODE | PREPROCESS | INTERPRET | REPORT |
-|---|---|---|---|---|
-| 原始文件/井数据 | RUN | RUN | RUN | RUN |
-| 曲线映射/角色 | RUN | RUN | RUN | RUN |
-| 采样间隔 | REUSE | RUN | RUN | RUN |
-| 预处理配置 | REUSE | RUN | RUN | RUN |
-| POR/PERM Override | REUSE | REUSE | RUN | RUN |
-| 预测模型 | REUSE | REUSE | RUN | RUN |
-| 智能解释参数 | REUSE | REUSE | RUN | RUN |
-| 报告模板 | REUSE | REUSE | REUSE | RUN |
-| 用户要求全部重跑 | RUN | RUN | RUN | RUN |
-
----
-
-## 6. ExecutionPlan
-
-计划由确定性代码生成，执行目标链路是 `ExecutionPlan → 复用状态装配 → 现有业务 MainAgent → InterpretationWorkflow.run(...) → W01～W10 → 独立 REPORT`。复用的业务结果需验证来源与输入版本；仅在现有 Workflow 入口增加受控起点能力，不新增四阶段 WorkflowRunner。W10 仍检查有效的完整十步结果。
-
-首次解释：
-
-```text
-DATA_DECODE   RUN
-PREPROCESS    RUN
-INTERPRET     RUN
-REPORT        RUN
-```
-
-修改采样间隔：
-
-```text
-DATA_DECODE   REUSE
-PREPROCESS    RUN
-INTERPRET     RUN
-REPORT        RUN
-```
-
-修改 POR/PERM：
-
-```text
-DATA_DECODE   REUSE
-PREPROCESS    REUSE
-INTERPRET     RUN
-REPORT        RUN
-```
-
-更换模型：
-
-```text
-DATA_DECODE   REUSE
-PREPROCESS    REUSE
-INTERPRET     RUN
-REPORT        RUN
-```
-
-仅重新生成报告：
-
-```text
-DATA_DECODE   REUSE
-PREPROCESS    REUSE
-INTERPRET     REUSE
-REPORT        RUN
-```
-
----
-
-## 7. 状态模型
-
-Execution Status：
-
-```text
-CREATED
-QUEUED
-RUNNING
-PAUSE_REQUESTED
-PAUSED
-COMPLETED
-FAILED
-CANCELLED
-```
-
-Stage Status：
-
-```text
-PENDING
-RUNNING
-COMPLETED
-REUSED
-SKIPPED
-FAILED
-```
-
-Tool Status：
-
-```text
-PENDING
-RUNNING
-COMPLETED
-FAILED
-SKIPPED
-```
-
-Tool Execution Mode：
-
-```text
-REAL
-MOCK
-VIRTUAL
-DERIVED
-```
-
-一期暂停语义：
-
-> 当前正在执行的 Stage 完成后停止，不继续执行下游 Stage。
-
----
-
-## 8. AgentScope 交互层与现有业务 MainAgent
-
-目标是在现有 `LoggingInterpretationDemoAgent` 上渐进增加受约束的 ReAct 交互。当前上传 Middleware 直接调用唯一 `run_well_interpretation` Tool，并未通过模型识别“修改/状态查询”意图；以下任务级 Tool 是未来能力。现有业务 MainAgent 继续启动和协调 Workflow，不需改写成 ReAct Agent。
-
-Agent Task Tools：
-
-```text
-start_interpretation
-modify_and_rerun
-full_rerun
-get_task_status
-pause_task
-resume_task
-get_report
-```
-
-AgentScope 交互层不直接暴露底层专业工具。
-
-核心接口：
-
-```text
-modify_and_rerun(
-    task_id,
-    changes,
-    rerun_scope=AUTO
-)
-```
-
-Agent 意图至少支持：
-
-```text
-START_INTERPRETATION
-MODIFY_AND_RERUN
-FULL_RERUN
-QUERY_STATUS
-PAUSE
-RESUME
-GET_REPORT
-KNOWLEDGE_QUERY
-UNSUPPORTED
-```
-
----
-
-## 9. Mock 策略
-
-一期目标：
-
-> 流程真实，结果可以 Mock。
-
-Mock 必须：
-
-1. 参数感知；
-2. 模型感知；
-3. Execution 感知；
-4. 输出符合统一 Contract；
-5. 能被 E2E 测试验证。
-
-例如：
-
-```text
-EXEC_001
-POR = default
-MODEL = A
-
-EXEC_002
-POR = 0.16
-PERM = 0.16
-MODEL = A
-
-EXEC_003
-POR = 0.16
-PERM = 0.16
-MODEL = B
-```
-
----
-
-## 10. 异步任务与事件
-
-目标单井解释可能超过 2 分钟，因此后续 Task 08 增加跨请求后台 Execution 生命周期：
-
-```text
-Agent
-   ↓
-TaskService
-   ↓
-创建 Execution
-   ↓
-Queue
-   ↓
-立即返回 execution_id
-   ↓
-Worker 执行 Workflow
-```
-
-AgentScope Web 当前已有 `/sessions/{session_id}/stream` 与流式消息，且能显示 W01～W10 的请求期进度。一期优先把 Execution、Stage、Tool 状态投影到现有 AgentScope SSE/Stream，不预设第二套 SSE。后台执行的持久状态、断线查询/回放由后续 Task 08 处理。目标事件：
-
-```text
-INTENT_RECOGNIZED
-COMMAND_ACCEPTED
-EXECUTION_CREATED
-STAGE_REUSED
-STAGE_STARTED
-STAGE_COMPLETED
-STAGE_FAILED
-TOOL_STARTED
-TOOL_COMPLETED
-TOOL_FAILED
-REPORT_READY
-EXECUTION_COMPLETED
-EXECUTION_FAILED
-```
-
----
-
-## 11. 核心 E2E 验收场景
+## 8. E2E 验收基线
 
 ### CASE-01 首次解释
 
-用户：
-
-```text
-帮我解释一下这口井。
-```
-
-预期：
-
-```text
-DATA_DECODE   RUN
-PREPROCESS    RUN
-INTERPRET     RUN
-REPORT        RUN
-```
-
-产物：
-
-```text
-EXEC_001
-INPUT_V001
-RESULT_V001
-REPORT_001
-```
+- 上传一份合法 JSON 并输入解释请求。
+- 创建 Task、InputVersion、Execution #1 和 SessionTaskBinding。
+- ToolResultEnd 先提供 QUEUED 标识；Thinking 持续展示真实 W01～W10、六个 Tool 和报告事件。
+- Execution 达到 SUCCESS 或 WARNING 后，TextBlock 返回 Execution #1 的原始 Markdown，ReplyEnd 最后发送。
 
 ### CASE-02 修改采样间隔
 
-用户：
+- ReAct 调用 `modify_well_interpretation`，Pydantic 验证正浮点值。
+- 创建新 Execution；W01 REUSED，从 W02 继续；历史报告不变。
 
-```text
-采样间隔改成0.1重新解释。
-```
+### CASE-03 修改 POR / PERM
 
-预期：
+- 百分数转成 0～1 比例；含义不清的裸值不猜测。
+- 创建新 Execution；W01～W03 REUSED，从 W04 继续；新报告固化新参数。
 
-```text
-DATA_DECODE   REUSED
-PREPROCESS    RUN
-INTERPRET     RUN
-REPORT        RUN
-```
+### CASE-04 更换预测模型
 
-### CASE-03 更换预测模型
-
-用户：
-
-```text
-换成模型B重新解释。
-```
-
-预期：
-
-```text
-DATA_DECODE   REUSED
-PREPROCESS    REUSED
-INTERPRET     RUN
-REPORT        RUN
-```
-
-### CASE-04 修改 POR/PERM
-
-用户：
-
-```text
-把孔隙度、渗透率改成0.16，重新解释一下。
-```
-
-预期：
-
-```text
-intent = MODIFY_AND_RERUN
-
-Override:
-POR  = 0.16
-PERM = 0.16
-
-DATA_DECODE   REUSED
-PREPROCESS    REUSED
-INTERPRET     RUN
-REPORT        RUN
-```
-
-必须验证：
-
-```text
-新建 Execution
-Override 与新 Execution 绑定
-Mock Prediction 收到 POR=0.16 / PERM=0.16
-生成新的 ReportArtifact
-历史 Execution/Report 保留
-```
+- 修改的是专业 `prediction_model`，不是 qwen-plus。
+- 当前 Mock Provider 可记录该参数并从 W04 重跑；Heavy API 仍未接入。
 
 ### CASE-05 全量重跑
 
-用户：
+- 创建新 Execution，从 W01 运行，继承当前有效 Override。
+- 所有步骤重新执行，历史版本可查询。
 
-```text
-之前结果不用了，全部重新跑一次。
-```
+### CASE-06 状态与历史报告
 
-预期四阶段全部 RUN。
+- 状态命令返回当前持久 Execution、步骤和 Tool 统计。
+- 报告命令支持 CURRENT、PREVIOUS、LATEST_SUCCESSFUL 或经归属验证的 execution_id。
 
-### CASE-06 查询状态
+### CASE-07 Backend 重启
 
-智能处理期间用户：
+- 新进程的 runner 缓存为空。
+- 旧 Session 通过 SessionTaskBinding 恢复 Task ownership。
+- Read API 显示历史 Execution、ToolRun 和报告；后续修改可创建连续的新 Execution。
 
-```text
-现在处理到哪里了？
-```
+### CASE-08 断开首次 SSE
 
-预期 AgentScope 交互层调用 `get_task_status`，从业务 Repository 读取真实状态后回答，禁止根据聊天上下文猜测。
+- 客户端取得 QUEUED 后断开。
+- Worker 继续运行并写终态，重新打开页面通过 Read API 看到最终事实。
+- 不要求补播已错过的 Thinking delta。
 
----
+## 9. Mock 与真实能力边界
 
-## 12. Codex 实施顺序
+Mock Tool 必须实现正式 Contract、Schema、状态和 ToolRun，报告必须明确 Demo/Mock。真实模型意图已可用 qwen-plus，但专业 Heavy Prediction API、LAS/GDSX 正式接入、真实 Report API、独立 Artifact、曲线可视化、步骤级依赖图和 SW-only 重跑仍是 Future。
 
-实施编号、文件边界、验收和风险以 `docs/06-interactive-agent-gap-analysis.md` 第 8 节为准，不沿用本设计文档原先假定的“新建四阶段 WorkflowRunner”顺序：
-
-| Task | 渐进实施主题 |
-|---|---|
-| 01 | 扩展现有 Task 持久化并新增版本化 Execution，保持现有执行入口不变 |
-| 02 | 可恢复的输入版本与 InterpretationOverride 契约 |
-| 03 | DependencyResolver 与 ExecutionPlan |
-| 04 | 复用状态装配及现有 InterpretationWorkflow.run(...) 的受控局部重跑 |
-| 05 | 参数感知 Mock 与预处理输入版本验证 |
-| 06 | Execution 报告绑定与 ToolRun 记录 |
-| 07 | 任务级命令及现有 AgentScope 交互外壳升级 |
-| 08 | 后台 Execution、真实状态与现有 Stream 事件复用 |
-| 09 | 增量 Web 展示及 CASE-01～CASE-06 回归验收 |
-| 10 | 真实 Heavy Prediction API 适配，协议确认后实施 |
-| 11 | 真实 Report API 适配，协议确认后实施 |
-
----
-
-## 13. 一期明确暂不做
-
-- 通用 DAG/BPM 平台；
-- 多 Agent 协作；
-- LLM 自主规划测井专业流程；
-- Heavy API 计算过程断点续算；
-- 复杂人工回滚；
-- 精细百分比进度；
-- 所有 Logical Tool 的真实原子算法；
-- Reflexion；
-- 通用工作流编辑器。
-
----
-
-## 14. 当前待外部确认项
-
-以下内容不阻塞 Codex 开工，但接真实 API 前必须补齐：
-
-1. Heavy API 输入文件格式；
-2. POR/PERM 等 Override 在输入文件中的具体写入方式；
-3. 三种预测模型的选择方式；
-4. Heavy API 返回文件格式；
-5. 结果文件中岩性、物性、流体、层类型、层段字段映射；
-6. Report API 输入协议；
-7. Report API 返回报告路径/文件的方式；
-8. 外部 API 是否支持 job_id、状态查询、cancel。
-
-本文定位为**详细契约、交互规则与 E2E 目标**；`docs/04-interactive-agent-architecture.md` 描述目标架构与总体原则，`docs/06-interactive-agent-gap-analysis.md` 记录实际代码现状、差距和实施顺序。当前是否已实现某能力，以 06 的代码扫描事实为准。
+不得用 LLM 补造孔隙度、渗透率、Sw、有效厚度阈值或专业公式。正式井数据 Schema 尚未冻结：Pending final well-data schema。

@@ -1,0 +1,103 @@
+# 测井解释智能体意图识别与交互设计
+
+本文描述当前已实现的自然语言入口。系统没有独立 `IntentClassifier`。真实模式由 AgentScope ReAct Agent 使用 `qwen-plus`，结合固定系统提示、五个任务级 Tool 的描述和 JSON Schema 选择动作；业务参数随后由 Pydantic Command 校验，局部重跑由确定性的 `DependencyResolver` 决定。
+
+## 1. 四层边界
+
+```mermaid
+flowchart TD
+    R[请求路由] -->|含附件| U[UploadInterpretationReply]
+    R -->|纯文本| I[ReAct 语义意图]
+    U --> A1[run_well_interpretation]
+    I --> A[五个 Task-level Tools]
+    A --> C[Pydantic Command]
+    C --> D[TaskCommands / Application Service]
+    D --> P[DependencyResolver / ExecutionPlan]
+    P --> W[MainAgent / W01-W10 Workflow]
+```
+
+四层分别是：
+
+1. **Request Route**：根据当前轮是否有附件做确定性分流。
+2. **Semantic Intent**：纯文本由 ReAct 理解用户想启动、修改、重跑、查状态还是读报告。
+3. **Action**：只允许调用注册的五个任务级 Tool。
+4. **Validation and Planning**：Pydantic、Command 和 DependencyResolver 校验参数、归属、并发和依赖；LLM 不能指定 Workflow 起点。
+
+## 2. 附件路由
+
+附件请求不发送二进制给 qwen-plus。`UploadInterpretationReply` 调用 `parse_upload`，限制一份 JSON、大小和编码，校验并规范化为 `MockFixture`，再直接调用 `run_well_interpretation`。上传失败返回确定性错误；成功后创建 InputVersion 和 `QUEUED` Execution，并进入首次解释流式回复。
+
+这条路由保证附件内容不会膨胀模型上下文，也避免模型从二进制中猜测井号。附件仍由 AgentScope 消息存储保存，但专业执行只读取已校验的 InputVersion。
+
+## 3. 纯文本 ReAct 路由
+
+没有附件时，`LoggingInterpretationDemoAgent` 是 AgentScope ReAct Agent。真实模式固定使用 `qwen-plus`，允许模型读取对话语义并按 Tool 描述与 JSON Schema 形成调用。Tool 结果中的 `task_id` / `execution_id` 才是可信标识；模型输出本身不构成任务归属或执行事实。
+
+| Intent | Task-level Tool | Required Context | 参数 | 只读 | 创建新 Execution |
+| --- | --- | --- | --- | --- | --- |
+| START | `run_well_interpretation` | 已校验上传或 fixture | `well_id` | 否 | 是，同时创建 Task / InputVersion |
+| MODIFY | `modify_well_interpretation` | 当前会话拥有的 Task | `task_id`、变化字段 | 否 | 是 |
+| FULL_RERUN | `rerun_well_interpretation` | 当前会话拥有的 Task | `task_id` | 否 | 是，从 W01 开始 |
+| STATUS | `get_interpretation_status` | 当前会话拥有的 Task | `task_id` | 是 | 否 |
+| GET_REPORT | `get_interpretation_report` | 当前会话拥有的 Task | `task_id`、selector 或可信 execution_id | 是 | 否 |
+
+报告 selector 支持 `CURRENT`、`PREVIOUS`、`LATEST_SUCCESSFUL`。显式 `execution_id` 仍需验证属于该 Task。
+
+### 3.1 意图矩阵
+
+| 用户表达 | Intent | Tool | 结果 |
+| --- | --- | --- | --- |
+| 帮我解释这口井 + 文件 | START | `run_well_interpretation` | Execution #1 |
+| 把孔隙度改成 0.16 | MODIFY | `modify_well_interpretation` | 新 Execution |
+| 把 POR/PERM 改成 0.16 | MODIFY | `modify_well_interpretation` | 新 Execution |
+| 全部重新跑 | FULL_RERUN | `rerun_well_interpretation` | 全流程新 Execution |
+| 现在处理到哪里了 | STATUS | `get_interpretation_status` | 读取真实状态 |
+| 给我上一版报告 | GET_REPORT | `get_interpretation_report(PREVIOUS)` | 历史报告 |
+| 给我当前报告 | GET_REPORT | `get_interpretation_report(CURRENT)` | 当前报告 |
+| 最近成功报告 | GET_REPORT | `get_interpretation_report(LATEST_SUCCESSFUL)` | 最近成功版本 |
+| 帮我看看天气 | OUT_OF_DOMAIN | none | 不调用测井 Tool |
+
+## 4. 参数理解和校验
+
+当前 `InterpretationOverride` 只支持：
+
+- `sampling_interval`：正浮点数；
+- `por`：0～1；
+- `perm`：非负数，正式单位和专业规则待确认；
+- `prediction_model`：受限标识字符串。
+
+自然语言中的百分数必须先转成比例，例如“孔隙度 16%”进入 Command 时是 `por=0.16`。孤立的“0.16”若无法确定指 POR、PERM 还是采样间隔，模型应请求澄清，不能猜测。空修改、类型错误、越界值和没有实际变化都会由确定性校验拒绝。
+
+当前不支持并不得补造以下业务规则：
+
+- `Rw`、Archie `m/n` 等尚未进入 Override 契约的参数；
+- 用户直接设置或估算 `Sw`；
+- 只执行 W06 或 SW-only 的细粒度重跑；
+- 用户或 LLM 直接指定 `start_step`；
+- 未确认的阈值、单位或公式。
+
+## 5. 标识、归属和越界请求
+
+首次 ToolResult 返回的 `task_id` 和 `execution_id` 会进入会话上下文。后续动作只能使用受信 ToolResult 中的 ID，并由服务端以 `(user_id, agent_id, session_id)` 查询 SessionTaskBinding。内存集合 `observed_task_ids` 只加速命中，不能授权。错误 user、agent、session 或 Task 统一按不存在处理。
+
+天气、股票、写故事、通用代码等与单井常规测井解释和任务操作无关的请求不调用业务 Tool，由 Agent 返回受限领域说明。ReAct 不能直接调用 `identify_lithology`、`calculate_sw` 等专业底层 Tool，也不能修改 W01～W10 顺序。
+
+## 6. MockTaskShellModel 与真实模型
+
+`MockTaskShellModel._command()` 是没有公网模型凭证时使用的本地确定性联调桩，只覆盖测试所需的少量中文命令模式。它不代表生产意图识别架构，也不是独立 IntentClassifier。
+
+真实路径是 `qwen-plus` ReAct：系统提示约束领域和 Tool 边界，Tool description 告诉模型动作语义，JSON Schema 约束参数形状，Pydantic 和应用层再次校验。专业 Workflow 内的模型访问仍走统一 ModelGateway，和外层任务意图模型承担不同职责。
+
+## 7. Future 边界
+
+以下概念用于未来更细的能力规划，当前没有实现：
+
+- 统一 `OperationRequest`；
+- `CapabilityRegistry`；
+- 细粒度 `DependencyGraph`；
+- 可持久化或可解释的独立 `ExecutionPlan` 实体；当前只有应用层确定性计划对象；
+- SW-only 等步骤级重算。
+
+未来若增加 `RECALCULATE_SW`、`REIDENTIFY_LITHOLOGY`、`REGENERATE_REPORT`、`CHANGE_PREDICTION_MODEL` 或 `REINTERPRET_INTERVAL`，应先形成结构化 `OperationRequest(intent, target, parameters, scope, task_id)`，再进入 CapabilityRegistry、DependencyGraph 和 ExecutionPlan，避免无限扩展 System Prompt。
+
+扩展这些能力时仍应保持“ReAct 理解意图、Schema 校验参数、Resolver 决定依赖、Workflow 控制执行”的边界。
