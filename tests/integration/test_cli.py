@@ -68,3 +68,55 @@ def test_history_output_cannot_escape_output_directory(tmp_path, monkeypatch):
     assert cli.main() == 1
     assert not (tmp_path.parent / "outside").exists()
     assert len(list(tmp_path.glob("*/result.json"))) == 1
+
+
+def test_cli_execution_id_reads_exact_historical_version_without_running(tmp_path, monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from cnlc_agent import main as cli
+    from cnlc_agent.domain.enums import StepStatus
+    from cnlc_agent.domain.execution import Execution
+    from cnlc_agent.domain.models import TaskRequest, utc_now
+    from cnlc_agent.domain.state import InterpretationState
+
+    state = InterpretationState(task=TaskRequest(task_id="task-cli", well_id="WELL_MOCK_001"))
+    state.status = StepStatus.SUCCESS
+    execution = Execution(
+        execution_id=state.workflow_execution_id,
+        task_id=state.task.task_id,
+        sequence=1,
+        status=state.status,
+        finished_at=utc_now(),
+        state_snapshot=state,
+        markdown="old report",
+        trigger_type="INITIAL",
+    )
+    repository = AsyncMock()
+    repository.get_execution.return_value = execution
+    app = SimpleNamespace(
+        repository=repository,
+        get_execution_report=AsyncMock(return_value="old report"),
+        run=AsyncMock(),
+    )
+
+    @asynccontextmanager
+    async def runtime(settings):
+        yield app
+
+    monkeypatch.setattr(cli, "application_runtime", runtime)
+    monkeypatch.setattr(
+        sys, "argv", ["cnlc-agent", "--task-id", "task-cli", "--execution-id",
+                      state.workflow_execution_id, "--output-dir", str(tmp_path)]
+    )
+    assert cli.main() == 0
+    app.run.assert_not_called()
+    repository.get.assert_not_called()
+    repository.get_report.assert_not_called()
+    app.get_execution_report.assert_awaited_once_with("task-cli", state.workflow_execution_id)
+    output = tmp_path / f"task-cli-{state.workflow_execution_id}"
+    assert (output / "report.md").read_text() == "old report"
+    assert json.loads((output / "result.json").read_text())["workflow_execution_id"] == (
+        state.workflow_execution_id
+    )

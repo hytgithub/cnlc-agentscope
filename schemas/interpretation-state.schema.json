@@ -2,7 +2,7 @@
   "$defs": {
     "DataRequirements": {
       "additionalProperties": false,
-      "description": "A provisional input contract, not a professional interpretation standard.",
+      "description": "临时输入资料契约，不代表正式专业解释标准。",
       "properties": {
         "recommended_sources": {
           "items": {
@@ -28,6 +28,7 @@
     },
     "ErrorDetail": {
       "additionalProperties": false,
+      "description": "可持久化、可展示的结构化错误。",
       "properties": {
         "code": {
           "title": "Code",
@@ -61,9 +62,73 @@
       "title": "ErrorDetail",
       "type": "object"
     },
+    "InterpretationOverride": {
+      "additionalProperties": false,
+      "description": "严格校验的解释条件；PERM 正式单位与专业规则尚待确认。",
+      "properties": {
+        "perm": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Perm"
+        },
+        "por": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Por"
+        },
+        "prediction_model": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prediction Model"
+        },
+        "sampling_interval": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sampling Interval"
+        }
+      },
+      "title": "InterpretationOverride",
+      "type": "object"
+    },
     "JsonValue": {},
     "LogCurve": {
       "additionalProperties": false,
+      "description": "一条测井曲线及其单位和逐深度采样值。",
       "properties": {
         "unit": {
           "minLength": 1,
@@ -94,6 +159,7 @@
     },
     "MissingData": {
       "additionalProperties": false,
+      "description": "缺失资料及其重要级别和影响步骤。",
       "properties": {
         "affected_step": {
           "$ref": "#/$defs/StepId"
@@ -122,6 +188,7 @@
     },
     "RawData": {
       "additionalProperties": false,
+      "description": "统一深度轴上的原始测井曲线和辅助资料。",
       "properties": {
         "auxiliary": {
           "additionalProperties": {
@@ -171,8 +238,45 @@
       "title": "RawData",
       "type": "object"
     },
+    "ReusedStep": {
+      "additionalProperties": false,
+      "description": "有效前置步骤的来源引用；不冒充本 Execution 的真实步骤执行。",
+      "properties": {
+        "source_execution_id": {
+          "minLength": 1,
+          "title": "Source Execution Id",
+          "type": "string"
+        },
+        "source_status": {
+          "enum": [
+            "SUCCESS",
+            "WARNING"
+          ],
+          "title": "Source Status",
+          "type": "string"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "step_id",
+        "source_execution_id",
+        "source_status"
+      ],
+      "title": "ReusedStep",
+      "type": "object"
+    },
     "StageResult": {
       "additionalProperties": false,
+      "description": "各专业阶段共享的结构化结果外壳。",
       "properties": {
         "conflicts": {
           "items": {
@@ -245,6 +349,7 @@
     },
     "StateChange": {
       "additionalProperties": false,
+      "description": "一次可审计状态变更，记录修改者、原因及前后差异。",
       "properties": {
         "actor": {
           "title": "Actor",
@@ -289,6 +394,7 @@
     },
     "StepExecution": {
       "additionalProperties": false,
+      "description": "节点单次执行记录，为后续 Retry/Rollback 保留独立标识。",
       "properties": {
         "ended_at": {
           "anyOf": [
@@ -346,6 +452,7 @@
       "type": "object"
     },
     "StepId": {
+      "description": "固定业务流程 W01-W10 的步骤标识。",
       "enum": [
         "W01",
         "W02",
@@ -362,6 +469,7 @@
       "type": "string"
     },
     "StepStatus": {
+      "description": "Workflow 节点和任务统一使用的状态集合。",
       "enum": [
         "PENDING",
         "RUNNING",
@@ -377,6 +485,7 @@
     },
     "TaskRequest": {
       "additionalProperties": false,
+      "description": "启动一次单井解释任务所需的最小请求。",
       "properties": {
         "instruction": {
           "default": "执行单井测井解释骨架演示",
@@ -403,6 +512,7 @@
     },
     "ValidationResult": {
       "additionalProperties": false,
+      "description": "W09 多源验证结果，可提出回退目标但不能直接改写解释结论。",
       "properties": {
         "conflicts": {
           "items": {
@@ -494,6 +604,7 @@
       "type": "object"
     },
     "ValidationStatus": {
+      "description": "多源资料综合验证结论。",
       "enum": [
         "CONSISTENT",
         "PARTIAL_CONFLICT",
@@ -505,6 +616,7 @@
     },
     "Well": {
       "additionalProperties": false,
+      "description": "井基础信息；未冻结字段放入 extensions，避免提前扩张 Schema。",
       "properties": {
         "extensions": {
           "additionalProperties": {
@@ -533,6 +645,7 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "单井解释任务唯一可信状态，汇总 W01-W10 的全部阶段结果。",
   "properties": {
     "changes": {
       "items": {
@@ -575,6 +688,9 @@
       ],
       "default": null
     },
+    "effective_override": {
+      "$ref": "#/$defs/InterpretationOverride"
+    },
     "errors": {
       "items": {
         "$ref": "#/$defs/ErrorDetail"
@@ -610,6 +726,19 @@
         }
       ],
       "default": null
+    },
+    "input_version_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Version Id"
     },
     "interval_result": {
       "anyOf": [
@@ -652,8 +781,11 @@
       "type": "array"
     },
     "mode": {
-      "const": "mock",
       "default": "mock",
+      "enum": [
+        "mock",
+        "demo"
+      ],
       "title": "Mode",
       "type": "string"
     },
@@ -700,6 +832,13 @@
         }
       ],
       "default": null
+    },
+    "reused_steps": {
+      "items": {
+        "$ref": "#/$defs/ReusedStep"
+      },
+      "title": "Reused Steps",
+      "type": "array"
     },
     "review_required": {
       "default": false,

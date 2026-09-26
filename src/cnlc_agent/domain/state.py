@@ -1,4 +1,4 @@
-"""Workflow-owned state; independent of AgentScope, SQLAlchemy and Redis."""
+"""应用层装配、Workflow 推进的单次执行状态，与框架和存储实现解耦。"""
 
 from datetime import datetime
 from typing import Literal
@@ -20,10 +20,11 @@ from cnlc_agent.domain.models import (
     Well,
     utc_now,
 )
+from cnlc_agent.domain.override import ExecutionContext, InterpretationOverride
 
 
 class StatePatch(Contract):
-    """Only these fields may be supplied by a workflow node."""
+    """Workflow 节点只能通过这些字段返回状态变更，不能原地修改全局状态。"""
 
     well: Well | None = None
     raw_data: RawData | None = None
@@ -40,6 +41,8 @@ class StatePatch(Contract):
 
 
 class StepOutcome(Contract):
+    """单个节点执行后的终态、状态补丁及诊断信息。"""
+
     status: StepStatus = StepStatus.SUCCESS
     patch: StatePatch = Field(default_factory=StatePatch)
     missing_data: list[MissingData] = Field(default_factory=list)
@@ -49,6 +52,8 @@ class StepOutcome(Contract):
 
 
 class StateChange(Contract):
+    """一次可审计状态变更，记录修改者、原因及前后差异。"""
+
     actor: str
     step_id: StepId
     timestamp: datetime = Field(default_factory=utc_now)
@@ -58,6 +63,8 @@ class StateChange(Contract):
 
 
 class StepExecution(Contract):
+    """节点单次执行记录，为后续 Retry/Rollback 保留独立标识。"""
+
     step_execution_id: str = Field(default_factory=lambda: str(uuid4()))
     step_id: StepId
     status: StepStatus = StepStatus.RUNNING
@@ -68,16 +75,30 @@ class StepExecution(Contract):
     retry_count: int = 0
 
 
+class ReusedStep(Contract):
+    """有效前置步骤的来源引用；不冒充本 Execution 的真实步骤执行。"""
+
+    step_id: StepId
+    source_execution_id: str = Field(min_length=1)
+    source_status: Literal[StepStatus.SUCCESS, StepStatus.WARNING]
+    warnings: list[str] = Field(default_factory=list)
+
+
 class InterpretationState(StatePatch):
+    """单井解释任务唯一可信状态，汇总 W01-W10 的全部阶段结果。"""
+
     schema_version: Literal["0.1-skeleton"] = "0.1-skeleton"
-    mode: Literal["mock"] = "mock"
+    mode: Literal["mock", "demo"] = "mock"
     task: TaskRequest
     workflow_execution_id: str = Field(default_factory=lambda: str(uuid4()))
     trace_id: str = Field(default_factory=lambda: uuid4().hex)
+    input_version_id: str | None = Field(default=None, min_length=1)
+    effective_override: InterpretationOverride = Field(default_factory=InterpretationOverride)
     status: StepStatus = StepStatus.PENDING
     current_step: StepId | None = None
     completed_steps: list[StepId] = Field(default_factory=list)
     executions: list[StepExecution] = Field(default_factory=list)
+    reused_steps: list[ReusedStep] = Field(default_factory=list)
     changes: list[StateChange] = Field(default_factory=list)
     missing_data: list[MissingData] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -86,3 +107,27 @@ class InterpretationState(StatePatch):
     rollback_count: int = 0
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    def execution_context(self) -> ExecutionContext:
+        """从本次状态构造参数副本，不携带曲线、指令、报告或执行历史。"""
+
+        return ExecutionContext(
+            execution_id=self.workflow_execution_id,
+            input_version_id=self.input_version_id,
+            effective_override=self.effective_override.model_copy(deep=True),
+        )
+
+    def completed_status(self) -> StepStatus:
+        """完整有效链的终态同时考虑本次执行与复用步骤的告警。"""
+
+        if self.completed_steps != list(StepId):
+            raise ValueError("only a complete business chain has a completion status")
+        warned = (
+            bool(self.warnings)
+            or any(item.status == StepStatus.WARNING for item in self.executions)
+            or any(
+                item.source_status == StepStatus.WARNING or item.warnings
+                for item in self.reused_steps
+            )
+        )
+        return StepStatus.WARNING if warned else StepStatus.SUCCESS

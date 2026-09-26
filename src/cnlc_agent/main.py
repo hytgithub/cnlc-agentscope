@@ -1,4 +1,4 @@
-"""Mock business runner with explicit memory or PostgreSQL/Redis persistence."""
+"""命令行业务入口，可显式选择内存或 PostgreSQL/Redis 持久化。"""
 
 import argparse
 import asyncio
@@ -17,15 +17,21 @@ from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import ApplicationError
 from cnlc_agent.domain.models import TaskRequest
 from cnlc_agent.domain.state import InterpretationState
+from cnlc_agent.reports.assembler import ReportAssembler
 
 
 def main() -> int:
+    """解析命令行参数，执行新任务或查询历史任务，并导出结果文件。"""
+
     parser = argparse.ArgumentParser(description="测井解释 Mock 业务运行与历史查询")
     parser.add_argument("--well-id", default="WELL_MOCK_001")
     parser.add_argument("--task-id", help="查询历史任务及报告，不重新执行")
+    parser.add_argument("--execution-id", help="与 --task-id 同用，读取指定历史执行版本")
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
+    if args.execution_id and not args.task_id:
+        parser.error("--execution-id requires --task-id")
     try:
         overrides = {}
         if args.data_dir is not None:
@@ -35,7 +41,7 @@ def main() -> int:
         settings = AppSettings(**overrides)
         request = TaskRequest(well_id=args.well_id)
     except SchemaError as exc:
-        # Field locations are useful; raw configuration values may be secrets.
+        # 只输出字段路径；原始配置值可能包含连接串、密钥或井资料。
         fields = [".".join(str(part) for part in item["loc"]) for item in exc.errors()]
         print(f"配置或输入无效：{', '.join(fields)}", file=sys.stderr)
         return 2
@@ -43,8 +49,17 @@ def main() -> int:
     try:
 
         async def execute() -> tuple[InterpretationState, str]:
+            """在统一资源上下文中执行新任务或读取已持久化历史。"""
+
             async with application_runtime(settings) as app:
                 if args.task_id:
+                    if args.execution_id:
+                        execution = await app.repository.get_execution(args.execution_id)
+                        historical_report = await app.get_execution_report(
+                            args.task_id, args.execution_id
+                        )
+                        assert execution is not None
+                        return execution.state_snapshot, historical_report
                     stored = await app.repository.get(args.task_id)
                     if stored is None:
                         raise ApplicationError("TASK_NOT_FOUND", "找不到历史任务")
@@ -55,14 +70,19 @@ def main() -> int:
                 return await app.run(request)
 
         state, markdown = asyncio.run(execute())
+        # 非安全任务标识使用散列目录名，避免路径穿越和非法文件名。
+        raw_output_name = (
+            f"{state.task.task_id}-{state.workflow_execution_id}"
+            if args.execution_id else state.task.task_id
+        )
         output_name = (
-            state.task.task_id
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", state.task.task_id)
-            else sha256(state.task.task_id.encode()).hexdigest()
+            raw_output_name
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", raw_output_name)
+            else sha256(raw_output_name.encode()).hexdigest()
         )
         output = settings.output_dir / output_name
         output.mkdir(parents=True, exist_ok=False)
-        (output / "result.json").write_text(state.model_dump_json(indent=2), encoding="utf-8")
+        (output / "result.json").write_text(ReportAssembler().to_json(state), encoding="utf-8")
         (output / "report.md").write_text(markdown, encoding="utf-8")
     except (ApplicationError, OSError, SchemaError) as exc:
         code = exc.code if isinstance(exc, ApplicationError) else type(exc).__name__

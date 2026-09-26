@@ -6,7 +6,9 @@ from pydantic import ValidationError
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import DataError, ToolError
+from cnlc_agent.domain.inputs import InterpretationInputVersion, fixture_digest
 from cnlc_agent.domain.models import MockFixture, TaskRequest
+from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.infrastructure.mock import InMemoryStateStore, MockWellRepository
 from cnlc_agent.infrastructure.telemetry import LoggingTelemetry
@@ -23,6 +25,56 @@ def test_schema_rejects_misaligned_curves_and_non_mock_fixture(fixture_data):
         MockFixture.model_validate(fixture_data)
 
 
+def test_normalized_fixture_digest_is_stable(fixture_data):
+    fixture = MockFixture.model_validate(fixture_data)
+    reordered = {key: fixture_data[key] for key in reversed(fixture_data)}
+    assert fixture_digest(fixture) == fixture_digest(MockFixture.model_validate(reordered))
+    assert len(fixture_digest(fixture)) == 64
+    with pytest.raises(ValidationError, match="digest"):
+        InterpretationInputVersion(
+            task_id="task-1",
+            well_id=fixture.well.well_id,
+            sequence=1,
+            source_type="UPLOAD",
+            content_sha256="0" * 64,
+            payload=fixture,
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"sampling_interval": 0},
+        {"sampling_interval": -0.1},
+        {"por": -0.01},
+        {"por": 1.01},
+        {"por": 16},
+        {"perm": -1},
+        {"prediction_model": ""},
+        {"prediction_model": "  "},
+        {"prediction_model": "x" * 65},
+        {"unknown": 1},
+    ],
+)
+def test_interpretation_override_rejects_invalid_values(changes):
+    with pytest.raises(ValidationError):
+        InterpretationOverride.model_validate(changes)
+
+
+def test_interpretation_override_preserves_all_supported_values():
+    override = InterpretationOverride(
+        sampling_interval=0.1, por=0.16, perm=0.16, prediction_model="prediction-v2"
+    )
+    assert override.has_changes()
+    assert override.model_dump(exclude_none=True) == {
+        "sampling_interval": 0.1,
+        "por": 0.16,
+        "perm": 0.16,
+        "prediction_model": "prediction-v2",
+    }
+    assert not InterpretationOverride().has_changes()
+
+
 @pytest.mark.parametrize(
     "depths", [[2001, 2000, 2002], [2000, 2000, 2001], [2000, float("nan"), 2001]]
 )
@@ -37,6 +89,7 @@ def test_configuration_and_secret_repr(monkeypatch):
     assert AppSettings(_env_file=None).tool_timeout_seconds == 3.5
     with pytest.raises(ValidationError):
         AppSettings(mode="real", _env_file=None)
+    assert AppSettings(mode="demo", _env_file=None).mode == "demo"
     with pytest.raises(ValidationError):
         AppSettings(tool_timeout_seconds=0, _env_file=None)
     settings = ConnectionSettings(model_api_key="test-secret-value", _env_file=None)
@@ -52,6 +105,20 @@ async def test_store_keeps_isolated_snapshots():
     assert saved.warnings == []
     saved.warnings.append("read mutation")
     assert (await store.get(state.task.task_id)).warnings == []
+
+
+def test_execution_context_defaults_validation_and_isolation():
+    first = InterpretationState(task=TaskRequest(well_id="WELL_MOCK_001"))
+    second = InterpretationState(task=TaskRequest(well_id="WELL_MOCK_001"))
+    assert first.effective_override == InterpretationOverride()
+    first.effective_override.por = 0.16
+    context = first.execution_context()
+    context.effective_override.por = 0.2
+    assert first.effective_override.por == 0.16
+    assert second.effective_override.por is None
+    assert context.execution_id == first.workflow_execution_id
+    with pytest.raises(ValidationError):
+        InterpretationState.model_validate({"task": first.task, "effective_override": {"por": 2}})
 
 
 async def test_loader_rejects_path_traversal(data_dir):

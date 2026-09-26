@@ -4,6 +4,7 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "各专业阶段共享的结构化结果外壳。",
   "properties": {
     "conflicts": {
       "items": {

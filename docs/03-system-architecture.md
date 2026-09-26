@@ -1,251 +1,211 @@
-# 测井解释 Agent V0.1 总体技术架构
+# 测井解释智能体总体技术架构（Current Design）
 
 ## 1. 文档目的
 
-本文档定义测井解释 Agent V0.1 的总体技术架构。
+本文档描述当前已经实现并作为后续开发基线的总体技术架构。
 
-本文档建立在以下文档基础上：
+当前行为以以下事实来源为准：
 
-```text
-docs/00-project-context.md
-docs/01-business-workflow.md
-docs/02-agent-tool-boundary.md
-docs/mvp-acceptance.md
-AGENTS.md
-```
+1. 当前分支代码；
+2. Alembic migration；
+3. 本文档及 `docs/README.md` 标记为 **Current Design** 的设计文档。
 
-目标是将已经确定的：
+详细设计分别见：
 
-- 业务 Workflow；
-- Agent 职责；
-- Tool 边界；
-- 状态管理；
-- 数据持久化；
-- 模型调用；
-- Trace；
-- Web 交互；
+- [01-business-workflow.md](01-business-workflow.md)：W01～W10 业务主线；
+- [02-agent-tool-boundary.md](02-agent-tool-boundary.md)：Agent、Workflow、Tool 与专业算法边界；
+- [04-interactive-agent-architecture.md](04-interactive-agent-architecture.md)：交互式 Agent 总体架构；
+- [05-interactive-agent-detailed-design.md](05-interactive-agent-detailed-design.md)：Task、Execution、规划与 E2E 设计；
+- [05-persistence.md](05-persistence.md)：PostgreSQL / Redis 运行时持久化；
+- [07-database-design.md](07-database-design.md)：数据库实体、版本和并发控制；
+- [08-intent-and-interaction-design.md](08-intent-and-interaction-design.md)：意图识别与任务级 Tool；
+- [09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md)：解释过程 SSE 与前端职责。
 
-组合成一套可以由 Codex 逐步实施的技术架构。
+`06-interactive-agent-gap-analysis.md` 是历史差距分析，不作为当前能力事实来源。
 
-V0.1 第一目标仍然是：
+---
 
-> 跑通完整测井解释 Agent 技术链路。
+## 2. 核心架构结论
 
-## 2. 技术基线
+当前系统采用：
 
-V0.1 采用以下技术基线。
+> **ReAct for Interaction，Workflow for Execution。**
 
-| 类别 | 技术 |
-|---|---|
-| 开发语言 | Python 3.11 |
-| Agent Framework | AgentScope 2.x |
-| Agent Service | AgentScope Agent Service |
-| Web | AgentScope 配套 Web UI |
-| API | AgentScope Agent Service / FastAPI |
-| 数据库 | PostgreSQL |
-| ORM | SQLAlchemy 2.x |
-| 数据库迁移 | Alembic |
-| Redis | Redis |
-| Redis Client | redis-py asyncio |
-| Schema | Pydantic |
-| 配置管理 | pydantic-settings |
-| 测试 | pytest |
-| 代码检查 | ruff |
-| 类型检查 | mypy，第一阶段基础启用 |
-| Trace | OpenTelemetry 抽象 |
-| 日志 | Python logging / structlog 类结构化日志方案 |
-| 模型 | 内部统一模型 |
-| 依赖管理 | uv + pyproject.toml |
-
-AgentScope 当前要求 Python 3.11 或更高版本，因此 V0.1 统一采用 Python 3.11。
-
-## 3. 总体架构原则
-
-整个系统遵循：
+职责边界如下：
 
 ```text
-Agent
-负责决策
+AgentScope ReAct
+负责理解用户自然语言、提取受支持参数、选择任务级 Tool
 
-Workflow
-负责流程
+Application
+负责身份归属、参数校验、版本创建、执行计划和读模型
 
-Tool
-负责执行
+MainAgent
+负责业务编排
 
-Domain Algorithm
-负责确定性专业计算
+InterpretationWorkflow
+负责 W01～W10 的确定性执行顺序
 
-InterpretationState
-负责业务状态
+Professional Tool / Domain Algorithm
+负责具体专业执行
 
 PostgreSQL
-负责长期持久化
+负责长期、可追溯的业务事实
 
 Redis
-负责运行时状态
-
-Model Gateway
-负责统一模型访问
+负责可丢弃运行快照和 AgentScope Session / Message
 
 Telemetry
-负责可观测性
+负责 Workflow / Tool / Report 实时过程事件
 ```
 
 核心原则：
 
-> 不把所有能力都实现成 Agent。
+- LLM 可以理解“用户想做什么”，但不能决定专业步骤依赖和失效范围；
+- Workflow 负责专业主线，不能由 Prompt 临时改写顺序；
+- 每次真正执行生成新的 Execution，历史结果不覆盖；
+- PostgreSQL 是 canonical source，Redis 和进程内对象都不是业务事实唯一来源；
+- 后台 Execution 与当前浏览器 SSE 生命周期解耦；
+- Mock、Real、Virtual、Derived Tool 共用正式 Contract 和审计边界。
 
-## 4. 总体系统架构
+---
 
-整体架构：
+## 3. 技术基线
 
-```text
-┌──────────────────────────────────────────────┐
-│                  Web UI                      │
-│          AgentScope Web Interface            │
-└──────────────────────┬───────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────┐
-│              Agent Service / API             │
-│                                             │
-│       Session / Request / Task API           │
-└──────────────────────┬───────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────┐
-│                  MainAgent                   │
-│                                             │
-│       Planner + Orchestrator                 │
-└──────────────────────┬───────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────┐
-│          Interpretation Workflow             │
-│                                             │
-│ W01 → W02 → W03 → W04 → W05                │
-│                     ↓                       │
-│            InterpretationAgent              │
-│               W06 + W07                     │
-│                     ↓                       │
-│                    W08                      │
-│                     ↓                       │
-│             ValidationAgent                 │
-│                    W09                      │
-│                     ↓                       │
-│                    W10                      │
-└───────────┬───────────────────┬──────────────┘
-            │                   │
-            ▼                   ▼
-      ┌──────────┐        ┌─────────────┐
-      │  Tools   │        │ ModelGateway│
-      └────┬─────┘        └──────┬──────┘
-           │                     │
-           ▼                     ▼
-   Domain Algorithms       Internal Model
-   Data Repository
-   External Services
+| 类别 | 当前技术 |
+| --- | --- |
+| 开发语言 | Python 3.11 |
+| Agent Framework | AgentScope 2.x |
+| Web / Agent Service | AgentScope Web UI + Agent Service |
+| API | AgentScope Service / FastAPI |
+| Schema | Pydantic |
+| 数据库 | PostgreSQL |
+| ORM | SQLAlchemy 2.x async |
+| Migration | Alembic |
+| Runtime / Session | Redis |
+| 配置 | pydantic-settings |
+| 测试 | pytest |
+| 代码检查 | ruff |
+| 类型检查 | mypy |
+| Telemetry | 项目 Telemetry 抽象，可接 OpenTelemetry |
+| 外层交互模型 | qwen-plus（openai-compatible）或本地 Mock Shell |
+| 专业模型访问 | ModelGateway；未来扩展独立 Prediction Provider |
+
+当前开发和 Demo 阶段优先使用 Docker Compose 提供 PostgreSQL / Redis，本地运行 Agent Service 与 Web UI。
+
+---
+
+## 4. 总体架构
+
+```mermaid
+flowchart TD
+    U[用户 / 测井解释工程师] --> UI[AgentScope Web UI]
+    UI --> AS[Agent Service / FastAPI]
+
+    AS -->|附件| UP[UploadInterpretationReply]
+    AS -->|纯文本| RA[LoggingInterpretationDemoAgent<br/>AgentScope ReAct]
+
+    UP --> T1[run_well_interpretation]
+    RA --> TT[5 个 Task-level Tools]
+
+    T1 --> CMD[TaskCommandRunner / Application Commands]
+    TT --> CMD
+
+    CMD --> OWN[SessionTaskBinding / Ownership]
+    CMD --> PLAN[DependencyResolver / ExecutionPlan]
+    CMD --> SVC[InterpretationTaskService]
+
+    PLAN --> SVC
+    SVC --> DISP[InProcessExecutionDispatcher]
+    DISP --> MA[Business MainAgent]
+    MA --> WF[InterpretationWorkflow<br/>W01-W10]
+
+    WF --> PT[Professional Tools]
+    WF --> IA[InterpretationAgent]
+    WF --> VA[ValidationAgent]
+    PT --> ALG[Domain Algorithm / Mock Provider]
+    IA --> MG[ModelGateway]
+    VA --> MG
+    WF --> REP[ReportAssembler / ReportGenerator]
+
+    SVC --> PG[(PostgreSQL)]
+    WF --> REDIS[(Redis Runtime Checkpoint)]
+    PT --> PG
+
+    WF -. Telemetry .-> SSE[SSE / ThinkingBlock]
+    PT -. Telemetry .-> SSE
+    REP -. Telemetry .-> SSE
+    SSE --> UI
+
+    UI --> READ[Interpretation Read API]
+    READ --> PG
 ```
 
-底层基础设施：
+这张图有两个必须长期保持的边界：
+
+1. `LoggingInterpretationDemoAgent` 是真正的 Web ReAct Agent；
+2. `agents/main_agent.py::MainAgent` 是业务 Planner / Orchestrator，不承担 Web 自然语言意图识别。
+
+---
+
+## 5. Interface 与交互层
+
+当前对外入口主要包括：
+
+- AgentScope Web UI；
+- AgentScope Chat / Session / SSE；
+- Interpretation Read API；
+- CLI / Dev Runner。
+
+Web 的主要职责：
+
+- 自然语言交互；
+- 上传井资料；
+- 展示当前解释过程；
+- 查看当前 / 历史 Execution；
+- 查看 W01～W10、ToolRun、Override 和报告；
+- 后续为测井曲线、解释层段和图形化结果保留展示区域。
+
+当前右侧 Interpretation Panel 已展示结构化 Execution 事实。曲线绘图尚未实现，详细边界见 [09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md)。
+
+---
+
+## 6. Agent 层
+
+### 6.1 LoggingInterpretationDemoAgent
+
+`LoggingInterpretationDemoAgent` 是当前 Web 外层 AgentScope ReAct Agent。
+
+职责：
 
 ```text
-               Application Layer
-                       │
-        ┌──────────────┼──────────────┐
-        ▼              ▼              ▼
- PostgreSQL         Redis        OpenTelemetry
-        │              │              │
- Persistent       Runtime        Trace / Metrics
-   State            State
+理解纯文本请求
+↓
+从可信上下文获取 task_id
+↓
+选择受限 Task-level Tool
+↓
+提取并结构化受支持参数
+↓
+根据 ToolResult 组织用户回复
 ```
 
-## 5. 分层架构
+它不负责：
 
-系统建议划分为：
+- W01～W10 排序；
+- 判断哪些步骤需要失效；
+- 直接写 PostgreSQL；
+- 直接调用底层专业 Tool；
+- 生成不存在的专业数据。
 
-```text
-Interface Layer
-Application Layer
-Agent Layer
-Workflow Layer
-Domain Layer
-Tool Layer
-Infrastructure Layer
-```
+含附件的首次上传由 `UploadInterpretationReply` 做确定性路由，不把上传井资料交给 qwen-plus 判断。
 
-## 6. Interface Layer
+### 6.2 MainAgent
 
-负责系统外部交互。
-
-主要包括：
+业务 `MainAgent` 当前定位是：
 
 ```text
-Web UI
-API
-CLI / Dev Runner
-```
-
-第一阶段重点：
-
-```text
-AgentScope Web UI
-+
-Agent Service
-```
-
-用于：
-
-- 发起解释任务；
-- 查看 Session；
-- 查看 Agent 执行；
-- 查看 Tool Call；
-- 查看结果；
-- 查看 JSON；
-- 查看 Markdown Report。
-
-第一阶段不另外建设复杂 Vue / React 前端。
-
-## 7. Application Layer
-
-Application Layer 负责：
-
-```text
-Task 生命周期
-Use Case 编排
-Workflow 启动
-事务边界
-状态持久化协调
-```
-
-候选服务：
-
-```text
-InterpretationTaskService
-WorkflowService
-ReportService
-StateService
-```
-
-Application Layer 不负责具体测井算法。
-
-## 8. Agent Layer
-
-V0.1 Agent Layer 包含：
-
-```text
-MainAgent
-InterpretationAgent
-ValidationAgent
-```
-
-## 9. MainAgent
-
-MainAgent 定位：
-
-```text
-Planner
+Business Planner
 +
 Orchestrator
 ```
@@ -253,333 +213,144 @@ Orchestrator
 职责：
 
 ```text
-用户请求理解
+接收已经确定的业务执行请求 / State
 ↓
-确认任务类型
+按照受控 start_step 启动 InterpretationWorkflow
 ↓
-创建解释 Task
+协调业务 Agent / Tool
 ↓
-启动 InterpretationWorkflow
-↓
-观察 Workflow 状态
-↓
-协调异常 / Review
-↓
-返回最终结果
+返回结构化 InterpretationState
 ```
 
-MainAgent 不逐步手写执行 W01-W10，而是启动 Workflow。
+`MainAgent` **不负责**：
 
-## 10. MainAgent 与 Workflow 控制权
+- Web 用户意图识别；
+- 决定当前用户是在查状态还是改参数；
+- 从聊天文本猜 task_id；
+- 自由生成 W01～W10 顺序。
 
-采用：
+### 6.3 InterpretationAgent / ValidationAgent
+
+当前业务职责保持在 Workflow 内：
+
+- `InterpretationAgent`：承担现有 W06 / W07 中需要模型参与的专业解释；
+- `ValidationAgent`：承担 W09 的综合验证职责。
+
+它们都不是外层交互 Agent。
+
+---
+
+## 7. 任务级 Action Space
+
+纯文本 ReAct 当前只能选择以下任务级 Tool：
 
 ```text
-MainAgent
-控制“任务级别”
-
-Workflow
-控制“业务步骤级别”
+run_well_interpretation
+modify_well_interpretation
+rerun_well_interpretation
+get_interpretation_status
+get_interpretation_report
 ```
 
-例如：
-
-MainAgent 决定：
+典型链路：
 
 ```text
-启动单井解释任务
+“把孔隙度、渗透率改成 0.16”
+↓
+AgentScope ReAct
+↓
+modify_well_interpretation
+↓
+Pydantic / Session Ownership 校验
+↓
+DependencyResolver
+↓
+新 Execution
 ```
 
-Workflow 决定：
+专业底层 Tool，例如 `calculate_sw`、`identify_lithology`，不暴露给外层 ReAct 直接调用。
+
+详细规则见 [08-intent-and-interaction-design.md](08-intent-and-interaction-design.md)。
+
+---
+
+## 8. Application Layer
+
+Application Layer 当前负责：
+
+- Task / Execution 生命周期；
+- InputVersion 与 Override；
+- Session ↔ Task ownership；
+- Command 参数校验；
+- ExecutionPlan；
+- RUN / REUSE 规划；
+- 后台 Execution 提交；
+- Execution / ToolRun / Report 读模型；
+- 持久化协调与稳定错误码。
+
+核心实现包括：
 
 ```text
-W01
-→
-W02
-→
-W03
+InterpretationTaskService
+TaskCommandRunner
+TaskCommands
+DependencyResolver
+StateReuseAssembler
+InProcessExecutionDispatcher
 ```
 
-W09 出现冲突时，由 Workflow 负责：
+Application Layer 不实现测井算法。
+
+---
+
+## 9. Workflow 与专业主线
+
+当前 `InterpretationWorkflow` 保持 W01～W10 的确定性顺序：
 
 ```text
-W09 → W06
-```
-
-而不是让 MainAgent 自由生成流程。
-
-## 11. InterpretationAgent
-
-InterpretationAgent 负责：
-
-```text
+W01 获取井资料
+↓
+W02 数据完整性检查
+↓
+W03 曲线质量检查
+↓
+W04 岩性识别
+↓
+W05 储层识别与物性评价
+↓
 W06 流体识别
-+
+↓
 W07 油气水层分类
-```
-
-核心执行逻辑：
-
-```text
-读取 Context
 ↓
-分析已有证据
+W08 层段划分与有效厚度
 ↓
-判断是否需要 Tool
+W09 综合验证
 ↓
-调用 Tool
+W10 最终一致性检查
 ↓
-获得结构化结果
-↓
-继续综合推理
-↓
-生成结构化解释结果
+Report
 ```
 
-## 12. InterpretationAgent Context
+交互层不会修改这条主线。
 
-原则上不直接把完整 InterpretationState 全部塞给模型。
+当前局部重跑只允许受控边界：
 
-采用：
+| 变化 | 当前执行策略 |
+| --- | --- |
+| 首次解释 / 全量重跑 / 新输入 | W01～W10 RUN |
+| sampling_interval | W01 REUSE；W02～W10 RUN |
+| por / perm / prediction_model | W01～W03 REUSE；W04～W10 RUN |
+| 无需专业重算 | 可复用结果，仅重新生成报告 |
 
-```text
-InterpretationState
-↓
-ContextBuilder
-↓
-InterpretationContext
-↓
-InterpretationAgent
-```
+当前没有 arbitrary step rerun，也没有 SW-only 重算。
 
-ContextBuilder 只选择当前任务需要的数据，例如：
+---
 
-```text
-LithologyResult
-PetrophysicsResult
-RT / RXO
-Sw
-QC Warning
-Mud Logging
-Interval Info
-```
+## 10. Retry、Rollback 与 Review 边界
 
-这样降低 Context 长度、无关信息、Token 消耗和 Prompt 干扰。
+### 10.1 当前实现
 
-## 13. ValidationAgent
-
-ValidationAgent 独立执行：
-
-```text
-测井解释结果
-+
-岩心
-+
-录井
-+
-试油
-+
-邻井
-+
-地质资料
-↓
-一致性验证
-```
-
-输出：
-
-```text
-ValidationResult
-```
-
-ValidationAgent 不直接修改 FluidResult 和 LayerClassificationResult，而是给 Workflow 返回：
-
-```text
-validation_status
-conflicting_evidence
-rollback_target
-recommended_action
-```
-
-## 14. Workflow Layer
-
-Workflow 是整个业务系统的骨架。
-
-V0.1 核心 Workflow：
-
-```text
-InterpretationWorkflow
-```
-
-内部：
-
-```text
-W01
-│
-▼
-W02
-│
-▼
-W03
-│
-▼
-W04
-│
-▼
-W05
-│
-▼
-W06
-│
-▼
-W07
-│
-▼
-W08
-│
-▼
-W09
-│
-▼
-W10
-```
-
-## 15. AgentScope Pipeline 的使用原则
-
-V0.1 可以优先评估 AgentScope Pipeline 承载确定性流程。
-
-但需要保持一个原则：
-
-```text
-Business Workflow Definition
-```
-
-不能完全绑定：
-
-```text
-AgentScope Pipeline API
-```
-
-推荐增加 Workflow Interface，例如：
-
-```text
-InterpretationWorkflow
-```
-
-内部再使用 AgentScope Pipeline 实现。
-
-## 16. Workflow Node
-
-每个节点统一实现概念：
-
-```text
-WorkflowNode
-```
-
-至少包含：
-
-```text
-step_id
-execute()
-precondition()
-result
-status
-```
-
-逻辑：
-
-```text
-读取 State
-↓
-Precondition
-↓
-Execute
-↓
-Result
-↓
-Update State
-↓
-Select Next
-```
-
-## 17. Workflow State Machine
-
-节点状态：
-
-```text
-PENDING
-RUNNING
-SUCCESS
-WARNING
-FAILED
-BLOCKED
-REVIEW_REQUIRED
-SKIPPED
-```
-
-统一定义：
-
-```text
-StepStatus
-```
-
-## 18. Retry
-
-Retry 面向：
-
-```text
-Tool Failure
-Model Timeout
-Temporary Infrastructure Failure
-```
-
-Retry 必须有限次数、可配置、记录原因和记录次数。
-
-## 19. Rollback
-
-Rollback 面向：
-
-```text
-业务解释结果需要重新执行
-```
-
-例如：
-
-```text
-W09
-↓
-发现试油与流体解释严重冲突
-↓
-rollback_target = W06
-↓
-W06
-↓
-W07
-↓
-W08
-↓
-W09
-```
-
-Retry 和 Rollback 必须严格区分。
-
-## 20. Retry 与 Rollback 区别
-
-Retry：
-
-```text
-同一步重新执行
-```
-
-Rollback：
-
-```text
-返回之前的业务节点重新解释
-```
-
-## 21. 防止无限循环
-
-统一配置：
+当前系统**没有**一套通用的：
 
 ```text
 MAX_TOOL_RETRY
@@ -587,1205 +358,510 @@ MAX_MODEL_RETRY
 MAX_WORKFLOW_ROLLBACK
 ```
 
-超过上限：
+自动循环机制，也没有“W09 检测冲突后自动跳回 W06 再执行”的实现。
+
+现有 Tool、Model、Persistence 或业务步骤失败时，由当前错误边界记录状态、错误码和 Execution 终态；需要人工判断时进入现有 Review / Blocked 语义，而不是在同一个 Execution 内自由回退专业步骤。
+
+### 10.2 Future
+
+未来如果第三方 Heavy API 的协议确认需要重试，应在 Provider / Execution 层定义：
+
+- 哪些错误可重试；
+- 幂等键；
+- 最大次数；
+- 是否产生外部副作用；
+- 重试是否创建新的物理调用记录。
+
+未来如果确实需要“业务回退重新解释”，优先采用**新的 Execution + 明确依赖计划**，而不是在当前 Workflow 中加入不可审计循环。
+
+---
+
+## 11. Tool Layer
+
+Tool 是 Workflow / 专业 Agent 与具体执行能力之间的正式边界：
 
 ```text
-REVIEW_REQUIRED
-```
-
-## 22. Tool Layer
-
-Tool Layer 是 Agent / Workflow 与具体执行能力之间的边界。
-
-推荐：
-
-```text
-Agent
+Workflow / Professional Agent
 ↓
 Tool Contract
+↓
+ToolCaller
 ↓
 Tool Implementation
 ↓
-Domain Algorithm / Infrastructure
+Domain Algorithm / External Provider
 ```
 
-## 23. Tool 分类
+当前 Tool Contract 包含：
 
-V0.1 Tool 分为：
+- `ToolInput`；
+- `ToolOutput`；
+- status；
+- data；
+- warnings；
+- errors；
+- metadata。
+
+当前可持久化和可视化的专业 ToolRun 主要包括：
 
 ```text
-Data Tools
-QC Tools
-Petrophysics Tools
-Interpretation Tools
-Interval Tools
-Knowledge Tools
+get_well_data
+check_curve_quality
+identify_lithology
+evaluate_petrophysics
+calculate_sw
+merge_intervals
 ```
 
-## 24. Data Tools
-
-例如：
+Tool execution mode 支持：
 
 ```text
-GetWellInfoTool
-GetLogDataTool
-GetCoreDataTool
-GetMudLoggingDataTool
-GetWellTestDataTool
-GetOffsetWellDataTool
+MOCK
+REAL
+VIRTUAL
+DERIVED
 ```
 
-内部访问 Repository，而不是直接 SQL。
+当前专业结果仍以 Mock / Demo 为主，Heavy Prediction API 尚未接入。
 
-## 25. Petrophysics Tools
+---
 
-例如：
+## 12. Domain 与 State
+
+Domain 层尽量与 AgentScope、FastAPI、Redis 和 PostgreSQL 解耦。
+
+`InterpretationState` 是一次 Execution 的统一业务快照，包含输入、W01～W10 中间结果、状态、告警、错误、缺失资料和最终检查等信息。
+
+当前策略：
 
 ```text
-CalculateVshTool
-CalculatePorosityTool
-CalculatePermeabilityTool
-CalculateSwTool
+稳定的运行 / 版本 / 审计事实
+→ PostgreSQL 关系字段
+
+仍在持续演进的专业解释结果
+→ InterpretationState JSONB snapshot
 ```
 
-内部：
+这样避免在正式井数据 Schema 尚未冻结前过早拆分大量专业结果表。
 
-```text
-Tool
-↓
-Domain Algorithm
-```
+---
 
-V0.1 可以使用 Mock Algorithm，未来替换为 Real Algorithm。
+## 13. PostgreSQL 持久化
 
-## 26. Tool Contract
+PostgreSQL 是业务事实 canonical source。
 
-所有 Tool 使用统一设计：
-
-```text
-Input
-Output
-Status
-Warning
-Error
-Metadata
-```
-
-概念结构：
-
-```json
-{
-  "status": "SUCCESS",
-  "data": {},
-  "warnings": [],
-  "errors": [],
-  "metadata": {}
-}
-```
-
-具体 Schema 后续 Tool Design 阶段确定。
-
-## 27. Domain Layer
-
-Domain Layer 是整个系统最需要与 AgentScope 解耦的部分。
-
-包含：
-
-```text
-InterpretationState
-Well
-LogCurve
-Interval
-LithologyResult
-PetrophysicsResult
-FluidResult
-LayerClassificationResult
-ValidationResult
-WorkflowExecution
-```
-
-这些对象原则上不依赖 AgentScope。
-
-## 28. Domain Algorithm
-
-专业算法放：
-
-```text
-domain/algorithms/
-```
-
-例如：
-
-```text
-vsh.py
-porosity.py
-permeability.py
-water_saturation.py
-interval.py
-```
-
-Domain Algorithm 不直接依赖 AgentScope、LLM、Redis、PostgreSQL 或 FastAPI。
-
-## 29. InterpretationState
-
-InterpretationState 是单次测井解释任务的统一业务状态。
-
-建议逻辑结构：
-
-```text
-InterpretationState
-├── TaskContext
-├── WellContext
-├── RawData
-├── ProcessedData
-├── QCResult
-├── LithologyResult
-├── PetrophysicsResult
-├── FluidResult
-├── LayerClassificationResult
-├── IntervalResult
-├── ValidationResult
-├── WorkflowState
-├── Warnings
-├── Errors
-└── ReviewState
-```
-
-正式 Schema 后续单独设计。
-
-## 30. InterpretationState 生命周期
-
-运行期间：
-
-```text
-Redis
-```
-
-保存 Active InterpretationState。
-
-长期结果：
-
-```text
-PostgreSQL
-```
-
-保存：
-
-```text
-Task
-Final Result
-Workflow Execution
-Report
-```
-
-## 31. PostgreSQL 职责
-
-PostgreSQL 用于长期、可靠、可查询的数据。
-
-V0.1 候选表：
+当前核心实体：
 
 ```text
 interpretation_task
-well
-interpretation_result
-workflow_execution
-workflow_step_execution
-report
-agent_execution
-tool_execution
+interpretation_input_version
+interpretation_execution
+interpretation_tool_run
+interpretation_session_task_binding
 ```
 
-不要求第一阶段建立非常复杂的数据模型。
+关键原则：
 
-## 32. PostgreSQL Repository
+- Task 表示持续工作对象；
+- InputVersion 保存规范化输入版本；
+- Execution 表示一次真正执行；
+- ToolRun 记录专业工具轨迹；
+- SessionTaskBinding 记录用户 / Agent / Session 对 Task 的 durable ownership；
+- 报告当前与 Execution 同版本存储在 `interpretation_execution.markdown`；
+- 历史版本追加保存，不覆盖。
 
-业务代码不直接使用 ORM Session，而采用：
+详细字段和 migration 见 [07-database-design.md](07-database-design.md)。
+
+---
+
+## 14. Redis 边界
+
+Redis 当前主要承担：
+
+- `InterpretationState` 运行快照；
+- AgentScope Session；
+- AgentScope Message；
+- 服务凭证等运行时数据。
+
+原则：
+
+> Redis 可丢；PostgreSQL 业务事实不可丢。
+
+进程内的 runner、`observed_task_ids` 和 dispatcher Task 也都不是 durable truth。
+
+---
+
+## 15. 后台 Execution 与 Lease
+
+任务级写操作先创建：
 
 ```text
-Repository Interface
+Execution = QUEUED
+```
+
+然后提交 `InProcessExecutionDispatcher`。
+
+Worker 生命周期：
+
+```text
+QUEUED
+↓ claim
+RUNNING
+↓ heartbeat / lease renew
+SUCCESS / WARNING / FAILED / BLOCKED / REVIEW_REQUIRED
+```
+
+同一 Task 通过数据库行锁、`expected_current_execution_id` 和活跃 Execution 检查避免并发覆盖。
+
+Worker 失联时通过 lease expiry 标记为失败；当前不会自动重新执行可能具有外部副作用的 Workflow。
+
+---
+
+## 16. Session 与重启恢复
+
+Migration `0006` 已实现 durable SessionTaskBinding：
+
+```text
+(user_id, agent_id, session_id, task_id)
+```
+
+Backend 重启后：
+
+```text
+runner cache = empty
 ↓
-PostgreSQL Repository
-```
-
-例如：
-
-```text
-TaskRepository
-WellRepository
-ResultRepository
-ReportRepository
-```
-
-## 33. SQLAlchemy
-
-ORM：
-
-```text
-SQLAlchemy 2.x
-```
-
-采用 Async SQLAlchemy，以便与 Agent / API 异步执行模式配合。
-
-数据库迁移：
-
-```text
-Alembic
-```
-
-## 34. Redis 职责
-
-Redis 主要承担：
-
-```text
-Active Task State
-Workflow Runtime State
-Short-lived Context
-Session Cache
-Distributed Lock
-Temporary Result Cache
-```
-
-Redis 不作为最终业务事实的唯一存储。
-
-## 35. Redis StateStore
-
-业务层通过：
-
-```text
-StateStore Interface
-```
-
-访问 Redis。
-
-例如：
-
-```text
-InterpretationStateStore
+get_or_restore_runner()
 ↓
-RedisInterpretationStateStore
-```
-
-禁止 Workflow 到处直接调用 redis SDK。
-
-## 36. PostgreSQL 与 Redis 的边界
-
-简单原则：
-
-```text
-以后还需要查
+查询 PostgreSQL SessionTaskBinding
 ↓
-PostgreSQL
-```
-
-```text
-当前正在运行
+恢复 Task ownership
 ↓
-Redis
+Read API / ReAct 可以继续访问原 Task
 ```
 
-## 37. Model Layer
+不能因为 PostgreSQL 中存在 task_id 就直接授权。
 
-所有 Agent 和 LLM 功能统一通过：
+---
+
+## 17. 流式解释过程
+
+首次上传当前采用：
 
 ```text
-ModelGateway
+上传并校验井资料
+↓
+run_well_interpretation
+↓
+ToolResultEnd(QUEUED)
+↓
+后台 Worker 继续运行
+↓
+同一 Reply 持续消费真实 Telemetry
+↓
+W01～W10 / Tool / Report 过程
+↓
+读取本 execution_id 的 Markdown
+↓
+ReplyEnd
 ```
 
-调用模型。
+`ToolResultEnd(QUEUED)` 只表示 Execution 已提交，不表示单井解释结束。
 
-架构：
+SSE 断开不会取消后台 Worker。重新打开页面通过 PostgreSQL、SessionTaskBinding 和 Read API 恢复持久状态；当前不 replay 已错过的 SSE Thinking delta。
+
+详细见 [09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md)。
+
+---
+
+## 18. Read Model 与前端
+
+当前右侧 Interpretation Panel 从 Read API 展示：
+
+- 当前 / 历史 Execution；
+- 四阶段 RUN / REUSE；
+- W01～W10；
+- ToolRun；
+- Override；
+- 报告；
+- 历史版本。
+
+聊天区负责当前自然语言交互和首次解释实时过程。
+
+未来右侧可能扩展：
 
 ```text
-MainAgent
-InterpretationAgent
-ValidationAgent
-ReportGenerator
-        │
-        ▼
-   ModelGateway
-        │
-        ▼
-InternalModelAdapter
-        │
-        ▼
-  内部统一模型
+GR / RT / DEN / CNL / AC / SP / CAL 曲线
+深度轨迹
+解释层段
+储层区间
+岩性 / 流体结果
+有效厚度
+解释成果绘图
 ```
 
-## 38. ModelGateway 职责
+当前尚未冻结绘图数据 Contract，也未选择具体绘图库。
 
-负责：
+---
+
+## 19. Model 与 Provider 边界
+
+需要区分三类概念：
+
+### 19.1 外层交互模型
+
+真实交互模式：
 
 ```text
-模型调用
-Timeout
-Retry
-Error Mapping
-Request Metadata
-Trace
-模型配置
+AgentScope ReAct
++
+qwen-plus
 ```
 
-Agent 不直接知道内部模型 URL、Token、底层协议或具体 SDK。
+负责语义意图和任务级 Tool 选择。
 
-## 39. 模型未来扩展
+`MockTaskShellModel` 只用于离线联调，不是生产 IntentClassifier。
 
-未来可以实现：
+### 19.2 Workflow 内专业模型
 
-```text
-ModelGateway
-├── MainModelAdapter
-├── LightweightModelAdapter
-└── OtherModelAdapter
-```
+现有业务 Agent 通过 `ModelGateway` 获取模型能力。
 
-但 V0.1 只接：
+### 19.3 Future Heavy Prediction Provider
 
-```text
-InternalModelAdapter
-```
+未来第三方专业预测 API 应通过独立 Prediction Provider / Gateway 适配。
 
-## 40. Report Layer
+`prediction_model` 表示专业预测模型选择，不等于替换外层 qwen-plus。
 
-V0.1 不建立 ReportAgent。
+---
 
-采用：
+## 20. Report Layer
+
+当前报告由：
 
 ```text
 InterpretationState
 ↓
-ReportAssembler
-↓
-ReportContext
-↓
-LLM
+ReportAssembler / ReportGenerator
 ↓
 Markdown
 ```
 
-同时：
+生成，并绑定到具体 Execution。
+
+报告正文和执行过程分离：
+
+- ThinkingBlock：W01～W10、Tool、Report 生成过程；
+- TextBlock：最终 Markdown Report。
+
+当前没有独立 Report API，也没有独立 Report 表。未来只有在报告具备审批、人工编辑、签名、发布或独立制品生命周期后再拆分。
+
+---
+
+## 21. Telemetry 与可观测性
+
+当前 Workflow / Tool / Report 通过项目 Telemetry 抽象产生事件。
+
+核心事件包括：
 
 ```text
-InterpretationState
-↓
-ResultSerializer
-↓
-JSON
+workflow.step.start
+state.change
+workflow.step.error
+workflow.result
+
+tool.start
+tool.result
+tool.error
+tool.end
+
+report.start
+report.end
+report.error
 ```
 
-## 41. ReportAssembler
+`ExecutionProgressProjector` 只把这些事实投影为用户可见过程，不参与业务决策。
 
-ReportAssembler 负责结构化数据整理，而 LLM 只负责自然语言组织，避免 LLM 自己重新解释整口井。
+日志和 Telemetry 都不能输出 API Key、Token、完整连接串或未脱敏异常内容。
 
-## 42. Web 架构
+---
 
-V0.1 优先复用：
+## 22. 配置与安全边界
+
+当前基础要求：
+
+- API Key / 数据库密码不进入仓库；
+- Token 和连接串不进入用户可见异常；
+- Agent 不执行任意 SQL；
+- 外层 ReAct 只能调用白名单任务级 Tool；
+- 专业 Tool 输入输出按安全 Snapshot 规则审计；
+- 用户 / Agent / Session / Task ownership 必须由服务端校验。
+
+配置统一通过 pydantic-settings 和环境变量管理。
+
+---
+
+## 23. 部署与横向扩展边界
+
+当前 Demo / 验证阶段采用：
 
 ```text
-AgentScope Agent Service
-+
 AgentScope Web UI
-```
-
-V0.1 不另外开发完整前端系统。
-
-## 43. Web V0.1 功能
-
-至少：
-
-```text
-选择 Mock Well
-输入解释任务
-启动任务
-查看 Agent 执行
-查看 Tool Call
-查看状态
-查看 JSON
-查看 Markdown
-```
-
-## 44. Trace 架构
-
-V0.1 采用：
-
-```text
-Telemetry Interface
-↓
-OpenTelemetry
-```
-
-AgentScope 相关运行事件和项目自身 Workflow / Tool / State 事件统一纳入 Trace。
-
-## 45. Trace Span 建议
-
-Trace 层级：
-
-```text
-InterpretationTask
-├── Workflow
-├── W01
-├── W02
-├── W03
-├── ...
-├── InterpretationAgent
-│   ├── Model Call
-│   └── Tool Call
-├── ValidationAgent
-│   ├── Model Call
-│   └── Tool Call
-└── Report
-```
-
-## 46. Trace Backend
-
-V0.1 不将业务代码绑定某个具体 Trace 产品。
-
-可以接：
-
-```text
-Jaeger
-Phoenix
-其他 OpenTelemetry Backend
-```
-
-通过配置切换。
-
-当前核心要求是：
-
-> Trace 数据可以被正常产生。
-
-## 47. Logging
-
-日志与 Trace 分离。
-
-日志用于：
-
-```text
-系统启动
-异常
-数据库
-Redis
-API
-Debug
-```
-
-Trace 用于：
-
-```text
-Agent 执行链
-Workflow 执行链
-Tool 调用
-Model 调用
-State Change
-```
-
-## 48. 异常体系
-
-统一异常基础类：
-
-```text
-ApplicationError
-```
-
-候选子类：
-
-```text
-DataError
-ToolError
-ModelError
-WorkflowError
-InfrastructureError
-ValidationError
-```
-
-## 49. 错误传播
-
-例如：
-
-```text
-Domain Algorithm
-↓
-ToolError
-↓
-Workflow
-↓
-Retry
-↓
-FAILED / REVIEW
-```
-
-Agent 不应该通过猜测来处理异常。
-
-## 50. 配置架构
-
-采用：
-
-```text
-pydantic-settings
-```
-
-配置：
-
-```text
-AppSettings
-DatabaseSettings
-RedisSettings
-ModelSettings
-WorkflowSettings
-TelemetrySettings
-```
-
-## 51. 环境变量
-
-例如：
-
-```text
-DATABASE_URL
-REDIS_URL
-MODEL_BASE_URL
-MODEL_API_KEY
-MODEL_NAME
-OTEL_EXPORTER_OTLP_ENDPOINT
-```
-
-`.env` 仅开发环境使用。
-
-敏感数据不提交 Git。
-
-## 52. 推荐项目目录
-
-V0.1 推荐：
-
-```text
-cnlc-agentscope/
-│
-├── AGENTS.md
-├── README.md
-├── pyproject.toml
-├── .env.example
-│
-├── docs/
-│   ├── 00-project-context.md
-│   ├── 01-business-workflow.md
-│   ├── 02-agent-tool-boundary.md
-│   ├── 03-system-architecture.md
-│   └── mvp-acceptance.md
-│
-├── src/
-│   └── cnlc_agent/
-│       ├── agents/
-│       │   ├── main_agent.py
-│       │   ├── interpretation_agent.py
-│       │   └── validation_agent.py
-│       ├── workflows/
-│       │   ├── interpretation_workflow.py
-│       │   ├── steps/
-│       │   └── policies/
-│       ├── domain/
-│       │   ├── models/
-│       │   ├── states/
-│       │   ├── results/
-│       │   ├── enums/
-│       │   └── algorithms/
-│       ├── tools/
-│       │   ├── data/
-│       │   ├── qc/
-│       │   ├── petrophysics/
-│       │   ├── interpretation/
-│       │   └── interval/
-│       ├── application/
-│       │   ├── services/
-│       │   └── context/
-│       ├── infrastructure/
-│       │   ├── database/
-│       │   ├── redis/
-│       │   ├── model/
-│       │   ├── telemetry/
-│       │   └── repositories/
-│       ├── reports/
-│       ├── api/
-│       ├── config/
-│       └── main.py
-│
-├── tests/
-│   ├── unit/
-│   ├── integration/
-│   ├── workflow/
-│   └── fixtures/
-│
-└── mock_data/
-```
-
-## 53. 目录设计原则
-
-采用：
-
-> 轻量 DDD + Agent 架构。
-
-重点隔离：
-
-```text
-Domain
-Application
-Infrastructure
-```
-
-同时把 Agent、Workflow、Tool 作为 Agent 系统一级概念。
-
-## 54. 为什么不采用传统简单 Python 目录
-
-如果全部写成：
-
-```text
-utils.py
-service.py
-agent.py
-tool.py
-```
-
-随着 Tool 和 Agent 增加，会快速出现职责混乱、循环依赖、业务代码与 AgentScope 耦合和测试困难。
-
-因此 V0.1 就应该建立明确模块边界。
-
-## 55. 为什么不采用完整重型 DDD
-
-V0.1 第一目标是快速跑通，不需要大量 Aggregate、Domain Event、复杂 Repository Factory 或复杂 CQRS。
-
-只保留真正有价值的：
-
-```text
-Domain Model
-Repository Interface
-Adapter
-Application Service
-Infrastructure Isolation
-```
-
-## 56. Mock 架构
-
-Mock 能力必须正式化。
-
-例如：
-
-```text
-PorosityCalculator
-├── MockPorosityCalculator
-└── RealPorosityCalculator
-```
-
-或者：
-
-```text
-PorosityTool
-├── MockPorosityTool
-└── RealPorosityTool
-```
-
-由配置选择实现。
-
-## 57. Mock Well Data
-
-统一放：
-
-```text
-mock_data/
-```
-
-例如：
-
-```text
-mock_data/
-└── well_001/
-    ├── well.json
-    ├── logs.json
-    ├── geology.json
-    ├── mud_logging.json
-    ├── core.json
-    └── well_test.json
-```
-
-具体数据格式后续 Schema 阶段确定。
-
-## 58. 横向扩展
-
-系统需要预留横向扩展能力。
-
-核心要求：
-
-```text
-Agent 实例不依赖本地内存保存唯一状态
-```
-
-运行状态进入 Redis，长期状态进入 PostgreSQL。
-
-## 59. V0.1 暂不实现复杂分布式系统
-
-虽然支持未来横向扩展，但 V0.1 不建设：
-
-```text
-Kubernetes
-复杂 MQ
-复杂分布式调度
-自动扩缩容
-```
-
-只要求架构不阻止未来扩展。
-
-## 60. RAG
-
-RAG 未来用于解释规范、专业知识、区块经验和历史报告。
-
-V0.1 不作为主链路必选能力。
-
-第一阶段预留：
-
-```text
-KnowledgeTool Interface
-```
-
-即可。
-
-## 61. Memory
-
-V0.1 不优先实现复杂长期 Agent Memory。
-
-当前核心：
-
-```text
-InterpretationState
 +
-Session Context
-```
-
-未来再增加 Domain Knowledge Memory、Historical Well Memory、User Preference Memory。
-
-## 62. 安全边界
-
-V0.1 至少保证：
-
-```text
-API Key 不进仓库
-数据库密码不进仓库
-日志不打印 Token
-Agent 不直接执行任意 SQL
-Agent Tool 权限明确
-Tool 白名单
-```
-
-## 63. Tool 权限
-
-不同 Agent 使用不同 Tool 集合。
-
-例如：
-
-MainAgent：
-
-```text
-Task Tools
-Workflow Tools
-```
-
-InterpretationAgent：
-
-```text
-Petrophysics Tools
-Interpretation Tools
-部分 Data Tools
-```
-
-ValidationAgent：
-
-```text
-Core Data Tool
-Mud Logging Tool
-Well Test Tool
-Offset Well Tool
-```
-
-具体 Tool Permission 后续设计。
-
-## 64. 测试架构
-
-测试分层：
-
-```text
-Unit
-↓
-Tool Contract
-↓
-Agent
-↓
-Workflow Integration
-↓
-End-to-End
-```
-
-## 65. Unit Test
-
-重点测试：
-
-```text
-Domain Model
-Algorithm
-State
-Repository
-Tool
-```
-
-不需要模型即可完成。
-
-## 66. Agent Test
-
-使用 Mock Model 和 Mock Tool，测试结构化输入、结构化输出、Tool Selection 和 Error Handling。
-
-## 67. Workflow Test
-
-至少包含：
-
-```text
-Normal
-Missing Data
-Tool Failure
-Model Failure
-Validation Conflict
-Rollback Limit
-```
-
-## 68. End-to-End Test
-
-最终：
-
-```text
-Mock Well
-↓
 Agent Service
-↓
-MainAgent
-↓
-Workflow
-↓
-Tool
-↓
-InterpretationAgent
-↓
-ValidationAgent
-↓
-Report
-```
-
-跑通。
-
-## 69. V0.1 部署方式
-
-第一阶段推荐：
-
-```text
-Docker Compose
-```
-
-组件：
-
-```text
-Agent Application
++
 PostgreSQL
++
 Redis
-Trace Backend
 ```
 
-Web UI 使用 AgentScope 配套 Web UI。
+开发环境可使用 Docker Compose 启动 PostgreSQL / Redis。
 
-## 70. 为什么采用 Docker Compose
+当前后台执行仍是 **in-process dispatcher**，因此还不是完整分布式 Worker 架构。
 
-因为第一阶段需要真实 PostgreSQL、Redis、Trace。
+已经为未来横向扩展保留的重要边界：
 
-Docker Compose 可以快速建立统一开发环境，但不引入 Kubernetes。
+- 业务事实进入 PostgreSQL；
+- Session / runtime 与实例逻辑分离；
+- Execution 有 lease；
+- Tool / Model / Provider 有明确接口；
+- Task ownership 不依赖单进程缓存。
 
-## 71. 部署拓扑
+---
 
-V0.1：
+## 24. 当前能力与 Future
+
+| 能力 | 状态 |
+| --- | --- |
+| AgentScope ReAct 交互 | Current |
+| 附件确定性上传路由 | Current |
+| Versioned Task / Input / Execution / Report | Current |
+| POR / PERM / sampling / prediction_model Override | Current |
+| W01/W02/W04/report boundary partial rerun | Current |
+| Durable ToolRun | Current |
+| Background Execution + Lease | Current |
+| SessionTaskBinding restart recovery | Current |
+| Interpretation Read API / History | Current |
+| First-run streaming to final report | Current |
+| qwen-plus 外层 ReAct | Current |
+| Heavy Prediction API | Future |
+| Real Report API | Future |
+| SW-only / arbitrary step rerun | Future |
+| CapabilityRegistry / fine-grained dependency graph | Future |
+| Pause / resume | Future |
+| Curve data contract / visualization | Future |
+| Distributed task queue / cross-process Worker takeover | Future |
+
+Future 能力不能通过 Prompt 或 UI 条件分支伪装成已经支持。
+
+---
+
+## 25. 历史 V0.1 基线说明
+
+仓库早期版本的本文件曾记录以下探索性设计：
+
+- “MainAgent 直接理解用户请求”的早期职责；
+- `W09 → W06` 自动 rollback；
+- 通用 `MAX_*_RETRY / ROLLBACK`；
+- 候选数据库表（well、workflow_execution、report 等）；
+- AgentScope Pipeline 候选实现；
+- 第一轮 Skeleton / Codex 建设顺序；
+- 早期目录结构建议。
+
+这些内容属于项目启动阶段的 **Historical Baseline**，不是当前实现。
+
+当前开发人员应以本文前 24 节和 `docs/README.md` 中的 Current Design 文档为准；如需了解历史演进，可查看 Git 历史和 [06-interactive-agent-gap-analysis.md](06-interactive-agent-gap-analysis.md)。
+
+---
+
+## 26. 当前核心调用链
+
+首次上传：
 
 ```text
-Developer Browser
-      │
-      ▼
-AgentScope Web UI
-      │
-      ▼
-Agent Service
-      │
- ┌────┼───────────────┐
- ▼    ▼               ▼
-DB   Redis       Internal Model
- │
- ▼
-PostgreSQL
-```
-
-同时：
-
-```text
-Agent Service
-↓
-OpenTelemetry
-↓
-Trace Backend
-```
-
-## 72. 核心调用链
-
-一次解释任务：
-
-```text
-Web
+AgentScope Web
 ↓
 Agent Service
 ↓
-MainAgent
+UploadInterpretationReply
 ↓
-TaskService
+run_well_interpretation
+↓
+TaskCommandRunner
+↓
+InterpretationTaskService
+↓
+Execution QUEUED
+↓
+InProcessExecutionDispatcher
+↓
+Business MainAgent
 ↓
 InterpretationWorkflow
 ↓
-W01 DataTool
+W01 → W10
 ↓
-W02 Completeness
-↓
-W03 QCTool
-↓
-W04 Lithology
-↓
-W05 Petrophysics Tools
-↓
-InterpretationAgent
-↓
-W06 Fluid
-↓
-W07 Layer Classification
-↓
-W08 Interval Tool
-↓
-ValidationAgent
-↓
-W09 Validation
-↓
-W10 Final Check
+Professional Tool / ModelGateway
 ↓
 ReportAssembler
 ↓
-ModelGateway
+Execution Markdown
 ↓
-Markdown Report
+SSE Final Report
 ```
 
-## 73. 状态调用链
+纯文本修改：
 
 ```text
-Workflow
+AgentScope Web
 ↓
-InterpretationState
+LoggingInterpretationDemoAgent
 ↓
-Redis StateStore
+qwen-plus ReAct
+↓
+modify_well_interpretation
+↓
+Pydantic + Session Ownership
+↓
+DependencyResolver / ExecutionPlan
+↓
+new Execution
+↓
+RUN / REUSE
+↓
+Workflow / Report
 ```
 
-阶段完成：
+查询状态和历史：
 
 ```text
-InterpretationState
+Web Panel
 ↓
-Persistence Service
+Read API
 ↓
 PostgreSQL
+↓
+Task / Execution / ToolRun / Report
 ```
 
-## 74. Trace 调用链
+---
+
+## 27. 架构总结
+
+当前系统的核心不是“让大模型自由解释一口井”，而是：
 
 ```text
-Request
-↓
-Task Trace
-↓
-Workflow Trace
-↓
-Agent Trace
-↓
-Tool Trace
-↓
-Model Trace
-↓
-State Change
-```
-
-必须能够通过 task_id 关联。
-
-## 75. 核心 ID
-
-建议统一：
-
-```text
-task_id
-well_id
-session_id
-workflow_execution_id
-step_execution_id
-agent_execution_id
-tool_execution_id
-trace_id
-```
-
-方便 DB、Redis、Log 和 Trace 关联。
-
-## 76. Codex 第一阶段实现边界
-
-总体架构完成后，Codex 第一轮只建立：
-
-```text
-项目结构
-依赖配置
-基础 Domain Model
-InterpretationState Skeleton
-Agent Skeleton
-Workflow Skeleton
-Tool Contract Skeleton
-Model Gateway Interface
-Repository Interface
-Redis StateStore Interface
-Telemetry Interface
-Mock Data Loader
-最小运行入口
-```
-
-不直接实现全部测井业务。
-
-## 77. 第一次 End-to-End Skeleton
-
-第一轮骨架至少能模拟：
-
-```text
-Mock Well
-↓
-MainAgent
-↓
-Workflow
-↓
-Mock Tool
-↓
-Mock Interpretation Result
-↓
-Mock Validation
-↓
-JSON
-↓
-Markdown
-```
-
-后续 Task 再逐个替换。
-
-## 78. 架构冻结规则
-
-本文档完成后：
-
-```text
-V0.1 Architecture Baseline
-```
-
-视为冻结。
-
-Codex 不得自行：
-
-```text
-增加 Agent
-更换数据库
-删除 Redis
-改变 Workflow
-修改核心模块边界
-```
-
-如果确实需要修改：
-
-```text
-Architecture Issue
-```
-
-先提出问题。
-
-## 79. 当前仍未冻结的设计
-
-以下后续阶段继续设计：
-
-```text
-InterpretationState 完整 Schema
-Well JSON Schema
-Tool Contract 详细 Schema
-Agent Prompt
-Agent ContextBuilder
-Tool Permission Matrix
-专业算法
-业务判断规则
-RAG
-Evaluation
-```
-
-这些不阻塞 Codex 建立第一版工程骨架。
-
-## 80. V0.1 最终架构总结
-
-系统总体采用：
-
-```text
-AgentScope
+受约束自然语言交互
 +
-Workflow Driven
+确定性业务流程
 +
-3 Core Agents
+版本化 Execution
 +
-Tool First
+专业 Tool / Model 能力
 +
-Domain Algorithm
+可追溯持久化
 +
-InterpretationState
-+
-PostgreSQL
-+
-Redis
-+
-Internal Model Gateway
-+
-OpenTelemetry
-+
-AgentScope Web UI
+实时过程展示
 ```
 
-核心架构思想：
+最终边界保持：
 
-```text
-用户
-↓
-MainAgent
-↓
-Workflow
-↓
-Tool / Professional Agent
-↓
-InterpretationState
-↓
-Validation
-↓
-Report
-```
-
-系统优先保证：
-
-```text
-业务流程稳定
-Agent 职责清晰
-专业算法可替换
-运行状态可追踪
-Mock 可替换 Real
-支持未来横向扩展
-代码能够由 Codex 分阶段实施
-```
-
-V0.1 不追求一次性构建完整生产系统。
-
-第一阶段唯一核心目标：
-
-> **把正确的架构真正跑起来。**
+> **Agent 理解意图，Application 决定可执行动作与依赖，Workflow 控制专业流程，Tool 执行能力，PostgreSQL 保存事实。**

@@ -1,0 +1,211 @@
+{
+  "schema_version": "0.1-skeleton",
+  "is_mock": true,
+  "well": {
+    "well_id": "WELL_DI73_56H_LAYER65",
+    "name": "地73-56H井 长4+5第65层",
+    "extensions": {
+      "data_origin": "地73-56H常规大组合GDSX真实逐点曲线与OGRESULT历史解释成果",
+      "source_well": "地73-56H",
+      "source_file": "地73-56H_GILEE_常规大组合_1630-2871_20250403.gdsx",
+      "logging_project": "常规大组合",
+      "formation": "长4+5",
+      "source_formation_literal": "Chang4+5",
+      "layer_no": 65,
+      "data_scope": "single_interpreted_interval_with_point_curves",
+      "contrast_layer": 64,
+      "contrast_reason": "第65层历史结论为Ⅲ类差油层，与第64层Ⅰ类油层不同",
+      "privacy_note": "不包含井坐标"
+    }
+  },
+  "raw_data": {
+    "depth_unit": "m",
+    "depth_reference": "MD",
+    "depths": [
+      2364.8672609329224,
+      2364.9434609413147,
+      2365.019660949707,
+      2365.0958609580994,
+      2365.1720609664917,
+      2365.248260974884,
+      2365.3244609832764,
+      2365.4006609916687,
+      2365.476861000061,
+      2365.5530610084534,
+      2365.6292610168457,
+      2365.705461025238,
+      2365.7816610336304,
+      2365.8578610420227,
+      2365.934061050415
+    ],
+    "curves": {
+      "GR": {
+        "unit": "gAPI",
+        "values": [56.357666015625, 55.15910339355469, 55.15910339355469, 55.11189651489258, 55.11189651489258, 56.20809555053711, 57.6081428527832, 57.6081428527832, 58.7749137878418, 58.7749137878418, 59.75679397583008, 60.47908020019531, 60.47908020019531, 60.75755310058594, 60.75755310058594]
+      },
+      "CAL": {
+        "unit": "cm",
+        "values": [22.953039169311523, 22.73151969909668, 22.73151969909668, 22.60382843017578, 22.60382843017578, 22.57914924621582, 22.596969604492188, 22.596969604492188, 22.632965087890625, 22.632965087890625, 22.675926208496094, 22.72781753540039, 22.72781753540039, 22.843711853027344, 22.843711853027344]
+      },
+      "AC": {
+        "unit": "us/m",
+        "values": [242.52651977539062, 241.74192810058594, 241.74192810058594, 241.04344177246094, 241.04344177246094, 239.1890869140625, 236.00379943847656, 236.00379943847656, 232.30606079101562, 232.30606079101562, 229.67564392089844, 229.6445770263672, 229.6445770263672, 233.2135009765625, 233.2135009765625]
+      },
+      "RLLD": {
+        "unit": "ohm.m",
+        "values": [30.451866149902344, 30.16161346435547, 30.16161346435547, 29.81831169128418, 29.81831169128418, 29.634801864624023, 29.753925323486328, 29.753925323486328, 30.261930465698242, 30.261930465698242, 31.209877014160156, 32.46833801269531, 32.46833801269531, 33.737369537353516, 33.737369537353516]
+      },
+      "RLLS": {
+        "unit": "ohm.m",
+        "values": [27.097980499267578, 26.954442977905273, 26.954442977905273, 26.72083282470703, 26.72083282470703, 26.568050384521484, 26.63566017150879, 26.63566017150879, 27.02479362487793, 27.02479362487793, 27.78957176208496, 28.801877975463867, 28.801877975463867, 29.778064727783203, 29.778064727783203]
+      }
+    },
+    "auxiliary": {
+      "interval": {
+        "top_depth_m": 2364.8,
+        "bottom_depth_m": 2366.0,
+        "gross_thickness_m": 1.2,
+        "vertical_top_depth_m": 2197.313,
+        "vertical_bottom_depth_m": 2198.154,
+        "vertical_thickness_m": 0.841
+      },
+      "borehole": {
+        "bit_diameter_cm": 22.22,
+        "mean_caliper_cm": 22.69878,
+        "mean_enlargement_rate_percent": 2.155,
+        "max_enlargement_rate_percent": 3.299
+      },
+      "curve_statistics": {
+        "sample_count": 15,
+        "GR": {"mean": 57.8736, "min": 55.1119, "max": 60.7576, "unit": "gAPI"},
+        "CAL": {"mean": 22.69878, "min": 22.57915, "max": 22.95304, "unit": "cm"},
+        "AC": {"mean": 235.95319, "min": 229.64458, "max": 242.52652, "unit": "us/m"},
+        "RLLD": {"mean": 30.9133, "min": 29.6348, "max": 33.73737, "unit": "ohm.m"},
+        "RLLS": {"mean": 27.55246, "min": 26.56805, "max": 29.77806, "unit": "ohm.m"}
+      },
+      "historical_interpretation": {
+        "source": "GDSX OGRESULT及历史派生曲线，不作为独立模型输入",
+        "lithology": "砂岩",
+        "reservoir_class": "Ⅲ类",
+        "interpretation_result": "差油层",
+        "mean_vsh_fraction": 0.17415,
+        "mean_porosity_fraction": 0.115034,
+        "mean_permeability_md": 0.444689,
+        "mean_water_saturation_fraction": 0.499646,
+        "mean_hydrocarbon_saturation_fraction": 0.500354
+      }
+    },
+    "extensions": {
+      "value_semantics": "GDSX中2364.8至2366.0 m层段内主深度采样点的真实曲线值",
+      "sampling_note": "层顶2364.8 m和层底2366.0 m为解释层界；逐点数组为层界内实际采样深度",
+      "input_output_separation": "仅GR、CAL、AC、RLLD、RLLS进入raw_data.curves；SH、POR、PERM、SW、SOG仅作为历史答案摘要",
+      "missing_input_curves": ["DEN", "CNL"],
+      "usage_constraint": "用于验证单层业务流程和与第64层的相邻层对比，不用于独立证明专业解释精度"
+    }
+  },
+  "requirements": {
+    "required_curves": ["GR", "CAL", "AC", "RLLD", "RLLS"],
+    "recommended_sources": ["borehole", "historical_interpretation"]
+  },
+  "outputs": {
+    "qc": {
+      "is_mock": true,
+      "source": "calculated-from-real-point-curves",
+      "status": "SUCCESS",
+      "result": {
+        "quality": "USABLE",
+        "correction_applied": false,
+        "sample_count": 15,
+        "borehole_condition": "井径接近钻头直径，层段内轻微扩径"
+      },
+      "evidence": ["CAL均值22.69878 cm", "钻头直径22.22 cm", "平均扩径率约2.155%，最大约3.299%"],
+      "warnings": ["当前仅检查该层段井径表现，未执行完整环境校正流程"]
+    },
+    "lithology": {
+      "is_mock": true,
+      "source": "historical-result:OGRESULT",
+      "status": "SUCCESS",
+      "result": {"lithology": "砂岩"},
+      "evidence": ["GDSX OGRESULT第65层岩性记录为砂岩", "层段GR均值约57.87 gAPI"],
+      "warnings": ["岩性结论来自历史解释成果，未做独立矿物组分反演"]
+    },
+    "petrophysics": {
+      "is_mock": true,
+      "source": "historical-derived-curves",
+      "status": "SUCCESS",
+      "result": {
+        "vsh": {"value": 0.17415, "unit": "fraction"},
+        "porosity": {"value": 0.115034, "unit": "fraction"},
+        "permeability": {"value": 0.444689, "unit": "mD"},
+        "reservoir": "Ⅲ类储层（历史解释结果）"
+      },
+      "evidence": ["SH层段均值约17.42%", "POR层段均值约11.50%", "PERM层段均值约0.445 mD"],
+      "warnings": ["SH、POR、PERM为GDSX历史派生曲线结果，当前未独立复算"]
+    },
+    "sw": {
+      "is_mock": true,
+      "source": "historical-derived-curve:SW",
+      "status": "SUCCESS",
+      "result": {"water_saturation": {"value": 0.499646, "unit": "fraction"}},
+      "evidence": ["第65层SW逐点均值约49.96%"],
+      "warnings": ["当前未确认饱和度公式、地区参数和适用范围"]
+    },
+    "fluid": {
+      "is_mock": true,
+      "source": "historical-derived-curve:SOG+OGRESULT",
+      "status": "SUCCESS",
+      "result": {
+        "fluid_type": "油",
+        "hydrocarbon_saturation": {"value": 0.500354, "unit": "fraction"}
+      },
+      "evidence": ["SOG层段均值约50.04%", "OGRESULT历史层类为差油层"],
+      "warnings": ["流体结论包含历史解释成果，不是只依靠raw_data的独立模型推理结果"]
+    },
+    "classification": {
+      "is_mock": true,
+      "source": "historical-result:OGRESULT",
+      "status": "SUCCESS",
+      "result": {
+        "layer_type": "差油层",
+        "reservoir_class": "Ⅲ类",
+        "lithology": "砂岩"
+      },
+      "evidence": ["GDSX OGRESULT第65层历史解释结果"],
+      "warnings": ["分类是标准答案字段，不应回灌为模型输入"]
+    },
+    "intervals": {
+      "is_mock": true,
+      "source": "historical-result:OGRESULT",
+      "status": "SUCCESS",
+      "result": {
+        "intervals": [
+          {
+            "formation": "长4+5",
+            "layer_no": 65,
+            "top_depth_m": 2364.8,
+            "bottom_depth_m": 2366.0,
+            "gross_thickness_m": 1.2,
+            "vertical_thickness_m": 0.841,
+            "lithology": "砂岩",
+            "reservoir_class": "Ⅲ类",
+            "layer_type": "差油层"
+          }
+        ]
+      },
+      "evidence": ["GDSX OGRESULT第65层历史层段记录"],
+      "warnings": ["层界为已知历史解释结果，未验证自动分层能力"]
+    }
+  },
+  "validation": {
+    "is_mock": true,
+    "source": "real-point-curves+historical-result",
+    "status": "REVIEW_REQUIRED",
+    "validation_status": "INSUFFICIENT_EVIDENCE",
+    "result": {
+      "summary": "第65层Mock包含15个真实逐点采样及历史解释答案，可用于和第64层做相邻层对比；但尚无独立专家报告或试油生产结论，不能作为独立精度证明"
+    },
+    "evidence": ["GDSX真实GR、CAL、AC、RLLD、RLLS逐点曲线", "GDSX OGRESULT及SH、POR、PERM、SW、SOG历史成果"],
+    "missing_evidence": ["独立专家解释报告", "试油或生产验证结果", "地区参数与计算公式说明"],
+    "recommended_action": "将raw_data作为模型输入，将outputs作为隔离的历史标准答案，运行后逐字段对比第64层与第65层结果"
+  }
+}

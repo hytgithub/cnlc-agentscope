@@ -1,0 +1,178 @@
+{
+  "schema_version": "0.1-skeleton",
+  "is_mock": true,
+  "well": {
+    "well_id": "WELL_DI73_56H_LAYER64",
+    "name": "地73-56H井 长4+5第64层",
+    "extensions": {
+      "data_origin": "真实GDSX历史解释资料与已整理的单层解释材料",
+      "source_well": "地73-56H",
+      "logging_project": "常规大组合",
+      "formation": "长4+5",
+      "layer_no": 64,
+      "data_scope": "interval_summary",
+      "privacy_note": "不包含井坐标"
+    }
+  },
+  "raw_data": {
+    "depth_unit": "m",
+    "depth_reference": "MD",
+    "depths": [2363.1],
+    "curves": {
+      "AC": {"unit": "us/ft", "values": [254.0]},
+      "RLLD": {"unit": "ohm.m", "values": [30.38]},
+      "TOTAL_HC": {"unit": "%", "values": [3.06]},
+      "HEAVY_HC": {"unit": "%", "values": [1.17]}
+    },
+    "auxiliary": {
+      "interval": {
+        "top_depth_m": 2361.4,
+        "bottom_depth_m": 2364.8,
+        "gross_thickness_m": 3.4,
+        "vertical_thickness_m": 2.411
+      },
+      "borehole": {
+        "bit_diameter_mm": 222.2,
+        "caliper_interpretation": "轻度至中等扩径，未见严重扩径",
+        "average_enlargement_rate_percent": 5.9
+      },
+      "surrounding_rock_comparison": {
+        "upper_rll_d_ohm_m": 25.54,
+        "target_rll_d_ohm_m": 30.38,
+        "lower_rll_d_ohm_m": 23.89,
+        "target_ac_us_ft": 254.0,
+        "upper_ac_us_ft": 220.0,
+        "deep_shallow_resistivity_relation": "RLLD > RLLS at all sampled points in the interval"
+      },
+      "mud_logging": {
+        "total_hydrocarbon_from_percent": 1.4,
+        "total_hydrocarbon_to_percent": 3.06,
+        "heavy_hydrocarbon_from_percent": 0.54,
+        "heavy_hydrocarbon_to_percent": 1.17,
+        "summary": "目标层全烃和重烃均升高，存在油气显示"
+      },
+      "historical_interpretation": {
+        "source": "GDSX历史解释成果，不作为独立模型输入",
+        "lithology": "砂岩",
+        "reservoir_class": "Ⅰ类",
+        "interpretation_result": "油层"
+      }
+    },
+    "extensions": {
+      "value_semantics": "区间统计代表值，不是逐点原始采样序列",
+      "representative_depth_m": 2363.1,
+      "missing_raw_curves": ["GR", "CAL", "DEN", "CNL", "RLLS"],
+      "usage_constraint": "用于验证数据结构和单层业务流程，不用于验证自动分层或专业计算精度"
+    }
+  },
+  "requirements": {
+    "required_curves": ["AC", "RLLD"],
+    "recommended_sources": ["borehole", "mud_logging", "historical_interpretation"]
+  },
+  "outputs": {
+    "qc": {
+      "is_mock": true,
+      "source": "real-summary:地73-56H/长4+5/64",
+      "status": "WARNING",
+      "result": {
+        "quality": "USABLE_WITH_CAVEAT",
+        "correction_applied": false,
+        "borehole_condition": "轻度至中等扩径"
+      },
+      "evidence": [
+        "钻头直径222.2 mm",
+        "平均扩径率约5.9%",
+        "未见严重扩径"
+      ],
+      "warnings": ["当前文件仅保存区间统计值，不能替代逐点曲线QC"]
+    },
+    "lithology": {
+      "is_mock": true,
+      "source": "historical-result:OGRESULT",
+      "status": "SUCCESS",
+      "result": {"lithology": "砂岩"},
+      "evidence": ["目标层相对上下围岩表现为低GR；当前Mock未保存GR逐点值"]
+    },
+    "petrophysics": {
+      "is_mock": true,
+      "source": "historical-interval-statistics",
+      "status": "SUCCESS",
+      "result": {
+        "vsh": {"value": 0.229, "unit": "fraction"},
+        "porosity": {"value": 0.149, "unit": "fraction"},
+        "permeability": {"value": 1.45, "unit": "mD"},
+        "reservoir": "Ⅰ类储层（历史解释结果）"
+      },
+      "evidence": ["SH约22.9%", "POR约14.9%", "PERM约1.45 mD"],
+      "warnings": ["参数为GDSX历史解释成果，当前未独立复算"]
+    },
+    "sw": {
+      "is_mock": true,
+      "source": "historical-interval-statistics",
+      "status": "SUCCESS",
+      "result": {"water_saturation": {"value": 0.425, "unit": "fraction"}},
+      "evidence": ["第64层SW约42.5%"],
+      "warnings": ["当前未确认计算公式、地区参数和适用范围"]
+    },
+    "fluid": {
+      "is_mock": true,
+      "source": "real-summary:mud-logging+historical-result",
+      "status": "SUCCESS",
+      "result": {
+        "fluid_type": "油",
+        "hydrocarbon_saturation": {"value": 0.575, "unit": "fraction"}
+      },
+      "evidence": [
+        "全烃约1.40升至约3.06",
+        "重烃约0.54升至约1.17",
+        "SOG约57.5%"
+      ],
+      "warnings": ["流体结论包含历史解释成果，不是独立模型推理结果"]
+    },
+    "classification": {
+      "is_mock": true,
+      "source": "historical-result:OGRESULT",
+      "status": "SUCCESS",
+      "result": {
+        "layer_type": "油层",
+        "reservoir_class": "Ⅰ类",
+        "lithology": "砂岩"
+      },
+      "evidence": ["GDSX OGRESULT历史解释结果"]
+    },
+    "intervals": {
+      "is_mock": true,
+      "source": "historical-result:OGRESULT",
+      "status": "SUCCESS",
+      "result": {
+        "intervals": [
+          {
+            "formation": "长4+5",
+            "layer_no": 64,
+            "top_depth_m": 2361.4,
+            "bottom_depth_m": 2364.8,
+            "gross_thickness_m": 3.4,
+            "vertical_thickness_m": 2.411,
+            "lithology": "砂岩",
+            "reservoir_class": "Ⅰ类",
+            "layer_type": "油层"
+          }
+        ]
+      },
+      "evidence": ["GDSX OGRESULT历史层段记录"],
+      "warnings": ["层界为已知历史解释结果，未验证自动分层能力"]
+    }
+  },
+  "validation": {
+    "is_mock": true,
+    "source": "historical-result-only",
+    "status": "REVIEW_REQUIRED",
+    "validation_status": "INSUFFICIENT_EVIDENCE",
+    "result": {
+      "summary": "Mock与地73-56H第64层历史解释资料一致，但缺少逐点原始曲线和独立专家标准答案，不能作为独立精度验证"
+    },
+    "evidence": ["GDSX历史解释结果", "已整理单层解释材料"],
+    "missing_evidence": ["第64层逐点原始曲线", "独立专家解释报告", "试油或生产验证结果"],
+    "recommended_action": "补齐逐点原始曲线后再做独立计算和结果对比"
+  }
+}

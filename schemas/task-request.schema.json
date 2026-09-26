@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "启动一次单井解释任务所需的最小请求。",
   "properties": {
     "instruction": {
       "default": "执行单井测井解释骨架演示",

@@ -2,6 +2,7 @@
   "$defs": {
     "ErrorDetail": {
       "additionalProperties": false,
+      "description": "可持久化、可展示的结构化错误。",
       "properties": {
         "code": {
           "title": "Code",
@@ -37,6 +38,7 @@
     },
     "JsonValue": {},
     "StepId": {
+      "description": "固定业务流程 W01-W10 的步骤标识。",
       "enum": [
         "W01",
         "W02",
@@ -53,6 +55,7 @@
       "type": "string"
     },
     "StepStatus": {
+      "description": "Workflow 节点和任务统一使用的状态集合。",
       "enum": [
         "PENDING",
         "RUNNING",
@@ -69,6 +72,7 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "Tool 标准输出，包含状态、数据、告警、错误和元数据。",
   "properties": {
     "data": {
       "additionalProperties": {

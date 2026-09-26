@@ -1,1 +1,1 @@
-"""Centralized configuration."""
+"""集中管理应用、连接和持久化配置。"""

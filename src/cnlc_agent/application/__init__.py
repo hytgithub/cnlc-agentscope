@@ -1,1 +1,1 @@
-"""Use cases, dependency interfaces and composition."""
+"""应用用例、依赖端口与对象装配。"""
