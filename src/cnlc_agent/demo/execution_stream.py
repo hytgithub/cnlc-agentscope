@@ -298,11 +298,19 @@ class ExecutionStreamingMiddleware(MiddlewareBase):
         """只接管 START/MODIFY/FULL_RERUN；只读 Tool 保持官方 ReAct 流程。"""
 
         buffer = self.streamer.new_buffer()
-        token = event_observer.set(buffer.observe)
         source = next_handler(**input_kwargs)
         intercepted: dict[str, Any] | None = None
         try:
-            async for event in source:
+            while True:
+                # 框架可能在另一 Context 关闭生成器；Token 不得跨 yield 保存。
+                # 每次推进源流时绑定观察器，执行期间创建的 Worker 仍继承它。
+                token = event_observer.set(buffer.observe)
+                try:
+                    event = await anext(source)
+                except StopAsyncIteration:
+                    break
+                finally:
+                    event_observer.reset(token)
                 yield event
                 if (
                     isinstance(event, ToolResultEndEvent)
@@ -313,7 +321,6 @@ class ExecutionStreamingMiddleware(MiddlewareBase):
                     break
         finally:
             await source.aclose()
-            event_observer.reset(token)
 
         if intercepted is None:
             return

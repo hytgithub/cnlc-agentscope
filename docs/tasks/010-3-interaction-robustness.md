@@ -120,7 +120,7 @@ warning 是现有 Starlette/anyio 弃用提示。
 - 真实 PG/Redis Binding 重建恢复与权限隔离；不可恢复 pending 安全清除。
 - fixture/company_mock START 与 STATUS smoke，以及两种上传/流式路径通过。
 - 明确领域外请求无 Tool；模型违反规则输出冲突写 Tool 时整批保护通过。
-- Browser refresh 的 Session 序列化与读模型恢复由自动测试覆盖；本轮没有另开浏览器手工刷新验收。
+- Browser refresh 的 Session 序列化与读模型恢复同时由自动测试和下述真实网页联调覆盖。
 
 ## qwen-plus 实测
 
@@ -141,12 +141,56 @@ warning 是现有 Starlette/anyio 弃用提示。
 
 这些是五个具体场景的实测，不代表对任意自然语言措辞的模型准确率保证。
 
+## 启动与浏览器联调补验（2026-09-26）
+
+按用户“启动测试一下”的要求，实际启动并测试：
+
+- 前端 Vite：`http://127.0.0.1:5173`；AgentScope 后端：`http://127.0.0.1:8000`。
+- Docker PostgreSQL 端口 55433、Redis 端口 56380，均为 healthy；测试使用 Redis DB 15，网页使用 DB 0。
+- 网页智能体为 `Task10.3 UI 验收`，真实外层模型 qwen-plus；专业来源为 company_mock。
+- 本地 `.env` 的 log level 含有多余标点；启动与测试命令覆盖为 INFO，未修改用户配置文件。
+
+| 实际网页操作 | 结果 |
+| --- | --- |
+| 无任务问“现在执行到哪里了” | 调用状态 Tool，提示先上传或开始任务 |
+| 点击附件按钮，选择 WELL_MOCK_001.json，再提交解释 | 文件名显示；W01–W10 全部 SUCCESS，Execution #1，报告显示 |
+| 后端停止并重启，刷新页面 | 原会话、Task、Execution #1 和报告恢复 |
+| “改成0.16”→“孔隙度” | 先澄清，再仅新增 Execution #2；POR=0.16，W01–W03 REUSED，后续成功 |
+| 状态查询 | Tool 返回 Execution #2 SUCCESS 与全部已完成步骤 |
+| 重复“孔隙度改成0.16” | 模型确认已生效，未调用写 Tool，无 Execution #3；不能将其记为网页实测 NO_EFFECTIVE_CHANGE 错误码 |
+| 重新计算含水饱和度 | Tool 明确不支持，无新执行 |
+| 查看上一版报告 | 报告 Tool 返回报告；历史面板可分别选择 #1、#2 |
+| 上一口井的报告 | Tool 明确当前会话没有上一口井任务 |
+| 再次刷新 | 当前 #2、两版历史、POR=0.16 和报告恢复 |
+
+最初强制点击隐藏 file input 的自动化操作超时；改为实际可见附件按钮后，
+正式 file chooser 选择文件成功。没有通过接口注入替代网页上传验收。
+
+网页实测发现 ExecutionStreamingMiddleware 在生成器跨 Context 关闭时，
+ContextVar token reset 报错。修复为每次推进源流时绑定并清理观察器，token 不跨 yield；
+Worker 仍继承请求观察器。未修改业务 Workflow、持久化或专业工具行为。
+
+本次补验修改 `src/cnlc_agent/demo/execution_stream.py`，
+新增 `tests/unit/test_execution_stream_context.py`，并更新本报告。
+新增测试模拟跨任务推进和关闭 SSE 生成器，检查观察器清理与源流关闭。
+
+- 相关测试（含新测试）：78 passed。
+- 真实 PG/Redis Task 10.3 回归：137 passed。
+- 修复后全量：**369 passed、2 skipped、1 warning**；跳过项与上文相同。
+- 本次两份 Python 文件 ruff check / format check、git diff --check 均通过。
+- 重启后的后台日志未出现 Traceback、ERROR 或跨 Context 清理异常。
+- 浏览器控制台仍有现有 AttachmentGroup 缺少 React key 的提示；附件上传正常，
+  本轮没有修改上游前端组件。该提示不是解释或状态恢复失败。
+
+本次实测不代表真实公司专业算法或 Heavy API 的验收。
+
 ## 未完成内容与下一阶段依赖
 
 - 同 Task 更新 InputVersion、曲线补齐后从中间恢复仍未实现；同井新上传仍创建新 Task。
 - 不实现独立 IntentClassifier、Skill、CapabilityGraph、Sw-only、Compare、Query/Evidence 系统、
   Pause/Resume/Cancel、执行队列或 WPLM/GDSX 主链接入。
-- Browser 手工刷新未重新验收；前端未修改，无需本 Task 前端 build/lint。
+- 前端未修改；本轮已实际启动并完成上述浏览器联调，未运行前端 build/lint。
+- 前端 AttachmentGroup 的 React key 提示可在前端维护任务中修复。
 - 全仓既有 lint/type/format 门禁问题需要独立清理任务。
 - 后续细粒度查询/重算与输入替换需要各自明确 Contract 和 Application policy；
   真实专业链路需要正式公司接口、脱敏井数据及业务输出映射。
