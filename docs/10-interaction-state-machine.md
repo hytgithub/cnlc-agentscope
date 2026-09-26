@@ -1,5 +1,7 @@
 # 交互状态与集中策略（Current Design，Task 10.3）
 
+状态、枚举、任务引用和稳定错误码的统一中文释义见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。本文保留英文代码值以便和代码、日志、测试一一对应。
+
 ## 1. 边界
 
 保持 **ReAct for Interaction，Workflow for Execution**。同一次 qwen-plus ReAct 理解意图，
@@ -18,26 +20,24 @@ session_has_task、active_task_id、active_well_id、current_execution_id、exec
 execution_sequence、current_step、report_ready、has_previous_execution、has_previous_task、
 pending_clarification 和 phase。每次模型推理重新读仓库；快照不作为业务事实持久化。
 
-| Phase | 含义 |
-| --- | --- |
-| NO_TASK | Session 无绑定任务 |
-| ACTIVE | Execution 为 QUEUED / RUNNING，优先于澄清 |
-| NEED_CLARIFICATION | 非活跃任务有完整、有效的 PendingClarification |
-| READY | 当前任务可以进入 Application 写操作校验 |
+| Phase | 中文名称 | 含义 |
+| --- | --- | --- |
+| `NO_TASK` | 当前无任务 | Session 无绑定任务 |
+| `ACTIVE` | 当前有活跃执行 | Execution 为 `QUEUED`（排队等待）/ `RUNNING`（正在执行），优先于澄清 |
+| `NEED_CLARIFICATION` | 等待用户澄清 | 非活跃任务有完整、有效的 PendingClarification |
+| `READY` | 可接受新操作 | 当前任务可以进入 Application 写操作校验 |
 
-SUCCESS / WARNING / FAILED / BLOCKED / REVIEW_REQUIRED 仍然是 ExecutionStatus。
+`SUCCESS`（执行成功）/ `WARNING`（完成但有告警）/ `FAILED`（执行失败）/ `BLOCKED`（被阻断）/ `REVIEW_REQUIRED`（需要人工复核）仍然是 ExecutionStatus。
 READY 不承诺某次重跑一定可行，InputVersion、有效来源和并发仍由 Application 校验。
 
 ## 3. Policy 与工具 Contract
 
-InteractionPolicy 输出 ALLOW / READ_ONLY / CLARIFY / REJECT，分别对应 EXECUTE / QUERY /
-CLARIFY / REJECT。无任务操作返回 TASK_NOT_FOUND，运行中写操作返回含版本和步骤的
+InteractionPolicy 输出：`ALLOW`（允许执行，对应 EXECUTE）、`READ_ONLY`（只读查询，对应 QUERY）、`CLARIFY`（需要澄清）和 `REJECT`（拒绝本次操作）。无任务操作返回 TASK_NOT_FOUND，运行中写操作返回含版本和步骤的
 TASK_EXECUTION_ACTIVE。CURRENT 无报告返回 REPORT_NOT_READY；PREVIOUS、LATEST_SUCCESSFUL
 或显式 execution_id 由既有报告应用接口严格选版。
 
 模型可见 Schema 仅使用 task_reference；旧 Python adapter 的 task_id 调用仍可兼容，
-但不能同时提供二者。CURRENT / PREVIOUS_TASK 的 value 应省略或为 null；WELL_ID / TASK_ID
-需要非空值。指定井查询失败不会切换焦点。成功业务操作才更新 active task。
+但不能同时提供二者。`CURRENT`（当前井）/ `PREVIOUS_TASK`（上一口井）的 value 应省略或为 null；`WELL_ID`（按井号指定）/ `TASK_ID`（按可信任务号指定）需要非空值。指定井查询失败不会切换焦点。成功业务操作才更新 active task。
 
 纯交互工具 Contract：
 
@@ -123,7 +123,7 @@ SSE 断开仍不取消后台 Worker。
 
 STATUS 新增 failed_step、missing_data（仅 field 名称、importance、affected_step）、warning_count、
 review_required，错误仅返回稳定 code，不返回 ErrorDetail.message、原始 exception、URL 或连接配置。
-WARNING 明确为完成但有告警；REVIEW_REQUIRED 不自动改写结论。
+`WARNING`（完成但有告警）明确为已完成；`REVIEW_REQUIRED`（需要人工复核）不自动改写结论。W09 的 `INSUFFICIENT_EVIDENCE`（证据不足）属于 ValidationStatus：表示验证证据不够，并不等于解释结论已被证明错误；当前会进入人工复核。
 
 细层段证据、QUERY_RESULT、COMPARE、恢复/暂停/取消、同 Task InputVersion 替换、WPLM/GDSX
 主链接入均未实现。上传同井新资料目前仍创建新 Task，不承诺覆盖原 Task 的输入版本。

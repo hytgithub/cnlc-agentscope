@@ -10,6 +10,7 @@
 - 意图、参数和任务级 Tool：[08-intent-and-interaction-design.md](08-intent-and-interaction-design.md)
 - 首次上传 SSE 与 UI：[09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md)
 - 运行时持久化：[05-persistence.md](05-persistence.md)
+- 状态与枚举中文说明：[11-status-enum-glossary.md](11-status-enum-glossary.md)
 
 本文只说明对象职责、执行规划和 E2E 约束，不重复上述字段表和事件表。
 
@@ -29,7 +30,7 @@
 
 ### 2.4 ExecutionPlan 与四阶段视图
 
-`DependencyResolver` 生成只读 `ExecutionPlan`，四个阶段依次为 DATA_DECODE、PREPROCESS、INTERPRET、REPORT，每个动作是 RUN 或 REUSE，且 REUSE 只能构成连续前缀。执行边界会重新校验 `expected_current_execution_id` 和来源输入，防止过期计划落库。
+`DependencyResolver` 生成只读 `ExecutionPlan`，四个阶段依次为 `DATA_DECODE`（数据加载/解编）、`PREPROCESS`（数据预处理与质量控制）、`INTERPRET`（专业解释）、`REPORT`（报告生成）；每个动作是 `RUN`（重新执行）或 `REUSE`（复用已有结果），且 `REUSE` 只能构成连续前缀。执行边界会重新校验 `expected_current_execution_id` 和来源输入，防止过期计划落库。
 
 四阶段是 **Planner View / Read Model**。当前没有独立 StageRun 表；W01～W10 的 `StepExecution` 和 `reused_steps` 才是细节事实。
 
@@ -47,7 +48,7 @@ Binding 已由 migration `0006` 实现。完整 `(user_id, agent_id, session_id)
 
 一个 Session 可以绑定多个 Task，每个 Task 仍只对应一口井的持续工作对象。
 `SessionTaskResolver` 使用 Binding 列表和 `get_task()` 构建内部 Task Summary，
-以确定性规则解析 CURRENT、PREVIOUS_TASK、WELL_ID 和 TASK_ID。同井存在
+以确定性规则解析 `CURRENT`（当前井）、`PREVIOUS_TASK`（上一口井）、`WELL_ID`（按井号指定）和 `TASK_ID`（按可信任务号指定）。同井存在
 多个 Task 时选绑定顺序中最近创建的 Task。
 
 `active_task_id` 位于 AgentScope Session State，不是测井业务结果。上传新井或
@@ -72,15 +73,15 @@ Session State；如果该值不可用，则从 Binding 稳定顺序选最近创�
 
 ## 4. 执行生命周期
 
-1. 应用服务创建 `QUEUED` Execution，并原子更新 Task 当前指针。
+1. 应用服务创建 `QUEUED`（排队等待）Execution，并原子更新 Task 当前指针。
 2. in-process dispatcher 立即返回给命令调用者并启动 Worker。
-3. Worker claim 后进入 RUNNING，持有可续租 lease。
+3. Worker claim 后进入 `RUNNING`（正在执行），持有可续租 lease。
 4. MainAgent 根据 `start_step` 和复用快照启动现有 InterpretationWorkflow。
 5. Workflow 按 W01～W10 固定顺序执行或跳过已复用前缀，写状态和 ToolRun。
 6. Workflow 终态允许时生成报告，并写本 Execution 的 Markdown。
-7. Worker 用同一租约身份写 SUCCESS、WARNING、FAILED、BLOCKED 或 REVIEW_REQUIRED。
+7. Worker 用同一租约身份写 `SUCCESS`（执行成功）、`WARNING`（完成但有告警）、`FAILED`（执行失败）、`BLOCKED`（被阻断）或 `REVIEW_REQUIRED`（需要人工复核）。
 
-ExecutionStatus、StepStatus 和 ToolRunStatus 分离。状态 API 查询 PostgreSQL 事实，不从聊天内容、LLM 回复或 dispatcher 内存推断。
+ExecutionStatus、StepStatus 和 ToolRunStatus 分离；完整中文含义见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。状态 API 查询 PostgreSQL 事实，不从聊天内容、LLM 回复或 dispatcher 内存推断。
 
 ## 5. AgentScope 交互边界
 

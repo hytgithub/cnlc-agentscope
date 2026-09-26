@@ -23,6 +23,7 @@ docs/00-project-context.md
 docs/01-business-workflow.md
 docs/02-agent-tool-boundary.md
 docs/03-system-architecture.md
+docs/11-status-enum-glossary.md
 docs/mvp-acceptance.md
 AGENTS.md
 ```
@@ -224,18 +225,20 @@ Workflow 不承担复杂专业推理。
 
 候选统一状态：
 
-```text
-PENDING
-RUNNING
-SUCCESS
-WARNING
-FAILED
-BLOCKED
-REVIEW_REQUIRED
-SKIPPED
-```
+- `PENDING`（等待执行）
+- `RUNNING`（正在执行）
+- `SUCCESS`（执行成功）
+- `WARNING`（完成但有告警）
+- `FAILED`（执行失败）
+- `BLOCKED`（被阻断）
+- `REVIEW_REQUIRED`（需要人工复核）
+- `SKIPPED`（已跳过）
 
-禁止不同模块自行创建含义重复但命名不同的状态。
+完整定义见 `docs/11-status-enum-glossary.md`。禁止不同模块自行创建含义重复但命名不同的状态。
+
+### 14.1 文档中的状态/枚举中文标注
+
+设计文档、Task 说明和验收记录中，状态、枚举、动作码、规划原因等稳定代码值首次出现时，必须写成 `CODE（中文名称或中文含义）`，或在紧邻位置提供中文说明表。不得只列英文枚举让读者自行猜测。新增枚举时必须同步更新 `docs/11-status-enum-glossary.md`。
 
 ## 15. Retry / Rollback 规则
 

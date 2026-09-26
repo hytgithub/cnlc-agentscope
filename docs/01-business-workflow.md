@@ -817,12 +817,12 @@ VS
 
 判断：
 
-```text
-CONSISTENT
-PARTIAL_CONFLICT
-SERIOUS_CONFLICT
-INSUFFICIENT_EVIDENCE
-```
+- `CONSISTENT`（证据一致）：多源验证证据与当前解释总体一致。
+- `PARTIAL_CONFLICT`（部分冲突）：存在局部不一致，但不足以认定整体解释失效。
+- `SERIOUS_CONFLICT`（严重冲突）：关键验证证据与当前解释存在明显冲突。
+- `INSUFFICIENT_EVIDENCE`（证据不足）：独立验证证据数量、覆盖范围或可信度不足，无法确认当前解释是否可靠；**不等于当前解释一定错误**。
+
+完整说明见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
 
 ### 13.4 输出
 
@@ -851,37 +851,27 @@ state.current_step = W09
 
 ### 14.1 一致
 
-CONSISTENT → W10。
+`CONSISTENT`（证据一致）→ W10。
 
 ### 14.2 轻微冲突
 
-PARTIAL_CONFLICT → 记录 Warning → 继续 W10，或进入人工复核，具体规则后续配置。
+`PARTIAL_CONFLICT`（部分冲突）→ 当前实现记录 `WARNING`（完成但有告警）并继续后续检查。
 
 ### 14.3 严重冲突
 
-不能直接继续生成确定性最终结论，应：
+`SERIOUS_CONFLICT`（严重冲突）表示已有关键证据与当前解释明显矛盾，不能继续把当前结果当作已验证结论。
 
-```text
-SERIOUS_CONFLICT
-↓
-定位冲突环节
-↓
-返回相关节点重新执行
-```
+当前实现进入 `REVIEW_REQUIRED`（需要人工复核），不会自动回退 W06/W07。自动定位冲突环节并回退重算属于后续能力。
 
-例如：
+### 14.4 证据不足
 
-```text
-W09
-↓
-发现流体解释冲突
-↓
-回退 W06
-```
+`INSUFFICIENT_EVIDENCE`（证据不足）表示可用于验证的独立证据不足，系统无法确认当前解释是否可靠。它和“严重冲突”不同：这里不是已有证据明确反对当前结论，而是证据不够。
+
+当前实现同样进入 `REVIEW_REQUIRED`（需要人工复核）。
 
 ## 15. 回退机制
 
-Workflow 必须支持：
+长期目标允许根据验证结果进行受控回退，例如：
 
 ```text
 W09 → W06
@@ -892,7 +882,7 @@ W10 → W06
 W10 → W07
 ```
 
-实际可回退节点根据发现的问题决定。
+实际可回退节点根据发现的问题决定。**当前实现尚未自动执行上述回退**；W09 的 `SERIOUS_CONFLICT`（严重冲突）和 `INSUFFICIENT_EVIDENCE`（证据不足）先进入 `REVIEW_REQUIRED`（需要人工复核）。
 
 ### 15.1 回退记录
 
@@ -1120,14 +1110,15 @@ Tool Failed
 
 ### Case 05：验证发现严重冲突
 
-预期：
+当前实现预期：
 
 ```text
 W09
-→ SERIOUS_CONFLICT
-→ Rollback
-→ 重新解释
+→ SERIOUS_CONFLICT（严重冲突）
+→ REVIEW_REQUIRED（需要人工复核）
 ```
+
+自动 Rollback（回退重算）是后续能力，不在当前实现中冒充已完成。
 
 ### Case 06：达到最大回退次数
 

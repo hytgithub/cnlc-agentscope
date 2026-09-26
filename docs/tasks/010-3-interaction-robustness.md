@@ -1,5 +1,38 @@
 # Task 10.3 implementation summary
 
+> 英文代码值用于和代码、日志、数据库、测试对应；统一中文含义见 [../11-status-enum-glossary.md](../11-status-enum-glossary.md)。
+
+## 关键状态与枚举中文说明
+
+| 代码值 | 中文含义 |
+| --- | --- |
+| `NO_TASK` | 当前 Session 无可操作解释任务 |
+| `READY` | 当前 Task 可接受新的写操作校验 |
+| `ACTIVE` | 当前存在排队或运行中的 Execution |
+| `NEED_CLARIFICATION` | 等待用户补齐澄清信息 |
+| `ALLOW` | 允许执行 |
+| `READ_ONLY` | 只读查询 |
+| `CLARIFY` | 需要澄清，本次不执行写操作 |
+| `REJECT` | 拒绝本次操作 |
+| `QUEUED` | Execution 排队等待 |
+| `RUNNING` | Execution 正在执行 |
+| `SUCCESS` | 执行成功 |
+| `WARNING` | 执行完成但存在告警 |
+| `FAILED` | 执行失败 |
+| `BLOCKED` | 因关键资料或前置条件缺失被阻断 |
+| `REVIEW_REQUIRED` | 需要人工复核 |
+| `CURRENT` | 当前井/当前任务；报告场景为当前版本 |
+| `PREVIOUS_TASK` | 上一口井/上一个 Task |
+| `PREVIOUS` | 当前井上一版 Execution，不跨井 |
+| `LATEST_SUCCESSFUL` | 当前井最近成功报告 |
+
+W09 的 ValidationStatus：
+
+- `CONSISTENT`（证据一致）：验证证据与当前解释总体一致。
+- `PARTIAL_CONFLICT`（部分冲突）：存在局部冲突，当前实现表现为 `WARNING`（完成但有告警）。
+- `SERIOUS_CONFLICT`（严重冲突）：关键证据与当前解释明显冲突，当前进入 `REVIEW_REQUIRED`（需要人工复核）。
+- `INSUFFICIENT_EVIDENCE`（证据不足）：用于验证的独立证据不够，无法确认当前解释是否可靠；**不表示当前解释一定错误**，当前同样进入 `REVIEW_REQUIRED`（需要人工复核）。
+
 ## 基线与范围
 
 - 日期：2026-09-26。
@@ -14,8 +47,8 @@
 
 1. `InteractionSnapshot` 从 SessionTaskResolver、授权 Binding、Task、当前 Execution 与
    Session middle_context 派生，不存业务 Task，不新增数据库表或 migration。
-2. InteractionPhase 为 NO_TASK / READY / ACTIVE / NEED_CLARIFICATION，ExecutionStatus 不复制。
-3. InteractionPolicy 集中输出 ALLOW / READ_ONLY / CLARIFY / REJECT。无任务、活跃执行写入、
+2. InteractionPhase 为 `NO_TASK`（当前无任务）/ `READY`（可接受新操作）/ `ACTIVE`（当前有活跃执行）/ `NEED_CLARIFICATION`（等待用户澄清），ExecutionStatus 不复制。
+3. InteractionPolicy 集中输出 `ALLOW`（允许执行）/ `READ_ONLY`（只读查询）/ `CLARIFY`（需要澄清）/ `REJECT`（拒绝本次操作）。无任务、活跃执行写入、
    当前报告未就绪、歧义修改、未支持能力／参数和冲突都有明确裁决。
 4. 新增纯交互工具 request_interpretation_clarification，只记录或返回交互状态，不创建执行。
    模型仍是单次 ReAct 语义入口，没有第二次意图模型调用或生产正则 IntentClassifier。
@@ -30,8 +63,8 @@
 8. 运行中 MODIFY / FULL_RERUN 返回 TASK_EXECUTION_ACTIVE，提示 Execution 序号和当前步骤，
    无新版本；Application 原子并发保护继续保留。
 9. STATUS 安全投影 failed_step、missing_data/affected_step、warning_count、review_required 和
-   稳定错误代码。FAILED 不输出 exception 原文；BLOCKED 告知缺什么、哪里停止；
-   REVIEW_REQUIRED 明确人工复核；WARNING 明确已完成且有告警。
+   稳定错误代码。`FAILED`（执行失败）不输出 exception 原文；`BLOCKED`（被阻断）告知缺什么、哪里停止；
+   `REVIEW_REQUIRED`（需要人工复核）明确人工复核；`WARNING`（完成但有告警）明确已完成且有告警。
 10. CURRENT 绝不借用旧报告。FAILED/BLOCKED 本版若已有诊断报告可以读取，无报告则明确未就绪。
 11. 领域内未支持参数、Sw/岩性/层段局部重算、细层段证据与专业问答返回能力边界；
     天气、Java、笑话属于领域外，不调用测井 Task Tool。

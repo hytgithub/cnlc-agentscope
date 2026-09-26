@@ -1,6 +1,6 @@
 # 测井解释智能体文档导航
 
-本目录同时保存当前设计、历史差距分析、Task 执行记录和验收基线。阅读时应先确认文档类型；当前行为以代码、Alembic migration 和标为 **Current Design** 的文档为准。
+本目录同时保存当前设计、历史差距分析、Task 执行记录和验收基线。阅读时应先确认文档类型；当前行为以代码、Alembic migration 和标为 **Current Design** 的文档为准。状态、枚举、动作码和流程节点的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)；Current Design 文档首次出现这些代码值时应同步给出中文说明。
 
 ## 当前设计（Current Design）
 
@@ -17,6 +17,7 @@
 | 数据库设计 | [07-database-design.md](07-database-design.md) | ER、版本、ToolRun、Binding 和并发控制 |
 | 意图与交互设计 | [08-intent-and-interaction-design.md](08-intent-and-interaction-design.md) | 附件路由、ReAct、五个任务级 Tool |
 | 交互状态机 | [10-interaction-state-machine.md](10-interaction-state-machine.md) | 异常交互、集中 Policy、短期澄清和状态裁决 |
+| 状态与枚举中文词典 | [11-status-enum-glossary.md](11-status-enum-glossary.md) | Workflow、Execution、Validation、交互、ToolRun、规划等代码值的中文含义 |
 | 流式进度与 UI | [09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md) | 首次解释 SSE、Telemetry 投影和界面边界 |
 
 ## 历史差距分析（Historical Gap Analysis）

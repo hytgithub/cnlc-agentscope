@@ -1,6 +1,6 @@
 # 测井解释智能体意图识别与交互设计
 
-本文描述当前已实现的自然语言入口。系统没有独立 `IntentClassifier`。真实模式由 AgentScope ReAct Agent 使用 `qwen-plus`，结合固定系统提示、五个业务任务级 Tool 与一个纯交互 Tool 的描述和 JSON Schema 选择动作；业务参数随后由 Pydantic Command 校验，局部重跑由确定性的 `DependencyResolver` 决定。
+本文描述当前已实现的自然语言入口。系统没有独立 `IntentClassifier`。状态、枚举、任务引用和报告 selector 的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。真实模式由 AgentScope ReAct Agent 使用 `qwen-plus`，结合固定系统提示、五个业务任务级 Tool 与一个纯交互 Tool 的描述和 JSON Schema 选择动作；业务参数随后由 Pydantic Command 校验，局部重跑由确定性的 `DependencyResolver` 决定。
 
 ## 1. 四层边界
 
@@ -35,13 +35,13 @@ flowchart TD
 
 | Intent | Task-level Tool | Required Context | 参数 | 只读 | 创建新 Execution |
 | --- | --- | --- | --- | --- | --- |
-| START | `run_well_interpretation` | 已校验上传或 fixture | `well_id` | 否 | 是，同时创建 Task / InputVersion |
-| MODIFY | `modify_well_interpretation` | 当前会话拥有的 Task | `task_id`、变化字段 | 否 | 是 |
-| FULL_RERUN | `rerun_well_interpretation` | 当前会话拥有的 Task | `task_id` | 否 | 是，从 W01 开始 |
-| STATUS | `get_interpretation_status` | 当前会话拥有的 Task | `task_id` | 是 | 否 |
-| GET_REPORT | `get_interpretation_report` | 当前会话拥有的 Task | `task_id`、selector 或可信 execution_id | 是 | 否 |
+| START（开始解释） | `run_well_interpretation` | 已校验上传或 fixture | `well_id` | 否 | 是，同时创建 Task / InputVersion |
+| MODIFY（修改参数并重跑） | `modify_well_interpretation` | 当前会话拥有的 Task | `task_id`、变化字段 | 否 | 是 |
+| FULL_RERUN（全量重跑） | `rerun_well_interpretation` | 当前会话拥有的 Task | `task_id` | 否 | 是，从 W01 开始 |
+| STATUS（查询状态） | `get_interpretation_status` | 当前会话拥有的 Task | `task_id` | 是 | 否 |
+| GET_REPORT（查询报告） | `get_interpretation_report` | 当前会话拥有的 Task | `task_id`、selector 或可信 execution_id | 是 | 否 |
 
-报告 selector 支持 `CURRENT`、`PREVIOUS`、`LATEST_SUCCESSFUL`。显式 `execution_id` 仍需验证属于该 Task。
+报告 selector 支持 `CURRENT`（当前版本报告）、`PREVIOUS`（当前井上一版报告，不跨 Task）、`LATEST_SUCCESSFUL`（当前井最近成功报告）。显式 `execution_id` 仍需验证属于该 Task。
 
 START、MODIFY 和 FULL_RERUN 的 Task Tool 返回 `QUEUED/RUNNING` 与可信
 `task_id + execution_id` 后，统一进入 `ExecutionReplyStreamer`。ReAct 只负责选择动作；
@@ -61,7 +61,7 @@ W01～W10、专业 Tool、RUN/REUSE 和报告均来自该 Execution 的持久事
 | 给我上一版报告 | GET_REPORT | `get_interpretation_report(PREVIOUS)` | 历史报告 |
 | 给我当前报告 | GET_REPORT | `get_interpretation_report(CURRENT)` | 当前报告 |
 | 最近成功报告 | GET_REPORT | `get_interpretation_report(LATEST_SUCCESSFUL)` | 最近成功版本 |
-| 帮我看看天气 | OUT_OF_DOMAIN | none | 不调用测井 Tool |
+| 帮我看看天气 | OUT_OF_DOMAIN（领域外请求） | none | 不调用测井 Tool |
 
 ## 4. 参数理解和校验
 
@@ -89,10 +89,10 @@ Session State 的 `middle_context` 中，只表示对话焦点，不进入
 InterpretationTask 或数据库列。`SessionTaskResolver` 从 SessionTaskBinding
 的稳定排序构建 Task Summary，支持：
 
-- `CURRENT`：active task；状态丢失时 fallback 到当前 Session 最近绑定的 Task；
-- `PREVIOUS_TASK`：active task 之前绑定的 Task；
-- `WELL_ID`：当前 Session 内同井号最近创建的 Task；
-- `TASK_ID`：只有四元组 Binding 验证通过才可用。
+- `CURRENT`（当前井/当前任务）：active task；状态丢失时 fallback 到当前 Session 最近绑定的 Task；
+- `PREVIOUS_TASK`（上一口井/上一个任务）：active task 之前绑定的 Task；
+- `WELL_ID`（按井号指定）：当前 Session 内同井号最近创建的 Task；
+- `TASK_ID`（按可信任务号指定）：只有四元组 Binding 验证通过才可用。
 
 “上一版”是 active task 的上一个 Execution，不跨井；“上一口井”是
 `PREVIOUS_TASK`，报告默认取 `LATEST_SUCCESSFUL`。明确访问某井成功后，

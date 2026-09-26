@@ -1,6 +1,6 @@
 # 测井解释智能体数据库设计
 
-本文记录 migration `0001`～`0006` 已实现的数据库事实。设计原则是 **Versioned、Append-oriented、Traceable、Recoverable**：输入、执行和工具调用以新版本追加，Task 只维护当前指针和兼容视图，运行失败也必须留下可查询事实。
+本文记录 migration `0001`～`0006` 已实现的数据库事实。设计原则是 **Versioned、Append-oriented、Traceable、Recoverable**：输入、执行和工具调用以新版本追加，Task 只维护当前指针和兼容视图，运行失败也必须留下可查询事实。状态、枚举和规划原因的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
 
 ## 1. 实体关系
 
@@ -88,9 +88,9 @@ erDiagram
 
 `interpretation_task` 表示一口井的持续任务。`status`、`snapshot`、`markdown` 是从 `0001` 保留的兼容当前视图；版本事实已分别进入 Execution 和 InputVersion。新代码通过 `current_execution_id`、`latest_successful_execution_id` 和 `current_input_version_id` 定位版本，不覆盖历史行。
 
-`current_execution_id` 指向当前选中的最新 Execution，因此可对应 `QUEUED`、`RUNNING`、失败类终态或成功类终态。`latest_successful_execution_id` 只在 Execution 进入 `SUCCESS` 或 `WARNING` 且形成可用报告时更新，用于寻找最近可靠的复用和历史报告基线。
+`current_execution_id` 指向当前选中的最新 Execution，因此可对应 `QUEUED`（排队等待）、`RUNNING`（正在执行）、失败类终态或成功类终态。`latest_successful_execution_id` 只在 Execution 进入 `SUCCESS` 或 `WARNING` 且形成可用报告时更新，用于寻找最近可靠的复用和历史报告基线。
 
-InputVersion 的 `source_type` 当前只允许 `UPLOAD` 或 `FIXTURE`。上传内容先经过确定性解析和 `MockFixture` Schema 校验，再按字段排序序列化并计算 `content_sha256`；`payload` 保存规范化 JSON，不保存原附件名、二进制或临时路径。Worker 执行时从所选 InputVersion 重新物化临时文件，因此重启后不依赖旧临时目录。
+InputVersion 的 `source_type` 当前只允许 `UPLOAD`（用户上传）或 `FIXTURE`（演示/测试夹具）。上传内容先经过确定性解析和 `MockFixture` Schema 校验，再按字段排序序列化并计算 `content_sha256`；`payload` 保存规范化 JSON，不保存原附件名、二进制或临时路径。Worker 执行时从所选 InputVersion 重新物化临时文件，因此重启后不依赖旧临时目录。
 
 ```mermaid
 flowchart LR
@@ -104,7 +104,7 @@ flowchart LR
 
 每次首次执行、局部重跑或全量重跑都新增一条 Execution。字段含义如下：
 
-- `sequence`：Task 内连续版本号；`trigger_type` 为 `INITIAL` 或 `RERUN`。
+- `sequence`：Task 内连续版本号；`trigger_type` 为 `INITIAL`（首次触发）或 `RERUN`（重跑触发）。
 - `input_version_id`、`override_snapshot`：本次执行实际使用的输入和四个有效参数快照。
 - `start_step`、`source_execution_id`、`planning_reason`：执行起点、可复用成功来源和确定性规划原因。
 - `state_snapshot`：本次 W01～W10 的完整 `InterpretationState` 快照。
@@ -123,7 +123,9 @@ stateDiagram-v2
     RUNNING --> FAILED: lease expired
 ```
 
-`ExecutionStatus`、W01～W10 的 `StepStatus`、`ToolRunStatus` 是三个不同状态域，不能互换。Execution 没有 `PENDING`；`PENDING` 是 Workflow 步骤状态。ToolRun 当前状态为 `RUNNING / SUCCESS / WARNING / FAILED`。
+`ExecutionStatus`、W01～W10 的 `StepStatus`、`ToolRunStatus` 是三个不同状态域，不能互换。Execution 没有 `PENDING`（等待执行）；`PENDING` 是 Workflow 步骤状态。ToolRun 当前状态为 `RUNNING`（工具正在执行）/ `SUCCESS`（工具执行成功）/ `WARNING`（工具完成但有告警）/ `FAILED`（工具执行失败）。
+
+Execution 终态中的 `SUCCESS` 表示执行成功，`WARNING` 表示完成但有告警，`FAILED` 表示执行失败，`BLOCKED` 表示被关键资料或前置条件阻断，`REVIEW_REQUIRED` 表示需要人工复核。
 
 ## 4. 局部重跑和参数快照
 
@@ -147,11 +149,13 @@ stateDiagram-v2
 `interpretation_tool_run` 是已实现的持久轨迹，不是待办。每次专业 Tool 调用记录：
 
 - 身份：`tool_run_id`、`task_id`、`execution_id`、`step_id`、`tool_code`；
-- 状态和模式：`status`，以及 `MOCK / REAL / VIRTUAL / DERIVED`；
+- 状态和模式：`status`，以及 `MOCK`（模拟执行）/ `REAL`（真实执行）/ `VIRTUAL`（虚拟/逻辑执行）/ `DERIVED`（由共享调用结果派生）；
 - 来源：`source` 表示本次结果来源，业务输出中的 `prediction_source` 表示专业预测来源，两者语义不同；
 - 快照：`input_snapshot`、`output_snapshot`；
 - 外部关联预留：`source_external_call_id`；
 - 运行信息：`started_at`、`finished_at`、`error_code`、`error_message`。
+
+ToolRun 状态为 `RUNNING`（工具正在执行）、`SUCCESS`（工具执行成功）、`WARNING`（工具完成但有告警）、`FAILED`（工具执行失败）。company_mock 的批量入口是 `MOCK`（模拟执行），从共享批量结果拆出的细分 ToolRun 是 `DERIVED`（派生结果），不能把后者当成独立公司 API 调用。
 
 当前没有 `ExternalPredictionCall` 或 `PredictionArtifact` 表。未来接入 Heavy Prediction API 时，可在确认重试、幂等、成本和产物契约后新增；现阶段仅保留 `source_external_call_id`，不能宣称已接入。
 
