@@ -254,13 +254,46 @@ class TaskCommandRunner:
         """供测试和非交互兼容调用等待终态；任务级 Tool 不使用此方法阻塞请求。"""
 
         async with asyncio.timeout(timeout_seconds):
+            return await self.wait_for_execution_completion(task_id, execution_id)
+
+    async def wait_for_execution_completion(
+        self, task_id: str, execution_id: str
+    ) -> TaskCommandResult:
+        """等待当前进程 Worker 结束，并以持久 Execution 终态作为完成依据。"""
+
+        worker_error: Exception | None = None
+        try:
+            # dispatcher.wait 内部使用 shield；取消 SSE 等待者不会取消后台 Worker。
             await self.dispatcher.wait(execution_id)
+        except Exception as exc:
+            worker_error = exc
         with TemporaryDirectory(prefix="cnlc-status-") as directory:
             async with self.context(Path(directory)) as service:
                 execution = await service.repository.get_execution(execution_id)
-                if execution is None or execution.status not in TERMINAL_EXECUTION_STATUSES:
-                    raise TimeoutError("background execution did not finish")
+                if execution is None or execution.task_id != task_id:
+                    raise InfrastructureError(
+                        "EXECUTION_NOT_FOUND", "指定执行不存在或不属于当前任务"
+                    )
+                if execution.status not in TERMINAL_EXECUTION_STATUSES:
+                    if worker_error is not None:
+                        raise InfrastructureError(
+                            "BACKGROUND_EXECUTION_FAILED", "后台执行未形成可读取终态"
+                        ) from worker_error
+                    raise InfrastructureError(
+                        "EXECUTION_NOT_TERMINAL", "后台执行尚未进入终态"
+                    )
                 return await TaskCommands(service).project(task_id, execution_id, "STATUS")
+
+    async def get_execution_report(
+        self, task_id: str, execution_id: str
+    ) -> TaskCommandResult:
+        """按明确 execution_id 读取报告，避免当前版本指针变化导致串版。"""
+
+        with TemporaryDirectory(prefix="cnlc-report-") as directory:
+            async with self.context(Path(directory)) as service:
+                return await TaskCommands(service).report(
+                    GetReportCommand(task_id=task_id, execution_id=execution_id)
+                )
 
 
 _SAFE_ERRORS = {

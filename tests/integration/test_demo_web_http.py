@@ -144,7 +144,35 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                 report_chunks = [
                     e["delta"] for e in events if e["type"] == EventType.TEXT_BLOCK_DELTA
                 ]
-                assert "解释任务已提交" in "".join(report_chunks)
+                assert "".join(report_chunks) == report
+                tool_result_index = next(
+                    index
+                    for index, event in enumerate(events)
+                    if event["type"] == EventType.TOOL_RESULT_END
+                )
+                reply_end_index = next(
+                    index
+                    for index, event in enumerate(events)
+                    if event["type"] == EventType.REPLY_END
+                )
+                assert tool_result_index < reply_end_index
+                progress = "".join(
+                    event["delta"]
+                    for event in events[tool_result_index + 1 : reply_end_index]
+                    if event["type"] == EventType.THINKING_BLOCK_DELTA
+                )
+                positions = [progress.index(f"  ▶ W{i:02}") for i in range(1, 11)]
+                assert positions == sorted(positions)
+                for tool in (
+                    "get_well_data",
+                    "check_curve_quality",
+                    "identify_lithology",
+                    "evaluate_petrophysics",
+                    "calculate_sw",
+                    "merge_intervals",
+                ):
+                    assert f"调用工具：{tool}" in progress
+                    assert f"✓ {tool} 执行成功" in progress
                 assert "api_key" not in json.dumps(events)
                 # The service persists the same projected Assistant message after REPLY_END.
                 async with asyncio.timeout(5):
@@ -155,7 +183,7 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                         if any(m.role == "assistant" for m in messages):
                             break
                         await asyncio.sleep(0.01)
-                assert any("解释任务已提交" in (m.get_text_content() or "") for m in messages)
+                assert any((m.get_text_content() or "") == report for m in messages)
                 # 每轮官方服务重新创建 Agent/Tools，内存仓库仍由同一会话 runner 持有。
                 for text, command in [
                     ("把孔隙度、渗透率改成0.16", "MODIFY"),

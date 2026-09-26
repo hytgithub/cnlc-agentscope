@@ -28,6 +28,7 @@ from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
 
 if TYPE_CHECKING:
+    from cnlc_agent.application.commands import TaskCommandResult
     from cnlc_agent.demo.task_tools import TaskCommandRunner
 
 RUN_TOOL_NAME = "run_well_interpretation"
@@ -287,3 +288,25 @@ class RunWellInterpretationTool(ToolBase):
             ),
             metadata={"result": payload},
         )
+
+    async def wait_for_execution_completion(
+        self, task_id: str, execution_id: str
+    ) -> TaskCommandResult:
+        """为上传回复暴露受控等待接口，不泄漏 Runner 私有实现。"""
+
+        from cnlc_agent.demo.task_tools import TaskCommandRunner
+
+        if not isinstance(self._runner, TaskCommandRunner):
+            raise ApplicationError("EXECUTION_WAIT_UNAVAILABLE", "当前执行器不支持后台等待")
+        return await self._runner.wait_for_execution_completion(task_id, execution_id)
+
+    async def get_execution_report(
+        self, task_id: str, execution_id: str
+    ) -> TaskCommandResult:
+        """严格读取本轮 Execution 报告，禁止跟随 Task 当前指针。"""
+
+        from cnlc_agent.demo.task_tools import TaskCommandRunner
+
+        if not isinstance(self._runner, TaskCommandRunner):
+            raise ApplicationError("REPORT_READ_UNAVAILABLE", "当前执行器不支持报告读取")
+        return await self._runner.get_execution_report(task_id, execution_id)

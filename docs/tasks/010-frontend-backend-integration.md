@@ -92,6 +92,18 @@ Execution #6 最终 `SUCCESS`，有效参数仍为 POR/PERM 0.16，四阶段全�
 3. 初版刷新修复把执行标识放入 query key，短暂的空数据会把用户从历史版本切回当前。改为稳定 query key 加显式 refetch，历史选择在后台刷新期间保持不变。
 4. 后端模型凭证原先在每个 HTTP 请求中重复 upsert，未进入 lifespan 的只读 API 测试会访问尚未连接的 Redis client。凭证发布移至应用 lifespan，生产启动只写一次。
 
+## Task 10.1：首次解释实时流式展示
+
+旧行为在 `run_well_interpretation` 返回 `QUEUED` 后立即停止消费请求级 Telemetry 队列，输出“解释任务已提交”并结束回复。后台执行虽然继续，但聊天区域看不到 W01-W10、专业 Tool 和报告生成过程。
+
+新行为仍先发送包含 `task_id`、`execution_id` 和 `QUEUED` 的 `ToolResultEnd`，使 Interpretation Panel 能尽早打开；随后保持同一条 AgentScope SSE 回复，消费后台 Worker 继承的 `event_observer`，按真实事件依次展示业务阶段、W01-W10、6 个专业 Tool 及报告生成状态。Execution 进入持久终态后，回复先排空已入队事件，再按本轮 `execution_id` 读取 Markdown 报告，报告输出完成后才发送 `ReplyEnd`。
+
+实时展示复用 `workflow.step.start`、`state.change`、`workflow.result`、`tool.start`、`tool.result`、`tool.error`、`report.start` 和 `report.end`。展示投影位于 `src/cnlc_agent/demo/progress.py`，只读取和去重事件，不控制 Workflow。没有新增 EventBus、数据库表、轮询接口或模拟 sleep。
+
+SSE 断开只取消当前观察协程。`ExecutionDispatcher.wait` 的 `shield` 保证后台 Worker 不被取消；自动测试覆盖了取得 `QUEUED` 后关闭流，Execution 仍继续到 `SUCCESS`。页面重新打开仍由 PostgreSQL、SessionTaskBinding 和现有 Read API 恢复 Panel，不做 SSE replay。
+
+真实浏览器使用现有 AgentScope Session 和正式 `/chat/` 上传协议提交 `WELL_MOCK_001.json`。聊天 Thinking 区实际渲染 W01-W10 的开始和完成、6 个 Tool 的开始和成功、报告开始和完成，随后显示本轮 Markdown 报告；右侧 Panel 同时显示 `SUCCESS`、10/10、6 个 ToolRun 和报告，浏览器 Console 无 error。内置浏览器的原生文件选择器仍无法由当前自动化驱动注入文件，因此协议提交后在同一真实页面完成渲染验收。
+
 ## Console、Network 与日志
 
 - 浏览器 Console 没有 JavaScript error、Unhandled Promise、React key、Query、CORS 或 404 polling loop。

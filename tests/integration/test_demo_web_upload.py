@@ -25,9 +25,11 @@ from cnlc_agent.application.commands import GetStatusCommand
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
 from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
 from cnlc_agent.demo.uploads import MAX_UPLOAD_BYTES, UploadError, parse_upload
+from cnlc_agent.domain.errors import ToolError
 from cnlc_agent.domain.inputs import fixture_digest
 from cnlc_agent.infrastructure.mock import InMemoryTaskRepository, MockModelGateway
 from cnlc_agent.infrastructure.telemetry import event_observer
+from cnlc_agent.tools.mock import MockResultTool
 
 
 @pytest.fixture(autouse=True)
@@ -80,18 +82,17 @@ async def collect_reply(message):
     reply = AssistantMsg(id=events[0].reply_id, name=agent.name, content=[])
     for event in events:
         reply.append_event(event)  # Official service and UI use this same event projection.
-    # 旧上传测试验证消息投影；后台任务显式等待并清理，不改变已返回的 QUEUED 事件。
+    # 上传回复已经等待本轮终态；这里只关闭会话级调度器，避免测试泄漏任务。
     submission = next(
         (e.metadata.get("result") for e in events if isinstance(e, ToolResultEndEvent)), None
     )
     runner = agent.toolkit.tool_groups[0].tools[0]._runner
     if submission and isinstance(runner, TaskCommandRunner):
-        await runner.wait_for_completion(submission["task_id"], submission["execution_id"])
         await runner.dispatcher.shutdown()
     return events, reply
 
 
-async def test_upload_submits_execution_without_waiting_for_report(data_dir):
+async def test_upload_streams_execution_until_report(data_dir):
     data = json.loads((data_dir / "WELL_MOCK_001.json").read_bytes())
     del data["well"]["well_id"]
     data["well"]["name"] = "上传的专属演示井"
@@ -110,13 +111,29 @@ async def test_upload_submits_execution_without_waiting_for_report(data_dir):
     text = reply.get_text_content()
     progress_block = reply.get_content_blocks("thinking")[0]
     progress = progress_block.thinking
-    assert "解释任务已提交" in text
-    assert result["execution_id"] in text
-    assert "UPLOAD_FLUID" not in text
+    assert text.startswith("# 上传的专属演示井测井评价报告")
     assert progress_block.finished_at is not None
+    positions = [progress.index(f"  ▶ W{i:02}") for i in range(1, 11)]
+    assert positions == sorted(positions)
+    for tool in (
+        "get_well_data",
+        "check_curve_quality",
+        "identify_lithology",
+        "evaluate_petrophysics",
+        "calculate_sw",
+        "merge_intervals",
+    ):
+        assert f"调用工具：{tool}" in progress
+        assert f"✓ {tool} 执行成功" in progress
+    assert "▶ 开始生成单井测井解释报告" in progress
+    assert "✓ 单井测井解释报告生成完成" in progress
     report_deltas = [event for event in events if isinstance(event, TextBlockDeltaEvent)]
     assert "".join(event.delta for event in report_deltas) == text
-    assert "W06" not in progress
+    tool_end_index = events.index(result_event)
+    reply_end_index = next(
+        index for index, event in enumerate(events) if isinstance(event, ReplyEndEvent)
+    )
+    assert tool_end_index < reply_end_index
     assert isinstance(events[-1], ReplyEndEvent)
     assert event_observer.get() is None
 
@@ -142,7 +159,7 @@ async def test_upload_persists_normalized_input_before_temporary_file_is_removed
     del data["well"]["well_id"]
     upload = json.dumps(data).encode()
     events, reply = await collect_reply(uploaded_message(upload))
-    assert "解释任务已提交" in reply.get_text_content()
+    assert reply.get_text_content().startswith("# 虚构演示井 001测井评价报告")
     result_event = next(e for e in events if isinstance(e, ToolResultEndEvent))
     task_id = result_event.metadata["result"]["task_id"]
     versions = await repository.list_input_versions(task_id)
@@ -224,7 +241,7 @@ async def test_synthetic_interpretation_context_is_adapted_and_runs():
     result = next(e for e in events if isinstance(e, ToolResultEndEvent)).metadata["result"]
     assert result["execution_status"] == "QUEUED"
     assert result["well_id"] == "WELL_001"
-    assert "解释任务已提交" in reply.get_text_content()
+    assert reply.get_text_content().startswith("# 合成井 001测井评价报告")
 
 
 async def test_concurrent_uploads_with_same_well_id_are_isolated(data_dir):
@@ -234,15 +251,15 @@ async def test_concurrent_uploads_with_same_well_id_are_isolated(data_dir):
         data["well"]["name"] = name
         messages.append(uploaded_message(json.dumps(data).encode(), "../../anything.json"))
     first, second = await asyncio.gather(*(collect_reply(m) for m in messages))
-    first_id = next(
-        e for e in first[0] if isinstance(e, ToolResultEndEvent)
-    ).metadata["result"]["task_id"]
-    second_id = next(
-        e for e in second[0] if isinstance(e, ToolResultEndEvent)
-    ).metadata["result"]["task_id"]
+    first_id = next(e for e in first[0] if isinstance(e, ToolResultEndEvent)).metadata["result"][
+        "task_id"
+    ]
+    second_id = next(e for e in second[0] if isinstance(e, ToolResultEndEvent)).metadata["result"][
+        "task_id"
+    ]
     assert first_id != second_id
-    assert "解释任务已提交" in first[1].get_text_content()
-    assert "解释任务已提交" in second[1].get_text_content()
+    assert first[1].get_text_content().startswith("# UPLOAD_A测井评价报告")
+    assert second[1].get_text_content().startswith("# UPLOAD_B测井评价报告")
     assert "UPLOAD_A" not in (data_dir / "WELL_MOCK_001.json").read_text()
 
 
@@ -266,9 +283,9 @@ async def test_no_attachment_delegates_to_next_handler():
         received.append(kwargs["inputs"])
         yield message
 
-    result = [event async for event in middleware.on_reply(
-        agent, {"inputs": message}, next_handler
-    )]
+    result = [
+        event async for event in middleware.on_reply(agent, {"inputs": message}, next_handler)
+    ]
     assert received == [message]
     assert result == [message]
 
@@ -298,7 +315,7 @@ async def test_raw_service_error_is_not_exposed(data_dir, monkeypatch):
     assert next(e for e in events if isinstance(e, ToolResultEndEvent)).state == "error"
 
 
-async def test_upload_returns_while_background_model_is_waiting(data_dir, monkeypatch):
+async def test_sse_disconnect_after_queued_does_not_cancel_execution(data_dir, monkeypatch):
     entered, released = asyncio.Event(), asyncio.Event()
     original = MockModelGateway.generate
 
@@ -310,13 +327,17 @@ async def test_upload_returns_while_background_model_is_waiting(data_dir, monkey
 
     monkeypatch.setattr(MockModelGateway, "generate", waiting_model)
     agent = demo_agent()
-    events = [event async for event in agent.reply_stream(
-        uploaded_message((data_dir / "WELL_MOCK_001.json").read_bytes())
-    )]
+    stream = agent.reply_stream(uploaded_message((data_dir / "WELL_MOCK_001.json").read_bytes()))
+    events = []
+    async for event in stream:
+        events.append(event)
+        if isinstance(event, ToolResultEndEvent):
+            break
     result = next(e for e in events if isinstance(e, ToolResultEndEvent)).metadata["result"]
     runner = agent.toolkit.tool_groups[0].tools[0]._runner
     assert isinstance(runner, TaskCommandRunner)
     try:
+        await stream.aclose()
         await asyncio.wait_for(entered.wait(), 5)
         status = await runner.execute(GetStatusCommand(task_id=result["task_id"]))
         assert status.execution_status == "RUNNING"
@@ -324,5 +345,43 @@ async def test_upload_returns_while_background_model_is_waiting(data_dir, monkey
         assert not released.is_set()
     finally:
         released.set()
-        await runner.wait_for_completion(result["task_id"], result["execution_id"])
+        completed = await runner.wait_for_completion(result["task_id"], result["execution_id"])
+        assert completed.execution_status == "SUCCESS"
         await runner.dispatcher.shutdown()
+
+
+async def test_warning_streams_notice_and_report(data_dir):
+    data = json.loads((data_dir / "WELL_MOCK_001.json").read_bytes())
+    data["outputs"]["qc"]["warnings"] = ["演示告警"]
+    events, reply = await collect_reply(uploaded_message(json.dumps(data).encode()))
+    progress = reply.get_content_blocks("thinking")[0].thinking
+    assert "W03" in progress and "完成，存在告警" in progress
+    assert "本次解释完成，但存在告警" in progress
+    assert reply.get_text_content().startswith("# 虚构演示井 001测井评价报告")
+    assert isinstance(events[-1], ReplyEndEvent)
+
+
+async def test_tool_failure_streams_failure_and_stops_next_step(data_dir, monkeypatch):
+    original = MockResultTool.execute
+
+    async def broken(self, request):
+        if self.name == "identify_lithology":
+            raise ToolError("TEST_TOOL_FAILED", "secret https://private.example")
+        return await original(self, request)
+
+    monkeypatch.setattr(MockResultTool, "execute", broken)
+    events, reply = await collect_reply(
+        uploaded_message((data_dir / "WELL_MOCK_001.json").read_bytes())
+    )
+    progress = reply.get_content_blocks("thinking")[0].thinking
+    assert "▶ W04" in progress
+    assert "调用工具：identify_lithology" in progress
+    assert "✗ identify_lithology 执行失败" in progress
+    assert "✗ W04" in progress
+    assert "▶ W05" not in progress
+    assert "✗ 解释执行失败" in progress
+    assert "secret" not in progress
+    assert "private.example" not in progress
+    assert "解释执行失败" in reply.get_text_content()
+    assert not reply.get_text_content().startswith("#")
+    assert isinstance(events[-1], ReplyEndEvent)
