@@ -95,6 +95,7 @@ def build_steps(
     validation: ValidationAgent,
     *,
     demo_mode: bool = False,
+    company_batches: bool = False,
 ) -> list[WorkflowNode]:
     """按架构规定构造固定 W01-W10 节点列表。"""
 
@@ -114,7 +115,7 @@ def build_steps(
         """W02：检查必需曲线和推荐辅助资料。"""
 
         assert state.raw_data is not None and state.data_requirements is not None
-        if demo_mode:
+        if demo_mode and not company_batches:
             # Demo Fixture 已在上传入口完成 Schema 校验，此处保持主链路可演示。
             return StepOutcome(
                 reason="Demo Mode：将演示井资料视为完整，继续执行 W03–W10",
@@ -186,12 +187,26 @@ def build_steps(
     async def fluid(state: InterpretationState) -> StepOutcome:
         """W06：由 InterpretationAgent 综合物性和含水饱和度结果。"""
 
+        if company_batches:
+            sw_output = await caller.call(tools["calculate_sw"], tool_request(state, StepId.W06))
+            sw_result = StageResult.model_validate(sw_output.data)
+            if sw_result.status not in {StepStatus.SUCCESS, StepStatus.WARNING}:
+                return outcome_for(sw_result, StatePatch(fluid_result=sw_result))
+            output = await caller.call(tools["identify_fluid"], tool_request(state, StepId.W06))
+            result = StageResult.model_validate(output.data)
+            result.result["sw_result"] = sw_result.model_dump(mode="json")
+            result.warnings.extend(sw_result.warnings)
+            return outcome_for(result, StatePatch(fluid_result=result))
         result = await interpretation.run(model_request(state, "fluid"))
         return outcome_for(result, StatePatch(fluid_result=result))
 
     async def classification(state: InterpretationState) -> StepOutcome:
         """W07：由 InterpretationAgent 形成油气水层分类。"""
 
+        if company_batches:
+            output = await caller.call(tools["classify_layer"], tool_request(state, StepId.W07))
+            result = StageResult.model_validate(output.data)
+            return outcome_for(result, StatePatch(layer_classification=result))
         result = await interpretation.run(model_request(state, "classification"))
         return outcome_for(result, StatePatch(layer_classification=result))
 
@@ -205,7 +220,7 @@ def build_steps(
     async def validate(state: InterpretationState) -> StepOutcome:
         """W09：执行多源验证；Demo 模式保留显式跳过标记。"""
 
-        if demo_mode:
+        if demo_mode and not company_batches:
             result = ValidationResult(
                 status=StepStatus.SUCCESS,
                 result={"demo_skipped": True, "summary": "Demo Mode 跳过真实综合验证"},
@@ -215,7 +230,13 @@ def build_steps(
                 source="demo:w09-skipped-validation",
             )
             return outcome_for(result, StatePatch(validation_result=result))
-        result = await validation.run(model_request(state, "validation"))
+        if company_batches:
+            output = await caller.call(
+                tools["validate_interpretation"], tool_request(state, StepId.W09)
+            )
+            result = ValidationResult.model_validate(output.data)
+        else:
+            result = await validation.run(model_request(state, "validation"))
         outcome = outcome_for(result, StatePatch(validation_result=result))
         if outcome.status in {StepStatus.SUCCESS, StepStatus.WARNING}:
             if result.validation_status in {
@@ -239,6 +260,13 @@ def build_steps(
             and not state.review_required
             and not any(item.importance == "Required" for item in state.missing_data)
         )
+        if company_batches:
+            output = await caller.call(tools["prepare_report"], tool_request(state, StepId.W10))
+            result = StageResult.model_validate(output.data)
+            result.result["structural_check_passed"] = valid
+            if not valid:
+                result.status = StepStatus.REVIEW_REQUIRED
+            return outcome_for(result, StatePatch(final_check=result))
         result = StageResult(
             status=StepStatus.SUCCESS if valid else StepStatus.REVIEW_REQUIRED,
             result={"structural_check_passed": valid},

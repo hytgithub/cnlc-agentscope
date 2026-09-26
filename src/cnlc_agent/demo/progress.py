@@ -18,6 +18,14 @@ _STAGES = (
 _STAGE_BY_STEP = {step_id: stage_name for stage_name, step_ids in _STAGES for step_id in step_ids}
 _STEPS_BY_STAGE = {stage_name: step_ids for stage_name, step_ids in _STAGES}
 _TOOL_LABELS = {
+    "company_analysis": "数据分析批量结果（Mock）",
+    "company_preprocessing": "预处理批量结果（Mock）",
+    "company_interpretation": "智能处理批量结果（Mock）",
+    "company_report": "报告准备结果（Mock）",
+    "identify_fluid": "提取批量流体结果",
+    "classify_layer": "提取批量层分类结果",
+    "validate_interpretation": "提取批量验证结果",
+    "prepare_report": "提取报告准备结果",
     "get_well_data": "获取井资料",
     "check_curve_quality": "曲线质量检查",
     "identify_lithology": "岩性识别",

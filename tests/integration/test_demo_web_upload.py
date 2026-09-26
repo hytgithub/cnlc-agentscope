@@ -95,7 +95,9 @@ async def collect_reply(message):
     return events, reply
 
 
-async def test_upload_streams_execution_until_report(data_dir):
+@pytest.mark.parametrize("professional_provider", ["fixture", "company_mock"])
+async def test_upload_streams_execution_until_report(data_dir, monkeypatch, professional_provider):
+    monkeypatch.setenv("CNLC_PROFESSIONAL_PROVIDER", professional_provider)
     data = json.loads((data_dir / "WELL_MOCK_001.json").read_bytes())
     del data["well"]["well_id"]
     data["well"]["name"] = "上传的专属演示井"
@@ -130,6 +132,9 @@ async def test_upload_streams_execution_until_report(data_dir):
     ):
         assert f"调用工具：{tool}" in progress
         assert f"✓ {tool} 执行成功" in progress
+    if professional_provider == "company_mock":
+        for stage in ("analysis", "preprocessing", "interpretation", "report"):
+            assert progress.count(f"调用工具：company_{stage}（") == 1
     assert "▶ 开始生成单井测井解释报告" in progress
     assert "✓ 单井测井解释报告生成完成" in progress
     report_deltas = [event for event in events if isinstance(event, TextBlockDeltaEvent)]
