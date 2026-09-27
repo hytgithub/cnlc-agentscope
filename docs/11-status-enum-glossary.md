@@ -460,7 +460,7 @@ Resolver 只抛出项目现有 DataError，不负责映射成澄清对话或执�
 | `METHOD` | 方法或模型 | 由动作区分缺 method_id 或 model_id，不增加重复 MODEL 枚举。 |
 | `COMPARE_TARGET` | 比较对象 | 需要至少两个明确输入；不自动猜上一版。 |
 | `PERSIST_MODE` | 保存方式 | 需要明确预览还是创建正式版本。 |
-| `CONFLICT_RESOLUTION` | 冲突选择 | 上下文或约束冲突，需用户明确选择；引用替换走显式修正语义。 |
+| `CONFLICT_RESOLUTION` | 冲突选择 | 无法映射到单一字段的约束冲突需用户重新描述；已知任务或版本冲突分别使用 TASK / EXECUTION。 |
 
 ClarificationIssue 同时保存可选 operation_id、slot、error_code、中文 message 和可选 evidence。
 通用澄清仍复用 `CLARIFICATION_REPLY`（澄清回复）和 `CORRECTION`（修正上一输入），
@@ -474,7 +474,7 @@ ClarificationIssue 同时保存可选 operation_id、slot、error_code、中文 
 | `CONDITIONAL_EXECUTION_UNSUPPORTED` | 条件式自动执行当前不支持 | 条件结构可保存和校验，但不求值、不循环、不执行任意节点。 |
 | `CROSS_TASK_WRITE_UNSUPPORTED` | 跨任务复合写当前不支持 | 多个写节点指向不同明确 Task，整个计划不执行。 |
 | `COMPARE_TARGET_REQUIRED` | 比较对象不足 | 少于两个不同的结构化输入，需补比较对象。 |
-| `VIEW_ACTIVE_CONTEXT_CONFLICT` | 查看与操作上下文冲突 | 隐式写任务存在双焦点，或同任务刚查看旧版本却没有明确工作基线；不猜测。 |
+| `VIEW_ACTIVE_CONTEXT_CONFLICT` | 查看与操作上下文冲突 | 跨任务双焦点返回 TASK 槽位；同任务历史 View 且无工作基线返回 EXECUTION 槽位，普通澄清可以补齐。 |
 | `INVALID_OPERATION_PLAN` | 操作计划结构非法 | 重复节点、无效端点/输入/条件/输出引用、自环或依赖环；也拒绝未经合并的交互回复直接执行。 |
 | `CLARIFICATION_SLOT_INVALID` | 澄清槽位修补非法 | 没有有效 Pending、修补节点不明确、越权补槽或普通回复试图修改锁定引用。 |
 

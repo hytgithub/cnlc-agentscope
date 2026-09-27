@@ -206,3 +206,11 @@ Task 10.5-D 仍属于 planning infrastructure，尚未接入用户消息执行�
 No Architecture Issue found.
 
 完成后停止，不开始 Task 10.5-E 或 Task 11。
+
+## D1 hardening follow-up
+
+后续独立审查发现原 D 提交仍有四个安全边界需要定点加固：Active/View 冲突使用了无法由普通
+task/execution patch 补齐的通用冲突槽；任务创建动作可能被要求提供已有 Task；PlanValidator 接受
+裸 task_id 映射作为解析结果；Pending save 完全相信调用方 issues。Task 10.5-D1 在独立提交中修复
+上述问题并重新执行测试。D1 记录见 `010-5d1-planning-safety-hardening.md`；本节替代“原 D 无遗留风险”
+的绝对表述，不改变 D 的整体架构边界。

@@ -68,13 +68,13 @@ def test_reads_prefer_view_and_do_not_mutate_context(action):
         "OVERRIDE",
         "RESTORE_VERSION",
         "COMMIT_SCENARIO",
-        "FULL_INTERPRET",
         "MARK_FINAL",
     ],
 )
 def test_implicit_write_cannot_choose_between_view_and_active(action):
     resolved = OperationContextResolver().resolve(plan(action), context())
     assert resolved.issues[0].error_code == "VIEW_ACTIVE_CONTEXT_CONFLICT"
+    assert resolved.issues[0].slot == "TASK"
     assert resolved.plan.operations[0].task_reference is None
     validated = PlanValidator().validate(resolved)
     assert validated.outcome == "NEED_CLARIFICATION"
@@ -84,7 +84,18 @@ def test_implicit_write_cannot_choose_between_view_and_active(action):
 def test_same_task_historical_view_requires_base_clarification():
     resolved = OperationContextResolver().resolve(plan(), context(view_task="A"))
     assert resolved.issues[0].error_code == "VIEW_ACTIVE_CONTEXT_CONFLICT"
+    assert resolved.issues[0].slot == "EXECUTION"
     assert resolved.plan.operations[0].execution_reference is None
+
+
+@pytest.mark.parametrize("action", ["FULL_INTERPRET", "NEW_WELL"])
+def test_task_creation_actions_do_not_inherit_active_or_require_existing_task(action):
+    resolved = OperationContextResolver().resolve(plan(action), context(base="A-V2"))
+    assert resolved.issues == []
+    op = resolved.plan.operations[0]
+    assert op.task_reference is None
+    assert op.execution_reference is None
+    assert op.scope is None
 
 
 def test_explicit_active_base_beats_view_version():

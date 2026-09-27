@@ -282,7 +282,7 @@ class OperationClarificationStore:
         turn: int,
         locked_references: list[LockedOperationReference] | None = None,
     ) -> PendingOperationClarification:
-        """新独立计划替换旧 Pending；锁仅允许由 E 的服务端在 B 成功后传入。"""
+        """新计划替换旧 Pending；caller issue 优先，再稳定合并 Schema 缺口并去重。"""
 
         plan = PartialOperationPlan.model_validate(partial_plan.model_dump(mode="json"))
         for locked in locked_references or []:
@@ -298,9 +298,18 @@ class OperationClarificationStore:
                 )
             if locked.scope is not None:
                 node.scope = locked.scope
+        merged_issues: list[ClarificationIssue] = []
+        issue_keys: set[tuple[str | None, ClarificationSlot, str]] = set()
+        for issue in [*issues, *missing_plan_slots(plan)]:
+            key = (issue.operation_id, issue.slot, issue.error_code)
+            if key not in issue_keys:
+                issue_keys.add(key)
+                merged_issues.append(issue.model_copy(deep=True))
+        if not merged_issues:
+            raise ClarificationPatchError("完整且无问题的计划不能保存为待澄清计划")
         pending = PendingOperationClarification(
             partial_plan=plan,
-            issues=issues,
+            issues=merged_issues,
             owner_token=self._owner,
             created_turn=turn,
             expires_at=self._clock() + self._ttl,

@@ -19,6 +19,7 @@ from cnlc_agent.demo.operation_parser import (
     PartialOperationPlan,
     finalize_partial_plan,
 )
+from cnlc_agent.demo.plan_validator import PlanValidator
 from cnlc_agent.demo.reference_resolver import ResolvedTaskReference
 
 
@@ -78,6 +79,86 @@ def test_target_reply_preserves_value_and_locked_task_after_active_changes(env):
     assert updated.expires_at == saved.expires_at
     assert updated.created_turn == saved.created_turn
     assert context["cnlc_pending_clarification"] == {"old": "unchanged"}
+
+
+def test_store_self_validates_missing_target_and_patch_can_fill_it():
+    context = {}
+    store = OperationClarificationStore(context, ttl_seconds=60, clock=lambda: 100.0)
+    saved = store.save(partial(), [], turn=1)
+    assert [(issue.operation_id, issue.slot) for issue in saved.issues] == [("change", "TARGET")]
+    updated = store.apply_patch(ClarificationPatch(target="POROSITY"), turn=2)
+    assert updated.partial_plan.operations[0].target == "POROSITY"
+    assert updated.issues == []
+
+
+def test_store_deduplicates_schema_issue_and_preserves_caller_detail():
+    store = OperationClarificationStore({}, ttl_seconds=60, clock=lambda: 100.0)
+    caller = ClarificationIssue(
+        operation_id="change",
+        slot="TARGET",
+        error_code="CLARIFICATION_REQUIRED",
+        message="请明确孔隙度或渗透率",
+        evidence={"source": "context"},
+    )
+    saved = store.save(partial(), [caller, caller], turn=1)
+    targets = [issue for issue in saved.issues if issue.slot == "TARGET"]
+    assert len(targets) == 1
+    assert targets[0].message == caller.message
+    assert targets[0].evidence == caller.evidence
+
+
+def test_complete_plan_without_caller_issue_cannot_be_saved_as_pending():
+    source = partial()
+    source.operations[0].target = "POROSITY"
+    store = OperationClarificationStore({}, ttl_seconds=60, clock=lambda: 100.0)
+    with pytest.raises(ClarificationPatchError, match="不能保存"):
+        store.save(source, [], turn=1)
+
+
+def test_task_conflict_can_be_resolved_by_normal_reply_end_to_end():
+    ctx = InteractionContext(
+        active=ActiveContext(task_id="A"),
+        view={"task_id": "B", "execution_id": "B-V1"},
+    )
+    source = partial()
+    source.operations[0].task_reference = None
+    source.operations[0].target = "POROSITY"
+    first = OperationContextResolver().resolve(source, ctx)
+    assert first.issues[0].error_code == "VIEW_ACTIVE_CONTEXT_CONFLICT"
+    assert first.issues[0].slot == "TASK"
+    store = OperationClarificationStore({}, ttl_seconds=60, clock=lambda: 100.0)
+    store.save(first.plan, first.issues, turn=1)
+    updated = store.apply_patch(
+        ClarificationPatch(task_reference={"kind": "TASK_ID", "value": "A"}), turn=2
+    )
+    second = OperationContextResolver().resolve(updated.partial_plan, ctx)
+    result = PlanValidator().validate(second)
+    assert second.issues == []
+    assert result.outcome == "EXECUTABLE"
+
+
+@pytest.mark.parametrize(
+    "execution_reference",
+    [{"kind": "TASK_CURRENT"}, {"kind": "EXECUTION_ID", "execution_id": "A-V1"}],
+)
+def test_execution_conflict_can_be_resolved_by_normal_reply_end_to_end(execution_reference):
+    ctx = InteractionContext(
+        active=ActiveContext(task_id="A"),
+        view={"task_id": "A", "execution_id": "A-V1"},
+    )
+    source = partial()
+    source.operations[0].task_reference = None
+    source.operations[0].target = "POROSITY"
+    first = OperationContextResolver().resolve(source, ctx)
+    assert first.issues[0].error_code == "VIEW_ACTIVE_CONTEXT_CONFLICT"
+    assert first.issues[0].slot == "EXECUTION"
+    store = OperationClarificationStore({}, ttl_seconds=60, clock=lambda: 100.0)
+    store.save(first.plan, first.issues, turn=1)
+    updated = store.apply_patch(ClarificationPatch(execution_reference=execution_reference), turn=2)
+    second = OperationContextResolver().resolve(updated.partial_plan, ctx)
+    result = PlanValidator().validate(second)
+    assert second.issues == []
+    assert result.outcome == "EXECUTABLE"
 
 
 @pytest.mark.parametrize(

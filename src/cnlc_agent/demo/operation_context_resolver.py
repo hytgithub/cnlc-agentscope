@@ -35,6 +35,8 @@ READ_ACTIONS = frozenset(
         ActionType.STATUS,
     }
 )
+# 首次解释和新井语义在 Task 创建前成立；不能从 Active 继承旧任务。
+TASK_CREATION_ACTIONS = frozenset({ActionType.FULL_INTERPRET, ActionType.NEW_WELL})
 
 
 class ContextResolutionResult(Contract):
@@ -70,14 +72,16 @@ class OperationContextResolver:
             scope = op.scope or shared.scope
             active, view = context.active, context.view
             read = op.action in READ_ACTIONS
-            candidate: ActiveContext | ViewContext | None = (view or active) if read else active
+            creates_task = op.action in TASK_CREATION_ACTIONS
+            candidate: ActiveContext | ViewContext | None = (
+                None if creates_task else (view or active) if read else active
+            )
             implicit_task = task is None
-            conflict = False
-            if not read:
+            conflict_slot: ClarificationSlot | None = None
+            if not read and not creates_task:
                 # 跨任务查看与操作焦点冲突时，即使提供了版本也不能猜 Task。
-                conflict = bool(
-                    implicit_task and view and active and view.task_id != active.task_id
-                )
+                if implicit_task and view and active and view.task_id != active.task_id:
+                    conflict_slot = ClarificationSlot.TASK
                 selected_task = (
                     task.value
                     if task and task.kind == "TASK_ID"
@@ -91,14 +95,18 @@ class OperationContextResolver:
                     and active.base_execution_id is None
                     and view.execution_id is not None
                 ):
-                    conflict = True
-            if conflict:
+                    conflict_slot = ClarificationSlot.EXECUTION
+            if conflict_slot is not None:
                 result.issues.append(
                     ClarificationIssue(
                         operation_id=op.operation_id,
-                        slot=ClarificationSlot.CONFLICT_RESOLUTION,
+                        slot=conflict_slot,
                         error_code="VIEW_ACTIVE_CONTEXT_CONFLICT",
-                        message="查看对象与操作焦点不一致，请明确任务或工作基线",
+                        message=(
+                            "查看对象与操作焦点属于不同任务，请明确要操作的任务或井"
+                            if conflict_slot == ClarificationSlot.TASK
+                            else "刚查看的历史版本与当前操作基线不一致，请明确工作版本"
+                        ),
                     )
                 )
                 # 只保留用户给出的字段；未来澄清不能误把自动填入的 A 当显式选择。
@@ -119,7 +127,7 @@ class OperationContextResolver:
                 )
             elif candidate is not None:
                 task = TaskReference(kind="TASK_ID", value=candidate.task_id)
-            if task is None and not op.input_refs:
+            if task is None and not op.input_refs and not creates_task:
                 result.issues.append(
                     ClarificationIssue(
                         operation_id=op.operation_id,

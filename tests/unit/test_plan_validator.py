@@ -16,6 +16,7 @@ from cnlc_agent.demo.operation_capabilities import (
 from cnlc_agent.demo.operation_models import ActionType, OperationScopeKind
 from cnlc_agent.demo.operation_parser import PartialOperationPlan
 from cnlc_agent.demo.plan_validator import PlanValidator
+from cnlc_agent.demo.reference_resolver import ResolvedTaskReference
 from cnlc_agent.infrastructure.mock import InMemoryTaskRepository
 
 
@@ -52,6 +53,17 @@ def enabled_catalog():
             supported_parameters=("por",),
         )
         for action in ActionType
+    )
+
+
+def resolved(task_id):
+    return ResolvedTaskReference(
+        task_id=task_id,
+        well_id=f"WELL_{task_id}",
+        current_execution_id=None,
+        latest_successful_execution_id=None,
+        resolution_source="EXPLICIT_TASK",
+        match_count=1,
     )
 
 
@@ -277,8 +289,69 @@ def test_unresolved_multi_write_requires_task_resolution():
     )
     validator = PlanValidator(enabled_catalog())
     assert validator.validate(source).outcome == "NEED_CLARIFICATION"
-    assert validator.validate(source, resolved_task_ids={"op2": "A"}).outcome == "EXECUTABLE"
-    assert validator.validate(source, resolved_task_ids={"op2": "B"}).outcome == "KNOWN_UNSUPPORTED"
+    assert (
+        validator.validate(source, resolved_task_references={"op2": resolved("A")}).outcome
+        == "EXECUTABLE"
+    )
+    assert (
+        validator.validate(source, resolved_task_references={"op2": resolved("B")}).outcome
+        == "KNOWN_UNSUPPORTED"
+    )
+
+
+def test_raw_task_id_mapping_cannot_claim_resolver_result():
+    source = plan(
+        [node(), node("op2", "RECALCULATE", task_reference={"kind": "WELL_ID", "value": "WELL_A"})]
+    )
+    with pytest.raises(TypeError, match="ResolvedTaskReference"):
+        PlanValidator(enabled_catalog()).validate(
+            source,
+            resolved_task_references={"op2": "A"},  # type: ignore[dict-item]
+        )
+
+
+def test_full_interpret_without_existing_task_has_planning_qualification():
+    source = plan(
+        [
+            node(
+                action="FULL_INTERPRET",
+                task_reference=None,
+                target="WELL",
+                scope={"kind": "WHOLE_WELL"},
+                parameters={},
+            )
+        ]
+    )
+    result = PlanValidator().validate(source)
+    assert result.outcome == "EXECUTABLE"
+    assert result.missing_slots == []
+
+
+def test_new_well_without_existing_task_is_unsupported_by_catalog_not_task_missing():
+    source = plan([node(action="NEW_WELL", task_reference=None, target="WELL", parameters={})])
+    result = PlanValidator().validate(source)
+    assert result.outcome == "KNOWN_UNSUPPORTED"
+    assert result.capability_issues[0].capability_status == "NOT_IMPLEMENTED"
+    assert not any(issue.slot == "TASK" for issue in result.missing_slots)
+
+
+@pytest.mark.parametrize("action", ["FULL_INTERPRET", "NEW_WELL"])
+def test_task_creation_action_cannot_be_reinterpreted_as_existing_task_rerun(action):
+    source = plan([node(action=action, target="WELL", scope={"kind": "WHOLE_WELL"}, parameters={})])
+    result = PlanValidator().validate(source)
+    assert result.outcome == "REJECTED"
+    assert result.issues[0].error_code == "INVALID_OPERATION_PLAN"
+
+
+def test_task_creation_capability_query_remains_read_only_even_with_reference():
+    source = plan(
+        [node(action="FULL_INTERPRET", target="WELL", parameters={})],
+        input_classification="CAPABILITY_QUERY",
+    )
+    result = PlanValidator().validate(source)
+    assert result.outcome == "READ_ONLY"
+    assert result.read_only
+    assert result.plan is None
 
 
 @pytest.mark.parametrize(
@@ -290,8 +363,15 @@ def test_unresolved_multi_write_requires_task_resolution():
     ],
 )
 def test_persistence_and_full_rerun_conflicts(mode, action, constraint):
+    task_reference = None if action == "FULL_INTERPRET" else {"kind": "TASK_ID", "value": "A"}
     source = plan(
-        [node(action=action, constraints=[{"type": constraint}] if constraint else [])],
+        [
+            node(
+                action=action,
+                task_reference=task_reference,
+                constraints=[{"type": constraint}] if constraint else [],
+            )
+        ],
         persist_mode=mode,
     )
     result = PlanValidator(enabled_catalog()).validate(source)

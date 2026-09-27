@@ -9,7 +9,11 @@ from cnlc_agent.demo.operation_capabilities import (
     OperationCapabilityStatus,
     OperationCatalog,
 )
-from cnlc_agent.demo.operation_context_resolver import READ_ACTIONS, ContextResolutionResult
+from cnlc_agent.demo.operation_context_resolver import (
+    READ_ACTIONS,
+    TASK_CREATION_ACTIONS,
+    ContextResolutionResult,
+)
 from cnlc_agent.demo.operation_models import (
     ActionType,
     DepthPointScope,
@@ -32,6 +36,7 @@ from cnlc_agent.demo.operation_parser import (
     PartialOperationPlan,
     finalize_partial_plan,
 )
+from cnlc_agent.demo.reference_resolver import ResolvedTaskReference
 from cnlc_agent.domain.models import Contract
 
 
@@ -169,9 +174,16 @@ class PlanValidator:
         self,
         source: PartialOperationPlan | OperationPlan | ContextResolutionResult,
         *,
-        resolved_task_ids: Mapping[str, str] | None = None,
+        resolved_task_references: Mapping[str, ResolvedTaskReference] | None = None,
     ) -> PlanValidationResult:
-        """消费候选及其 issues；解析后的 task_id 可由 B 的调用方提供，不由用户 Schema 提供。"""
+        """消费候选及其 issues；只接受 B 的 typed 任务解析读模型，不接受裸 task_id。"""
+
+        resolved_task_references = resolved_task_references or {}
+        if any(
+            not isinstance(reference, ResolvedTaskReference)
+            for reference in resolved_task_references.values()
+        ):
+            raise TypeError("resolved_task_references must contain ResolvedTaskReference values")
 
         context_issues = source.issues if isinstance(source, ContextResolutionResult) else []
         raw = source.plan if isinstance(source, ContextResolutionResult) else source
@@ -226,6 +238,22 @@ class PlanValidator:
             result.outcome = ResolutionOutcome.READ_ONLY
             result.read_only = True
             return result
+        invalid_creation_references = [
+            op.operation_id
+            for op in plan.operations
+            if op.action in TASK_CREATION_ACTIONS
+            and (op.task_reference is not None or plan.shared_context.task_reference is not None)
+        ]
+        if invalid_creation_references:
+            result.issues.extend(
+                PlanIssue(
+                    operation_id=operation_id,
+                    error_code="INVALID_OPERATION_PLAN",
+                    message="任务创建动作不能引用已有 Task；已有任务全量重跑应使用稳定重跑链",
+                )
+                for operation_id in invalid_creation_references
+            )
+            return result
         if plan.input_classification in {
             InputClassification.META_REQUEST,
             InputClassification.CANCELLATION,
@@ -258,10 +286,12 @@ class PlanValidator:
         unresolved_writes = []
         for op in plan.operations:
             task = op.task_reference or plan.shared_context.task_reference
-            resolved_id = (resolved_task_ids or {}).get(op.operation_id)
+            resolved_reference = resolved_task_references.get(op.operation_id)
+            resolved_id = resolved_reference.task_id if resolved_reference is not None else None
             if resolved_id is None and task is not None and task.kind == "TASK_ID":
                 resolved_id = task.value
-            if task is None and resolved_id is None and not op.input_refs:
+            creates_task = op.action in TASK_CREATION_ACTIONS
+            if task is None and resolved_id is None and not op.input_refs and not creates_task:
                 if not any(issue.operation_id == op.operation_id for issue in context_issues):
                     result.missing_slots.append(
                         ClarificationIssue(
@@ -270,7 +300,7 @@ class PlanValidator:
                             message="请明确任务引用",
                         )
                     )
-            if op in writes:
+            if op in writes and not creates_task:
                 if resolved_id is not None:
                     task_ids.add(resolved_id)
                 else:
