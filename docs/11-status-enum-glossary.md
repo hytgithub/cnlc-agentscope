@@ -357,8 +357,8 @@ OperationPlan 要求显式填写保存意向；没有原地覆盖历史的模式
 | `DATA_DEPENDENCY` | 数据依赖 | 表达消费另一个操作的输出。 |
 | `COMPARE_DEPENDENCY` | 比较依赖 | 表达比较需要某个操作输出。 |
 
-边使用非空 from_operation_id、to_operation_id 和 type；不构造专业 DependencyGraph，
-不校验端点存在性、图环或执行顺序。OperationInputReference 独立表达操作输出或版本输入。
+边使用非空 from_operation_id、to_operation_id 和 type；Schema 不构造专业 DependencyGraph。
+Task 10.5-D PlanValidator 校验端点、输入依赖与图环；OperationInputReference 独立表达操作输出或版本输入。
 
 ## 28. ResolutionConfidence（解析置信程度）
 
@@ -378,8 +378,9 @@ OperationPlan 要求显式填写保存意向；没有原地覆盖历史的模式
 | `KNOWN_UNSUPPORTED` | 已识别但当前不支持 | 属于已知领域操作，当前尚不具备能力资格。 |
 | `REJECTED` | 已拒绝 | 请求被明确拒绝。 |
 
-OperationResolution 仅保存 outcome、confidence、plan 和证据等说明。
-本阶段不产生上述裁决，也不与 InteractionDecision 建立映射。
+OperationResolution 仅保存 outcome、confidence、plan 和证据等说明。Task 10.5-D 的
+PlanValidationResult 复用上述结果枚举，提供整个计划的纯规划裁决，未接入 InteractionDecision。
+EXECUTABLE 不是数据库授权，进入 Tool 前仍须通过 B 的引用解析和既有 Application 校验。
 
 ## 30. OperationCapabilityStatus（操作能力状态）
 
@@ -446,3 +447,39 @@ ResolvedScope 的 resolution_source 复用第 21 节 OperationScopeKind，没有
 `SESSION_WELL_NOT_FOUND`（会话内无指定井）和 `EXECUTION_NOT_FOUND`（当前任务无指定版本）。
 显式 Task / Execution ID 不能越过 Session Binding 或 Task 归属检查；错误不暴露其他会话事实。
 Resolver 只抛出项目现有 DataError，不负责映射成澄清对话或执行计划。
+
+## 35. ClarificationSlot（通用澄清槽位，Task 10.5-D）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `TASK` | 任务对象 | 任务缺失或复合写的任务归属尚未明确。 |
+| `EXECUTION` | 版本对象 | 尚需用户明确工作版本。 |
+| `SCOPE` | 作用范围 | 需要明确局部操作范围。 |
+| `TARGET` | 操作目标 | 操作已知，但目标未明确。 |
+| `VALUE` | 修改值 | 结果或参数缺少正式 ValueSpec。 |
+| `METHOD` | 方法或模型 | 由动作区分缺 method_id 或 model_id，不增加重复 MODEL 枚举。 |
+| `COMPARE_TARGET` | 比较对象 | 需要至少两个明确输入；不自动猜上一版。 |
+| `PERSIST_MODE` | 保存方式 | 需要明确预览还是创建正式版本。 |
+| `CONFLICT_RESOLUTION` | 冲突选择 | 上下文或约束冲突，需用户明确选择；引用替换走显式修正语义。 |
+
+ClarificationIssue 同时保存可选 operation_id、slot、error_code、中文 message 和可选 evidence。
+通用澄清仍复用 `CLARIFICATION_REPLY`（澄清回复）和 `CORRECTION`（修正上一输入），
+没有新增平行意图或执行状态。普通回复只能补对应节点的待缺槽位；修正只操作尚未执行的 Partial Plan。
+
+## 36. Operation Planning 稳定错误码（Task 10.5-D）
+
+| 错误码 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `MULTI_OPERATION_CONFLICT` | 复合操作存在冲突 | 保存/预览约束、禁止全量重跑或已确定全部被排除的限定范围冲突；需澄清整个计划。 |
+| `CONDITIONAL_EXECUTION_UNSUPPORTED` | 条件式自动执行当前不支持 | 条件结构可保存和校验，但不求值、不循环、不执行任意节点。 |
+| `CROSS_TASK_WRITE_UNSUPPORTED` | 跨任务复合写当前不支持 | 多个写节点指向不同明确 Task，整个计划不执行。 |
+| `COMPARE_TARGET_REQUIRED` | 比较对象不足 | 少于两个不同的结构化输入，需补比较对象。 |
+| `VIEW_ACTIVE_CONTEXT_CONFLICT` | 查看与操作上下文冲突 | 隐式写任务存在双焦点，或同任务刚查看旧版本却没有明确工作基线；不猜测。 |
+| `INVALID_OPERATION_PLAN` | 操作计划结构非法 | 重复节点、无效端点/输入/条件/输出引用、自环或依赖环；也拒绝未经合并的交互回复直接执行。 |
+| `CLARIFICATION_SLOT_INVALID` | 澄清槽位修补非法 | 没有有效 Pending、修补节点不明确、越权补槽或普通回复试图修改锁定引用。 |
+
+复用 `CLARIFICATION_REQUIRED`（需要补充澄清）、`UNSUPPORTED_OPERATION`（当前操作能力不支持）
+以及 `OUT_OF_DOMAIN`（领域外请求）。能力事实保留第 30 节全部状态；非 ENABLED 状态不合并丢失。
+条件式和跨任务复合写返回 KNOWN_UNSUPPORTED（已识别但当前不支持）；缺槽和可澄清冲突返回
+NEED_CLARIFICATION（需要澄清）；非法图返回 REJECTED（已拒绝）。
+CAPABILITY_QUERY（能力询问）对合法结构始终返回 READ_ONLY（可只读执行），不提供写执行计划。

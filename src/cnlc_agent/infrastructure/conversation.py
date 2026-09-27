@@ -147,6 +147,7 @@ def _durable_session(record: SessionRecord) -> SessionRecord:
 
     durable = record.model_copy(deep=True)
     durable.state.middle_context.pop("cnlc_pending_clarification", None)
+    durable.state.middle_context.pop("cnlc_pending_operation_clarification", None)
     durable.state.middle_context.pop("cnlc_interaction_context", None)
     return durable
 

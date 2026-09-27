@@ -16,7 +16,12 @@ from cnlc_agent.demo.interaction_context import (
     RecentContext,
     SelectedIntervalReference,
 )
+from cnlc_agent.demo.operation_clarification import (
+    PENDING_OPERATION_KEY,
+    OperationClarificationStore,
+)
 from cnlc_agent.demo.operation_models import IntervalScope
+from cnlc_agent.demo.operation_parser import PartialOperationPlan, finalize_partial_plan
 from cnlc_agent.infrastructure.conversation import DurableConversationStorage, _durable_session
 
 
@@ -143,6 +148,14 @@ async def test_durable_cache_ttl_restore_and_credential_isolation():
         )],
     ))
     full_context = runtime.snapshot
+    pending_plan = PartialOperationPlan.model_validate({
+        "input_classification": "EXECUTION_REQUEST", "original_instruction": "改成0.16",
+        "operations": [{"operation_id": "change", "action": "MODIFY_PARAMETER"}],
+    })
+    pending_store = OperationClarificationStore(state.middle_context, ttl_seconds=60)
+    operation_pending = pending_store.save(
+        pending_plan, finalize_partial_plan(pending_plan).issues, turn=1
+    )
     async with storage:
         record = await storage.upsert_session(
             "user-1",
@@ -176,12 +189,16 @@ async def test_durable_cache_ttl_restore_and_credential_isolation():
         assert archived.state.middle_context["cnlc_active_task_id"] == "task-1"
         assert "cnlc_pending_clarification" not in archived.state.middle_context
         assert "cnlc_interaction_context" not in archived.state.middle_context
+        assert PENDING_OPERATION_KEY not in archived.state.middle_context
         # sanitizer 只处理归档副本，不能破坏当前 AgentState 或 Redis 中的短期状态。
         assert InteractionContextStore(state.middle_context).snapshot == full_context
         assert "cnlc_pending_clarification" in state.middle_context
         await storage.list_sessions("user-1", "agent-1")
         cached = await storage.get_session("user-1", "agent-1", record.id)
         assert cached is not None
+        assert cached.state.middle_context[PENDING_OPERATION_KEY] == (
+            operation_pending.model_dump(mode="json")
+        )
         assert "cnlc_pending_clarification" in cached.state.middle_context
         assert InteractionContextStore(cached.state.middle_context).snapshot == full_context
 
@@ -189,6 +206,7 @@ async def test_durable_cache_ttl_restore_and_credential_isolation():
         await storage.update_session_state("user-1", "agent-1", record.id, cached.state)
         archived = await repository.get_session("user-1", "agent-1", record.id)
         assert "cnlc_interaction_context" not in archived.state.middle_context
+        assert PENDING_OPERATION_KEY not in archived.state.middle_context
 
         await redis.delete(session_key, message_key)
         restored = await storage.get_session("user-1", "agent-1", record.id)
@@ -196,6 +214,7 @@ async def test_durable_cache_ttl_restore_and_credential_isolation():
         assert restored is not None
         assert "cnlc_pending_clarification" not in restored.state.middle_context
         assert "cnlc_interaction_context" not in restored.state.middle_context
+        assert PENDING_OPERATION_KEY not in restored.state.middle_context
         assert InteractionContextStore(restored.state.middle_context).snapshot == (
             InteractionContext(active=ActiveContext(task_id="task-1"))
         )

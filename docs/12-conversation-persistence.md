@@ -111,9 +111,16 @@ AgentScope 删除 Session 时，先删除 PostgreSQL Conversation 和其 Message
 
 ## 8. PendingClarification、active task 与 Context
 
-归档 SessionRecord 时先深复制，再删除 `cnlc_pending_clarification` 和 `cnlc_interaction_context`，
+归档 SessionRecord 时先深复制，再删除 `cnlc_pending_clarification`、
+`cnlc_pending_operation_clarification` 和 `cnlc_interaction_context`，
 不修改运行中的 AgentState 或 Redis Session。PendingClarification（待澄清请求）继续遵循 Task 10.3
 的短 TTL、紧邻轮次与 runner owner 校验；Redis 丢失或 Backend 重建后不会从旧 Message 自动恢复。
+
+Task 10.5-D 的 PendingOperationClarification（通用待澄清计划）使用独立 key
+`cnlc_pending_operation_clarification`，尚未接入 ReAct。活跃 Redis 可以保存其完整结构；
+Store 读取时校验服务端 owner、TTL、本轮或紧邻下一轮，并清除损坏数据。新 Store owner 不复用
+旧 owner，Backend 生命周期丢失后安全失效。PostgreSQL 永久归档不保存它，Redis miss 后不从
+消息或摘要重建；既有 legacy active Task hint 保留规则不变。
 
 `cnlc_active_task_id` 继续作为兼容的 active Task hint 保存。它不是授权；旧 TaskReference 的 fallback
 仍由 SessionTaskBinding 决定，没有新增第二套 PostgreSQL 当前任务指针。Task 10.5-B 的写引用解析器
