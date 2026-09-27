@@ -95,3 +95,10 @@ ALLOWED_TASK_TOOLS 或 ReAct/Tool routing，也没有新增业务 Tool。
 No Architecture Issue found.
 
 完成后停止，不开始 Task 10.5-E。
+
+## D2 follow-up
+
+typed reference 边界随后在 Task 10.5-D2 继续增加两个内部 invariant：所有 resolved mapping key
+必须属于当前计划 operation_id；显式 TASK_ID 必须与对应 ResolvedTaskReference.task_id 一致。
+不一致属于集成编程错误并 fail fast，不转成用户澄清。CURRENT、PREVIOUS_TASK、WELL_ID 等符号引用
+仍以 B Resolver 的选择结果为准。详情见 `010-5d2-resolved-reference-consistency.md`。

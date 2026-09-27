@@ -56,10 +56,10 @@ def enabled_catalog():
     )
 
 
-def resolved(task_id):
+def resolved(task_id, *, well_id=None):
     return ResolvedTaskReference(
         task_id=task_id,
-        well_id=f"WELL_{task_id}",
+        well_id=well_id or f"WELL_{task_id}",
         current_execution_id=None,
         latest_successful_execution_id=None,
         resolution_source="EXPLICIT_TASK",
@@ -307,6 +307,64 @@ def test_raw_task_id_mapping_cannot_claim_resolver_result():
         PlanValidator(enabled_catalog()).validate(
             source,
             resolved_task_references={"op2": "A"},  # type: ignore[dict-item]
+        )
+
+
+def test_explicit_task_id_matches_resolved_reference():
+    result = PlanValidator(enabled_catalog()).validate(
+        plan(), resolved_task_references={"op1": resolved("A")}
+    )
+    assert result.outcome == "EXECUTABLE"
+
+
+def test_explicit_task_id_mismatch_fails_fast():
+    with pytest.raises(ValueError, match="does not match explicit TASK_ID"):
+        PlanValidator(enabled_catalog()).validate(
+            plan(), resolved_task_references={"op1": resolved("B")}
+        )
+
+
+def test_shared_explicit_task_id_mismatch_fails_fast():
+    source = plan(
+        [node(task_reference=None)],
+        shared_context={"task_reference": {"kind": "TASK_ID", "value": "A"}},
+    )
+    with pytest.raises(ValueError, match="does not match explicit TASK_ID"):
+        PlanValidator(enabled_catalog()).validate(
+            source, resolved_task_references={"op1": resolved("B")}
+        )
+
+
+def test_well_id_accepts_resolver_selected_task_id():
+    source = plan([node(task_reference={"kind": "WELL_ID", "value": "WELL_A"})])
+    result = PlanValidator(enabled_catalog()).validate(
+        source,
+        resolved_task_references={"op1": resolved("task-123", well_id="WELL_A")},
+    )
+    assert result.outcome == "EXECUTABLE"
+
+
+@pytest.mark.parametrize("kind,resolved_task", [("CURRENT", "A"), ("PREVIOUS_TASK", "previous-A")])
+def test_symbolic_task_references_accept_resolver_selected_task(kind, resolved_task):
+    source = plan([node(task_reference={"kind": kind})])
+    result = PlanValidator(enabled_catalog()).validate(
+        source, resolved_task_references={"op1": resolved(resolved_task)}
+    )
+    assert result.outcome == "EXECUTABLE"
+
+
+def test_resolved_reference_for_unknown_operation_fails_fast():
+    with pytest.raises(ValueError, match="unknown operation_id"):
+        PlanValidator(enabled_catalog()).validate(
+            plan(), resolved_task_references={"op2": resolved("A")}
+        )
+
+
+def test_mixed_valid_and_unknown_resolved_references_fail_as_a_whole():
+    with pytest.raises(ValueError, match="unknown operation_id"):
+        PlanValidator(enabled_catalog()).validate(
+            plan(),
+            resolved_task_references={"op1": resolved("A"), "ghost": resolved("B")},
         )
 
 

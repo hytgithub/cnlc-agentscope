@@ -188,6 +188,20 @@ class PlanValidator:
         context_issues = source.issues if isinstance(source, ContextResolutionResult) else []
         raw = source.plan if isinstance(source, ContextResolutionResult) else source
         plan = PartialOperationPlan.model_validate(raw.model_dump(mode="json"))
+        operation_ids = {op.operation_id for op in plan.operations}
+        unknown_resolution_ids = set(resolved_task_references) - operation_ids
+        if unknown_resolution_ids:
+            raise ValueError("resolved task reference provided for unknown operation_id")
+        for op in plan.operations:
+            resolved = resolved_task_references.get(op.operation_id)
+            task = op.task_reference or plan.shared_context.task_reference
+            if (
+                resolved is not None
+                and task is not None
+                and task.kind == "TASK_ID"
+                and resolved.task_id != task.value
+            ):
+                raise ValueError("resolved task does not match explicit TASK_ID reference")
         graph_issues = self.validate_graph(plan)
         result = PlanValidationResult(
             outcome=ResolutionOutcome.REJECTED, issues=graph_issues, graph_valid=not graph_issues
