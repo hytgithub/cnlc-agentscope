@@ -1,6 +1,7 @@
 import { ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
+import { WellLogPlot } from './WellLogPlot';
 import type {
 	InterpretationExecutionView,
 	InterpretationTaskView,
@@ -126,6 +127,8 @@ function ExecutionBody({ execution }: { execution: InterpretationExecutionView }
 					))}
 				</div>
 			</section>
+
+			<WellLogPlot key={execution.execution_id} plot={execution.log_plot} executionId={execution.execution_id} />
 
 			<section className="space-y-2 border-t pt-3">
 				<div className="text-xs font-medium text-muted-foreground">Markdown Report</div>
