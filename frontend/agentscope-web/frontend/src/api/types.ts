@@ -290,6 +290,7 @@ export interface InterpretationToolRunView {
 }
 
 export interface InterpretationExecutionView extends InterpretationExecutionSummary {
+	log_plot?: LogPlotView | null;
 	current_step: string | null;
 	completed_steps: string[];
 	reused_steps: string[];
@@ -297,6 +298,26 @@ export interface InterpretationExecutionView extends InterpretationExecutionSumm
 	steps: InterpretationStepView[];
 	tool_runs: InterpretationToolRunView[];
 	report_markdown: string | null;
+}
+
+/** 多道图仅使用明确采样和层段，不由前端估算专业值。 */
+export interface LogPlotCurve {
+	name: string;
+	unit: string;
+	depths: number[];
+	values: (number | null)[];
+	source: string;
+	is_mock: boolean;
+	kind: 'raw' | 'interpreted';
+}
+
+export interface LogPlotView {
+	well_name: string;
+	depth_unit: string;
+	depth_reference: string;
+	curves: LogPlotCurve[];
+	intervals: { top: number; bottom: number; label: string; source: string; is_mock: boolean; formation?: string; layer_no?: string; lithology?: string }[];
+	warnings: string[];
 }
 
 export interface InterpretationTaskView {

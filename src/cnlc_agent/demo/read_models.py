@@ -7,6 +7,7 @@ from pydantic import Field
 
 from cnlc_agent.application.planning import STAGE_STEPS, ExecutionStage, PlanAction
 from cnlc_agent.application.ports import TaskRepository
+from cnlc_agent.demo.log_plot import LogPlotView, build_log_plot
 from cnlc_agent.demo.presentation import present_steps
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.execution import (
@@ -91,6 +92,7 @@ class InterpretationExecutionView(InterpretationExecutionSummary):
     steps: list[InterpretationStepView]
     tool_runs: list[InterpretationToolRunView]
     report_markdown: str | None
+    log_plot: LogPlotView | None = None
 
 
 class InterpretationTaskView(Contract):
@@ -197,6 +199,7 @@ async def present_execution_view(
         steps=steps,
         tool_runs=tool_runs,
         report_markdown=report,
+        log_plot=build_log_plot(execution.state_snapshot),
     )
 
 
