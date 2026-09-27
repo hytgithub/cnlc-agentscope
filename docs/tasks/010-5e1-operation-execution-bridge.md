@@ -142,3 +142,15 @@ E1 未进行人工页面测试；E2 必须进行真实 Web / AgentScope 页面�
 TVD 转换或人工结果覆盖；它们不属于 E1。范围内无遗留功能项，不开始 E2。
 
 No Architecture Issue found.
+
+## E1.1 follow-up
+
+E1.1 在不接入 ReAct 或页面的前提下加固了两处执行桥语义：只读 PREVIOUS 现在优先以
+同 Task 的 View execution 为锚点，其次使用 Active Base，最后使用 Task current；显式上下文
+锚点失效时返回 STALE_CONTEXT_REFERENCE，不跨 Task 泄漏，也不改变写操作的历史版本限制。
+FULL_INTERPRET 现在先通过完整 PlanValidator 裁决，只有合法单节点计划才返回
+INITIAL_INPUT_ROUTE_REQUIRED；复合、条件、缺槽、能力询问和超出领域计划均保留各自整体结果。
+
+新增真实 PostgreSQL / Redis Bridge 集成覆盖 SessionTaskBinding 授权、只读零版本、修改持久化、
+expected-current 并发保护、历史报告 View 更新和缓存非授权。E1.1 的设计、边界和完整测试结果见
+`docs/tasks/010-5e1-1-execution-bridge-hardening.md`。

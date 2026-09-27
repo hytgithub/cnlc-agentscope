@@ -91,7 +91,20 @@ class OperationExecutionBridge:
         }:
             result.validation = self.validator.validate(resolved)
             return self._validation_result(result)
-        if any(op.action == ActionType.FULL_INTERPRET for op in plan.operations):
+        initial_operations = [
+            op for op in plan.operations if op.action == ActionType.FULL_INTERPRET
+        ]
+        if initial_operations:
+            # 首次解释也必须先经过完整计划裁决，不能因其中一个节点提前短路其余语义。
+            result.validation = self.validator.validate(resolved)
+            if result.validation.plan is None:
+                return self._validation_result(result)
+            if len(plan.operations) != 1:
+                return self._reject(
+                    result,
+                    "COMPOUND_EXECUTION_UNSUPPORTED",
+                    "首次解释当前不能与其他操作组成复合执行",
+                )
             return self._reject(
                 result, "INITIAL_INPUT_ROUTE_REQUIRED", "首次解释必须通过已校验输入资料入口"
             )
@@ -145,6 +158,9 @@ class OperationExecutionBridge:
                             task.task_id,
                             op.execution_reference,
                             active_base_execution_id=self._base(context, task.task_id),
+                            previous_anchor_execution_id=self._previous_anchor(
+                                context, task.task_id, op.action, op.execution_reference.kind
+                            ),
                         )
                         result.resolved_executions[op.operation_id] = execution
                         op.scope = op.scope or WholeWellScope()
@@ -258,6 +274,25 @@ class OperationExecutionBridge:
             if context.active is not None and context.active.task_id == task_id
             else None
         )
+
+    @staticmethod
+    def _previous_anchor(
+        context: InteractionContext,
+        task_id: str,
+        action: ActionType,
+        kind: ExecutionReferenceKind,
+    ) -> str | None:
+        """只读 PREVIOUS 优先沿用同任务 View；跨任务或写操作均不能借用该锚点。"""
+
+        view = context.view
+        if (
+            action in READ_ACTIONS
+            and kind == ExecutionReferenceKind.PREVIOUS
+            and view is not None
+            and view.task_id == task_id
+        ):
+            return view.execution_id
+        return None
 
     @staticmethod
     def _reject(result: OperationBridgeResult, code: str, message: str) -> OperationBridgeResult:

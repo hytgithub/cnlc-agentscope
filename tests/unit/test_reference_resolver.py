@@ -201,6 +201,42 @@ async def test_active_base_never_falls_back(reference_env, base):
         assert error.value.code == "STALE_CONTEXT_REFERENCE"
 
 
+async def test_previous_context_anchor_precedes_active_base_and_current(reference_env):
+    """查看锚点是 PREVIOUS 的独立只读语义，不会被 Active Base 或 current 覆盖。"""
+
+    _, _, resolver = reference_env
+    result = await resolver.resolve_execution(
+        "a1",
+        ExecutionReference(kind="PREVIOUS"),
+        active_base_execution_id="a1-v7",
+        previous_anchor_execution_id="a1-v3",
+    )
+    assert result.execution_id == "a1-v1"
+    assert result.anchor_execution_id == "a1-v3"
+
+
+@pytest.mark.parametrize("anchor", ["missing", "b-v1", ""])
+async def test_previous_context_anchor_never_falls_back(reference_env, anchor):
+    _, _, resolver = reference_env
+    with pytest.raises(DataError) as error:
+        await resolver.resolve_execution(
+            "a1",
+            ExecutionReference(kind="PREVIOUS"),
+            previous_anchor_execution_id=anchor,
+        )
+    assert error.value.code == "STALE_CONTEXT_REFERENCE"
+
+
+async def test_previous_context_anchor_does_not_change_other_selectors(reference_env):
+    _, _, resolver = reference_env
+    result = await resolver.resolve_execution(
+        "a1",
+        ExecutionReference(kind="TASK_CURRENT"),
+        previous_anchor_execution_id="missing",
+    )
+    assert result.execution_id == "a1-v9"
+
+
 @pytest.mark.parametrize(
     "payload,base",
     [

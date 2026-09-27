@@ -86,6 +86,15 @@ async def second_version(runner, initial):
     return result
 
 
+async def versions(runner, initial, total):
+    """构造连续终态版本，返回按 sequence 排列的命令结果。"""
+
+    items = [initial]
+    while len(items) < total:
+        items.append(await second_version(runner, initial))
+    return items
+
+
 @pytest.mark.parametrize(
     "selector",
     [
@@ -145,6 +154,103 @@ async def test_status_reads_current(env, selector):
     assert result.outcome == "SUCCESS"
     assert result.results[0].execution_id == first.execution_id
     assert runner.interaction_context.view.execution_id == first.execution_id
+
+
+async def test_report_previous_is_relative_to_matching_view_not_task_current(env):
+    runner, first, bridge = env
+    v1, v2, v3, _v4 = await versions(runner, first, 4)
+    runner.set_view_context(first.task_id, v3.execution_id)
+    result = await bridge.execute(
+        plan(
+            node(
+                "REPORT",
+                task_reference={"kind": "TASK_ID", "value": first.task_id},
+                execution_reference={"kind": "PREVIOUS"},
+            )
+        )
+    )
+    assert result.outcome == "SUCCESS", result
+    assert result.results[0].execution_id == v2.execution_id
+    assert result.resolved_executions["op1"].anchor_execution_id == v3.execution_id
+    assert result.results[0].execution_id != v1.execution_id
+
+
+async def test_report_previous_uses_view_even_when_active_is_another_task(env):
+    runner, first, bridge = env
+    _v1, v2, v3, _v4 = await versions(runner, first, 4)
+    runner.set_active_task("C")
+    runner.set_active_base("C", "C-V5")
+    runner.set_view_context(first.task_id, v3.execution_id)
+    before = runner.interaction_context.active
+    result = await bridge.execute(
+        plan(
+            node(
+                "REPORT",
+                task_reference={"kind": "TASK_ID", "value": first.task_id},
+                execution_reference={"kind": "PREVIOUS"},
+            )
+        )
+    )
+    assert result.results[0].execution_id == v2.execution_id
+    assert runner.interaction_context.active == before
+
+
+async def test_report_previous_does_not_leak_view_anchor_across_tasks(env):
+    runner, first, bridge = env
+    _a1, _a2, a3, _a4 = await versions(runner, first, 4)
+    other = await runner.run("WELL_MOCK_001")
+    await runner.wait_for_completion(other.task_id, other.execution_id)
+    other_current = await second_version(runner, other)
+    runner.set_view_context(first.task_id, a3.execution_id)
+    result = await bridge.execute(
+        plan(
+            node(
+                "REPORT",
+                task_reference={"kind": "TASK_ID", "value": other.task_id},
+                execution_reference={"kind": "PREVIOUS"},
+            )
+        )
+    )
+    assert result.results[0].task_id == other.task_id
+    assert result.results[0].execution_id == other.execution_id
+    assert result.resolved_executions["op1"].anchor_execution_id == other_current.execution_id
+
+
+async def test_stale_matching_view_previous_does_not_fall_back(env):
+    runner, first, _ = env
+    await second_version(runner, first)
+    runner.set_view_context(first.task_id, "missing-view-execution")
+    await reject(
+        env,
+        plan(
+            node(
+                "REPORT",
+                task_reference={"kind": "TASK_ID", "value": first.task_id},
+                execution_reference={"kind": "PREVIOUS"},
+            )
+        ),
+        "STALE_CONTEXT_REFERENCE",
+    )
+
+
+async def test_report_previous_uses_active_base_without_view(env):
+    runner, first, bridge = env
+    _v1, v2, v3, _v4 = await versions(runner, first, 4)
+    runner.set_active_base(first.task_id, v3.execution_id)
+    runner.clear_view_context()
+    result = await bridge.execute(plan(node("REPORT", execution_reference={"kind": "PREVIOUS"})))
+    assert result.results[0].execution_id == v2.execution_id
+    assert result.resolved_executions["op1"].anchor_execution_id == v3.execution_id
+
+
+async def test_report_previous_uses_task_current_without_context_anchor(env):
+    runner, first, bridge = env
+    _v1, _v2, v3, v4 = await versions(runner, first, 4)
+    runner.clear_active_base()
+    runner.clear_view_context()
+    result = await bridge.execute(plan(node("REPORT", execution_reference={"kind": "PREVIOUS"})))
+    assert result.results[0].execution_id == v3.execution_id
+    assert result.resolved_executions["op1"].anchor_execution_id == v4.execution_id
 
 
 @pytest.mark.parametrize("kind", ["PREVIOUS", "FIRST", "EXECUTION_ID"])
@@ -456,6 +562,57 @@ async def test_initial_interpret_creates_nothing(env):
     before = len(runner.repository._tasks), len(runner.repository._inputs)
     await reject(env, plan(node("FULL_INTERPRET")), "INITIAL_INPUT_ROUTE_REQUIRED")
     assert (len(runner.repository._tasks), len(runner.repository._inputs)) == before
+
+
+@pytest.mark.parametrize("other", ["MODIFY_PARAMETER", "REPORT", "FULL_RERUN"])
+async def test_initial_interpret_compound_plan_is_rejected_as_a_whole(env, other):
+    runner, _, _ = env
+    before = (len(runner.repository._tasks), len(runner.repository._inputs), await count(runner))
+    await reject(
+        env,
+        plan(node("FULL_INTERPRET"), node(other, op_id="other")),
+        "COMPOUND_EXECUTION_UNSUPPORTED",
+    )
+    after = (len(runner.repository._tasks), len(runner.repository._inputs), await count(runner))
+    assert after == before
+
+
+async def test_initial_interpret_condition_is_validated_before_route_redirect(env):
+    await reject(
+        env,
+        plan(
+            node("FULL_INTERPRET"),
+            conditions=[{"expression": "有资料", "operation_ids": ["op1"]}],
+        ),
+        "CONDITIONAL_EXECUTION_UNSUPPORTED",
+    )
+
+
+async def test_initial_interpret_missing_target_needs_clarification(env):
+    source = plan(node("FULL_INTERPRET"))
+    source.operations[0].target = None
+    result = await reject(env, source, "CLARIFICATION_REQUIRED")
+    assert result.outcome == "NEED_CLARIFICATION"
+
+
+async def test_capability_query_initial_interpret_stays_read_only(env):
+    runner, _, bridge = env
+    before = await count(runner)
+    result = await bridge.execute(
+        plan(node("FULL_INTERPRET"), input_classification="CAPABILITY_QUERY")
+    )
+    assert result.outcome == "READ_ONLY"
+    assert result.results == []
+    assert await count(runner) == before
+
+
+async def test_out_of_domain_initial_interpret_is_rejected_before_redirect(env):
+    result = await reject(
+        env,
+        plan(node("FULL_INTERPRET"), input_classification="OUT_OF_DOMAIN"),
+        "OUT_OF_DOMAIN",
+    )
+    assert result.outcome == "REJECTED"
 
 
 async def test_missing_session_identity_fails_closed(env):

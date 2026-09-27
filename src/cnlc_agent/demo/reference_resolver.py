@@ -175,8 +175,9 @@ class OperationReferenceResolver:
         reference: ExecutionReference,
         *,
         active_base_execution_id: str | None = None,
+        previous_anchor_execution_id: str | None = None,
     ) -> ResolvedExecutionReference:
-        """重新读取任务指针；显式基线无效时失败，绝不回退到任务当前版本。"""
+        """重新读取任务指针；PREVIOUS 的查看锚点与写工作基线保持独立。"""
 
         reference = ExecutionReference.model_validate(reference.model_dump())
         task = await self._authorized_task(task_id)
@@ -193,11 +194,16 @@ class OperationReferenceResolver:
         else:
             anchor = None
             if kind == ExecutionReferenceKind.PREVIOUS:
-                has_base = active_base_execution_id is not None
+                anchor_id = (
+                    previous_anchor_execution_id
+                    if previous_anchor_execution_id is not None
+                    else active_base_execution_id
+                )
+                has_context_anchor = anchor_id is not None
                 anchor = await self._execution(
                     task_id,
-                    active_base_execution_id if has_base else task.current_execution_id,
-                    stale=has_base,
+                    anchor_id if has_context_anchor else task.current_execution_id,
+                    stale=has_context_anchor,
                 )
                 anchor_id = anchor.execution_id
             executions = await self.repository.list_executions(task_id)
