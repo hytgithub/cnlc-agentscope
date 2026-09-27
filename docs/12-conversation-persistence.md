@@ -111,11 +111,31 @@ AgentScope 删除 Session 时，先删除 PostgreSQL Conversation 和其 Message
 
 ## 8. PendingClarification、active task 与 Context
 
-归档 SessionRecord 前会删除 `cnlc_pending_clarification`。Redis 命中时它仍可在 Task 10.3 定义的短 TTL
-和紧邻轮次内使用；Redis 丢失或 Backend 重建后不会从旧 Message 自动恢复。
+归档 SessionRecord 时先深复制，再删除 `cnlc_pending_clarification` 和 `cnlc_interaction_context`，
+不修改运行中的 AgentState 或 Redis Session。PendingClarification（待澄清请求）继续遵循 Task 10.3
+的短 TTL、紧邻轮次与 runner owner 校验；Redis 丢失或 Backend 重建后不会从旧 Message 自动恢复。
 
-`cnlc_active_task_id` 可作为 Session presentation state 保存；丢失或无效时，TaskReference 的 canonical
-fallback 仍是 SessionTaskBinding 中最近绑定 Task，没有新增第二套 PostgreSQL 当前任务指针。
+`cnlc_active_task_id` 继续作为兼容的 active Task hint 保存。它不是授权；旧 TaskReference 的 fallback
+仍由 SessionTaskBinding 决定，没有新增第二套 PostgreSQL 当前任务指针。Task 10.5-B 的写引用解析器
+在多任务且无有效 active 时要求澄清，不直接使用只读 fallback。
+
+Task 10.5-C 的 `cnlc_interaction_context` 包含 ActiveContext（当前操作上下文）、
+ViewContext（当前查看上下文）和 RecentContext（近期交互上下文）。生命周期如下：
+
+| 场景 | 恢复规则 |
+| --- | --- |
+| Redis Session 命中 / 普通浏览器刷新 | 完整保留 Active、工作基线、范围、View、Recent。 |
+| Redis miss / flush 后读取 PostgreSQL | 仅通过 legacy key 重建 `ActiveContext(task_id=...)`；base、scope、View 为空，Recent 为默认空值。 |
+| 新格式损坏 | 丢弃整份损坏上下文；仅使用合法 legacy task hint，否则为空。 |
+| 新旧 runtime key 不一致 | 合法新格式优先，并同步 legacy；新格式没有 active 时移除旧 key。 |
+
+`ACTIVE_BASE`（当前工作基线版本）可以不同于 `TASK_CURRENT`（任务当前最新版本），但它与操作范围、
+查看和近期引用都属于短期意图。Redis 丢失后不允许这些旧指代从长期 Conversation 复活，也不从历史
+Message 推断回来；需要时重新澄清。所有 task / execution / interval 引用仍须在真正执行时经
+OperationReferenceResolver、ScopeResolver 和 Binding 校验。
+
+本次只提供上下文 API 与兼容桥。现有只读 Tool 成功后调用 `set_active_task` 的行为和
+interaction_snapshot 不变；只读到 View、写操作到 Active 的统一路由留待 Task 10.5-E。
 
 完整聊天历史通过 Message 分页恢复给 UI。模型运行上下文仍使用 AgentScope `AgentState.context` 和既有
 context compression；Conversation repository 不把 100/500/1000 条历史一次性塞回模型上下文。

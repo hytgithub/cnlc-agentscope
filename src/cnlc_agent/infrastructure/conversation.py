@@ -143,10 +143,11 @@ def _message_created_at(msg: Msg) -> datetime:
 
 
 def _durable_session(record: SessionRecord) -> SessionRecord:
-    """归档副本移除短期澄清，避免 Redis 丢失后重新激活旧参数。"""
+    """归档副本移除短期澄清和交互范围，避免 Redis 丢失后恢复旧写操作语境。"""
 
     durable = record.model_copy(deep=True)
     durable.state.middle_context.pop("cnlc_pending_clarification", None)
+    durable.state.middle_context.pop("cnlc_interaction_context", None)
     return durable
 
 

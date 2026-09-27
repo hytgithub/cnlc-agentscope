@@ -32,11 +32,17 @@ from cnlc_agent.application.ports import TaskRepository
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
+from cnlc_agent.demo.interaction_context import (
+    InteractionContext,
+    InteractionContextStore,
+    RecentContext,
+)
 from cnlc_agent.demo.interaction_state import (
     InteractionPolicy,
     InteractionSnapshot,
     PendingClarification,
 )
+from cnlc_agent.demo.operation_models import OperationScope
 from cnlc_agent.demo.task_context import SessionTaskResolver, TaskReference
 from cnlc_agent.domain.errors import ApplicationError, InfrastructureError
 from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, ExecutionStatus
@@ -84,28 +90,58 @@ class TaskCommandRunner:
         # 仅作为进程内加速缓存；postgres-redis 模式的 canonical source 是绑定表。
         self.observed_task_ids: set[str] = set()
         self._observed_task_order: list[str] = []
-        self.active_task_id: str | None = None
         self._session_runtime_context: dict[str, Any] = {}
+        self._interaction_context_store = InteractionContextStore(self._session_runtime_context)
         self._interaction_owner = uuid4().hex
         self._interaction_turn = 0
 
     def attach_session_runtime_context(self, context: dict[str, Any]) -> None:
-        """将 active task 放入 AgentScope Session State，不污染业务 Task。"""
+        """接入 Session 短期焦点并兼容 legacy hint，不污染业务 Task。"""
 
         self._session_runtime_context = context
         self.pending_clarification()  # 新 runner 丢弃无法证明生命周期的旧 pending。
-        stored = context.get("cnlc_active_task_id")
-        if isinstance(stored, str) and stored:
-            self.active_task_id = stored
-        elif self.active_task_id is not None:
-            context["cnlc_active_task_id"] = self.active_task_id
+        self._interaction_context_store.attach(context)
+
+    @property
+    def active_task_id(self) -> str | None:
+        """保留旧 Tool/snapshot 读取入口，避免维护两份不一致的操作焦点。"""
+
+        return self._interaction_context_store.active_task_id
+
+    @property
+    def interaction_context(self) -> InteractionContext:
+        """返回上下文副本；引用仍须经 Resolver/Binding 校验。"""
+
+        return self._interaction_context_store.snapshot
 
     def set_active_task(self, task_id: str) -> None:
         """仅更新会话交互焦点，不修改 InterpretationTask 业务事实。"""
 
-        self.active_task_id = task_id
-        if self._session_runtime_context is not None:
-            self._session_runtime_context["cnlc_active_task_id"] = task_id
+        self._interaction_context_store.set_active_task(task_id)
+
+    def set_active_base(
+        self, task_id: str, execution_id: str, scope: OperationScope | None = None
+    ) -> None:
+        """记录当前任务的工作基线，不创建执行或修改 Task 当前版本。"""
+
+        self._interaction_context_store.set_active_base(task_id, execution_id, scope)
+
+    def set_view_context(
+        self, task_id: str, execution_id: str | None = None, scope: OperationScope | None = None
+    ) -> None:
+        """只改变查看对象；现有只读 Tool 的统一路由留待 10.5-E 接入。"""
+
+        self._interaction_context_store.set_view_context(task_id, execution_id, scope)
+
+    def clear_view_context(self) -> None:
+        """清除查看对象，保留当前操作任务。"""
+
+        self._interaction_context_store.clear_view_context()
+
+    def set_recent_context(self, recent: RecentContext) -> None:
+        """更新近期引用，不改变操作或查看焦点。"""
+
+        self._interaction_context_store.set_recent_context(recent)
 
     def _remember_task(self, task_id: str) -> None:
         """记录无持久化身份的独立测试会话顺序。"""
