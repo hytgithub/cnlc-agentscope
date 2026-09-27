@@ -393,3 +393,56 @@ OperationResolution 仅保存 outcome、confidence、plan 和证据等说明。
 OperationCatalog 按 ActionType 查询声明。is_executable 仅判断状态，不校验具体计划，
 不检查或调用 handler_name。默认范围、参数和业务限制见
 [Task 10.5-A](tasks/010-5a-operation-models.md)。调整开关不改变 OperationPlan Schema。
+
+## 31. ReferenceAccessMode（引用访问用途，Task 10.5-B）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `READ_ONLY` | 只读引用解析 | 多任务且焦点丢失时，可按旧交互约定选择最近绑定任务。 |
+| `WRITE` | 写操作引用解析 | 多任务且焦点丢失时必须报告歧义；解析过程本身仍然只读。 |
+
+这是引用安全策略，不是 InteractionDecision 或 ResolutionOutcome 的替代品。
+
+## 32. TaskResolutionSource（任务解析来源）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `ACTIVE` | 当前操作焦点 | 使用当前 Session 内有效的 active_task_id。 |
+| `ONLY_TASK` | 会话唯一任务 | 焦点失效时，会话仅有一个可用的授权任务。 |
+| `LATEST_BOUND` | 最近绑定任务 | 只读解析在多个候选任务中使用最后绑定的任务。 |
+| `EXPLICIT_WELL` | 显式井号 | 按指定井号找到唯一匹配任务。 |
+| `EXPLICIT_TASK` | 显式任务标识 | 指定 Task ID 已通过当前 Session Binding 核验。 |
+| `PREVIOUS_BOUND` | 上一绑定任务 | 在明确 current anchor 之前的相邻绑定任务。 |
+
+同井多任务只读选择最近绑定项时，match_count 记录匹配数；写操作只允许选匹配井的有效焦点。
+ResolvedExecutionReference 的 resolution_source 复用第 23 节 ExecutionReferenceKind；
+ResolvedScope 的 resolution_source 复用第 21 节 OperationScopeKind，没有新增平行选择器。
+
+## 33. IntervalIdentitySource（版本内层段身份来源）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `NATIVE` | 原生层段标识 | 原始行已有有效 interval_id，用该值构造带 Execution 限定的身份。 |
+| `EXECUTION_ORDINAL` | 版本内顺序派生标识 | 原始行没有 interval_id，用终态快照中从 1 开始的位置派生身份。 |
+
+当前 Fixture 没有原生层段标识。两种身份均绑定 Execution；原生字符串另外保存在 native_interval_id。
+生成的 interval_id 不写回历史 State，不是数据库主键，不表示跨版本同一地质层。
+运行中快照尚未固定时，不生成此身份。
+
+## 34. Operation Reference Resolver 稳定错误码
+
+| 错误码 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `AMBIGUOUS_TASK_REFERENCE` | 任务引用存在歧义 | 多任务写请求缺少明确焦点，或同井多任务无法唯一选择。 |
+| `AMBIGUOUS_EXECUTION_REFERENCE` | 执行版本引用存在歧义 | 候选 Execution 存在重复序号，无法唯一选择。 |
+| `INTERVAL_NOT_FOUND` | 当前版本不存在目标层段 | 序号或 ID 无匹配，或 ID 来自另一版本。 |
+| `DEPTH_REFERENCE_UNAVAILABLE` | 深度基准不可用 | 当前版本缺少原始深度数据，或请求基准与真实数据不一致。 |
+| `DEPTH_OUT_OF_RANGE` | 深度超出数据覆盖 | 点或区间超出当前 Execution 原始数据边界，不静默裁剪。 |
+| `FILTER_SET_UNRESOLVED` | 条件筛选集合尚未冻结 | resolved_ids 为 null，不能作为已解析集合使用。 |
+| `STALE_CONTEXT_REFERENCE` | 上下文引用失效 | 显式工作基线丢失、不存在或跨任务，或层段快照仍可能变化。 |
+| `AMBIGUOUS_SCOPE` | 操作范围无法可靠确定 | 层段行、顶底深度或原生 ID 无效，或原生 ID 重复；不能跳过坏行重新编号。 |
+
+复用 `TASK_NOT_FOUND`（任务不存在或未授权）、`PREVIOUS_TASK_NOT_FOUND`（无上一绑定任务）、
+`SESSION_WELL_NOT_FOUND`（会话内无指定井）和 `EXECUTION_NOT_FOUND`（当前任务无指定版本）。
+显式 Task / Execution ID 不能越过 Session Binding 或 Task 归属检查；错误不暴露其他会话事实。
+Resolver 只抛出项目现有 DataError，不负责映射成澄清对话或执行计划。
