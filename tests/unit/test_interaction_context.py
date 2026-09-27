@@ -221,3 +221,25 @@ def test_new_format_without_active_removes_stale_legacy(runner):
     assert runner.active_task_id is None
     assert LEGACY_ACTIVE_TASK_KEY not in context
     assert runner.interaction_context == state
+
+
+def test_clear_active_base_preserves_other_context_and_is_idempotent(runner):
+    runtime = {}
+    runner.attach_session_runtime_context(runtime)
+    runner.clear_active_base()
+    assert runner.interaction_context.active is None
+    _populate(runner)
+    before = runner.interaction_context
+    runner.clear_active_base()
+    assert runner.interaction_context.active == ActiveContext(task_id="A")
+    assert runner.interaction_context.view == before.view
+    assert runner.interaction_context.recent == before.recent
+    assert runtime[LEGACY_ACTIVE_TASK_KEY] == "A"
+    assert runtime[INTERACTION_CONTEXT_KEY]["active"] == {
+        "task_id": "A",
+        "base_execution_id": None,
+        "scope": None,
+    }
+    snapshot = runner.interaction_context
+    runner.clear_active_base()
+    assert runner.interaction_context == snapshot

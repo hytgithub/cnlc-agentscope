@@ -149,6 +149,14 @@ class InteractionContextStore:
         state.active = ActiveContext(task_id=task_id, base_execution_id=execution_id, scope=scope)
         self._save(state)
 
+    def clear_active_base(self) -> None:
+        """写入成功后清除旧版本与范围，保留任务、查看对象和近期引用。"""
+
+        state = self.snapshot
+        if state.active is not None:
+            state.active = ActiveContext(task_id=state.active.task_id)
+        self._save(state)
+
     def set_view_context(
         self, task_id: str, execution_id: str | None = None, scope: OperationScope | None = None
     ) -> None:

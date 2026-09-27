@@ -126,6 +126,11 @@ class TaskCommandRunner:
 
         self._interaction_context_store.set_active_base(task_id, execution_id, scope)
 
+    def clear_active_base(self) -> None:
+        """清除成功写操作之前的工作基线，避免下一轮误用历史范围。"""
+
+        self._interaction_context_store.clear_active_base()
+
     def set_view_context(
         self, task_id: str, execution_id: str | None = None, scope: OperationScope | None = None
     ) -> None:
@@ -397,6 +402,9 @@ class TaskCommandRunner:
     async def execute(
         self,
         command: GetStatusCommand,
+        *,
+        expected_current_execution_id: str | None = None,
+        before_write: Callable[[], Awaitable[None]] | None = None,
     ) -> TaskCommandResult:
         """修改命令只提交后台任务；状态与报告命令始终查询持久事实。"""
 
@@ -404,14 +412,23 @@ class TaskCommandRunner:
             raise ApplicationError("TASK_NOT_FOUND", "任务不属于当前会话")
 
         async with self._lock:
+            # E1 在取得命令锁后再次授权；旧 Tool 不传钩子，保留原有调用语义。
+            if before_write is not None and isinstance(
+                command, (ModifyInterpretationCommand, FullRerunCommand)
+            ):
+                await before_write()
             with TemporaryDirectory(prefix="cnlc-command-") as directory:
                 root = Path(directory)
                 async with self.context(root) as service:
                     commands = TaskCommands(service)
                     if isinstance(command, ModifyInterpretationCommand):
-                        result = await commands.prepare_modify(command)
+                        result = await commands.prepare_modify(
+                            command, expected_current_execution_id=expected_current_execution_id
+                        )
                     elif isinstance(command, FullRerunCommand):
-                        result = await commands.prepare_full_rerun(command)
+                        result = await commands.prepare_full_rerun(
+                            command, expected_current_execution_id=expected_current_execution_id
+                        )
                     elif isinstance(command, GetReportCommand):
                         return await commands.report(command)
                     else:
@@ -420,12 +437,10 @@ class TaskCommandRunner:
             return result
 
     async def owns_task(self, task_id: str) -> bool:
-        """缓存未命中时只在持久模式查询完整 Session binding。"""
+        """具有 Session Identity 时以 Binding 为准；无身份旧测试保留内存兼容。"""
 
-        if task_id in self.observed_task_ids:
-            return True
-        if self.persistence.persistence != "postgres-redis" or self.session_identity is None:
-            return False
+        if self.session_identity is None:
+            return task_id in self.observed_task_ids
         with TemporaryDirectory(prefix="cnlc-ownership-") as directory:
             async with self.context(Path(directory)) as service:
                 owned = await service.repository.task_belongs_to_session(

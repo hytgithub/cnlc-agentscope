@@ -364,7 +364,10 @@ class PlanValidator:
                             message="无法确定限定范围与排除范围关系，请明确实际范围",
                         )
                     )
-        if any(op.action == ActionType.FULL_INTERPRET for op in plan.operations) and any(
+        if any(
+            op.action in {ActionType.FULL_INTERPRET, ActionType.FULL_RERUN}
+            for op in plan.operations
+        ) and any(
             c.type == OperationConstraintType.NO_FULL_RERUN
             for op in plan.operations
             for c in op.constraints

@@ -58,6 +58,15 @@ def default_capabilities() -> tuple[OperationCapability, ...]:
             business_note="对应现有 START；已有任务全量重跑仍走原 FULL_RERUN，不能混同首次创建。",
         ),
         OperationCapability(
+            action=ActionType.FULL_RERUN,
+            status=enabled,
+            allowed_scopes=whole_well,
+            description="对已有任务全量重跑并继承当前有效参数。",
+            handler_name="rerun_well_interpretation",
+            business_note="已有授权 Task 的全量重跑，与首次 FULL_INTERPRET 不同；"
+            "不得用于局部 REINTERPRET。",
+        ),
+        OperationCapability(
             action=ActionType.STATUS,
             status=enabled,
             allowed_scopes=whole_well,

@@ -220,6 +220,9 @@ Execution 没有 `PENDING` 和 `SKIPPED`；这两个值属于 Workflow 步骤状
 
 这是 Operation 的有限语义空间，不替换第 9 节的现有任务级意图；可识别不意味着可执行。
 
+Task 10.5-E1 补充 `FULL_RERUN`（全量重跑）：已有授权 Task 的整井重跑，继承现有有效参数。
+其 Capability 为 ENABLED（已启用），handler 为 rerun_well_interpretation；不能代替首次解释或局部重新解释。
+
 | 代码值 | 中文名称 | 中文语义 |
 | --- | --- | --- |
 | `QUERY` | 查询结果 | 读取指定业务对象结果。 |
@@ -483,3 +486,26 @@ ClarificationIssue 同时保存可选 operation_id、slot、error_code、中文 
 条件式和跨任务复合写返回 KNOWN_UNSUPPORTED（已识别但当前不支持）；缺槽和可澄清冲突返回
 NEED_CLARIFICATION（需要澄清）；非法图返回 REJECTED（已拒绝）。
 CAPABILITY_QUERY（能力询问）对合法结构始终返回 READ_ONLY（可只读执行），不提供写执行计划。
+
+## 37. Operation Execution Bridge 结果与稳定代码（Task 10.5-E1）
+
+OperationBridgeResult 的 `SUCCESS`（命令成功）仅表示只读命令完成或后台写命令已提交，
+不表示 Workflow 已完成；执行终态仍看 TaskCommandResult.execution_status。
+能力询问返回 `READ_ONLY`（只读能力说明），不调用业务命令。失败复用
+`REJECTED`（已拒绝）、`NEED_CLARIFICATION`（需要澄清）、
+`KNOWN_UNSUPPORTED`（已识别但当前不支持），另保留完整 PlanValidationResult。
+
+| 稳定代码 | 中文名称 | 边界 |
+| --- | --- | --- |
+| `INITIAL_INPUT_ROUTE_REQUIRED` | 首次解释需要输入资料入口 | generic Bridge 不创建空 Task/InputVersion/Execution；已有上传和 Fixture 入口继续支持首次解释。 |
+| `OPERATION_SESSION_IDENTITY_REQUIRED` | 操作需要会话身份 | runner 缺少服务端 Session Identity 时关闭执行入口，不用聊天或 Active 冒充授权。 |
+| `HISTORICAL_BASE_WRITE_UNSUPPORTED` | 历史基线写入当前不支持 | 写操作选中版本与 Task 当前版本不同，不把历史写转换成当前写。 |
+| `COMPOUND_EXECUTION_UNSUPPORTED` | 当前执行桥不支持该复合执行 | 除同任务同版本参数聚合和纯读以外的多节点执行，以及无法消费的数据/比较依赖，均不部分执行。 |
+| `STATUS_EXECUTION_SELECTION_UNSUPPORTED` | 状态查询暂不支持历史版本选择 | STATUS 只接受当前版本语义，不忽略明确历史选择。 |
+| `UNSUPPORTED_VALUE_MODE` | 当前不支持该值变更模式 | 只支持 ABSOLUTE（绝对值），不自动换算增量或比例变化。 |
+
+复用既有 INVALID_OPERATION_PLAN（操作计划结构非法）、MULTI_OPERATION_CONFLICT（复合操作存在冲突）、
+UNSUPPORTED_OPERATION（当前操作能力不支持）、UNSUPPORTED_PARAMETER（当前参数不支持）、
+STALE_CONTEXT_REFERENCE（上下文引用失效）、STALE_EXECUTION_PLAN（执行计划已失效）、
+TASK_EXECUTION_ACTIVE（任务仍有活跃执行）及 B Resolver / Application 的既有错误。
+参数名与目标不一致拒绝；重复参数同值去重、异值整体冲突。并发版本前置条件不提供历史分支功能。

@@ -13,7 +13,7 @@ from cnlc_agent.demo.operation_capabilities import (
     OperationCapabilityStatus,
     OperationCatalog,
 )
-from cnlc_agent.demo.operation_models import ActionType, OperationScopeKind
+from cnlc_agent.demo.operation_models import ActionType, OperationConstraint, OperationScopeKind
 from cnlc_agent.demo.operation_parser import PartialOperationPlan
 from cnlc_agent.demo.plan_validator import PlanValidator
 from cnlc_agent.demo.reference_resolver import ResolvedTaskReference
@@ -492,3 +492,21 @@ async def test_whole_plan_no_execution_before_compare_clarification(monkeypatch)
     assert await repository.list_executions("A") == before == []
     for guard in calls:
         guard.assert_not_called()
+
+
+def test_full_rerun_is_eligible_but_no_full_rerun_constraint_conflicts():
+    source = plan([node(action="FULL_RERUN", target="WELL", parameters={})])
+    assert PlanValidator().validate(source).outcome == "EXECUTABLE"
+    source.operations[0].constraints = [OperationConstraint(type="NO_FULL_RERUN")]
+    result = PlanValidator().validate(source)
+    assert result.conflicts[0].error_code == "MULTI_OPERATION_CONFLICT"
+    assert result.plan is None
+
+
+def test_model_parameter_uses_model_id_instead_of_fake_numeric_value():
+    source = plan([node(target="MODEL", parameters={"model_id": "model-v2"})])
+    assert PlanValidator().validate(source).outcome == "EXECUTABLE"
+    source.operations[0].parameters.model_id = None
+    result = PlanValidator().validate(source)
+    assert any(issue.slot == "METHOD" for issue in result.missing_slots)
+    assert not any(issue.slot == "VALUE" for issue in result.missing_slots)

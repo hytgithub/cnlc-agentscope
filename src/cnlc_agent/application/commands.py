@@ -106,6 +106,8 @@ class TaskCommands:
     async def prepare_modify(
         self,
         command: ModifyInterpretationCommand,
+        *,
+        expected_current_execution_id: str | None = None,
     ) -> TaskCommandResult:
         """生成计划并只创建 QUEUED Execution，供后台调度器执行。"""
 
@@ -113,6 +115,12 @@ class TaskCommands:
             raise DataError("EMPTY_OVERRIDE", "请明确要修改的参数名称和值")
         request = await self.request(command.task_id)
         plan = await self.service.plan_rerun(request, changes=command.changes)
+        # 可选并发前置条件来自执行桥的已解析事实，不是历史版本分支参数。
+        if (
+            expected_current_execution_id is not None
+            and plan.expected_current_execution_id != expected_current_execution_id
+        ):
+            raise DataError("STALE_EXECUTION_PLAN", "任务版本已变化，请重新解析计划")
         execution = await self.service.prepare_rerun_plan(request, plan)
         return await self.project(command.task_id, execution.execution_id, "MODIFY")
 
@@ -131,11 +139,19 @@ class TaskCommands:
     async def prepare_full_rerun(
         self,
         command: FullRerunCommand,
+        *,
+        expected_current_execution_id: str | None = None,
     ) -> TaskCommandResult:
         """只提交全量计划；当前有效参数由 Resolver 继承。"""
 
         request = await self.request(command.task_id)
         plan = await self.service.plan_rerun(request, force_full_rerun=True)
+        # 与 Repository 原子 expected-current 检查接续，避免等锁后换到新基线。
+        if (
+            expected_current_execution_id is not None
+            and plan.expected_current_execution_id != expected_current_execution_id
+        ):
+            raise DataError("STALE_EXECUTION_PLAN", "任务版本已变化，请重新解析计划")
         execution = await self.service.prepare_rerun_plan(request, plan)
         return await self.project(command.task_id, execution.execution_id, "FULL_RERUN")
 

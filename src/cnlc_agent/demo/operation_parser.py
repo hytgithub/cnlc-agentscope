@@ -153,7 +153,16 @@ def missing_plan_slots(plan: PartialOperationPlan) -> list[ClarificationIssue]:
         if op.target is None:
             missing.append((ClarificationSlot.TARGET, "CLARIFICATION_REQUIRED", "请明确操作目标"))
         if op.action in {ActionType.MODIFY_RESULT, ActionType.MODIFY_PARAMETER}:
-            if op.parameters.value is None:
+            # 模型参数使用标识，不伪造数值；其他修改仍必须明确 ValueSpec。
+            model_parameter = op.action == ActionType.MODIFY_PARAMETER and (
+                op.parameters.parameter_name == "prediction_model"
+                or (op.parameters.parameter_name is None and op.target == TargetType.MODEL)
+            )
+            if model_parameter and op.parameters.model_id is None:
+                missing.append(
+                    (ClarificationSlot.METHOD, "CLARIFICATION_REQUIRED", "请明确预测模型标识")
+                )
+            elif not model_parameter and op.parameters.value is None:
                 missing.append((ClarificationSlot.VALUE, "CLARIFICATION_REQUIRED", "请明确修改值"))
         if (op.action == ActionType.SWITCH_METHOD and op.parameters.method_id is None) or (
             op.action == ActionType.SWITCH_MODEL and op.parameters.model_id is None

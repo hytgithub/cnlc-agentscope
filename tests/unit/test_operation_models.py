@@ -46,7 +46,8 @@ from cnlc_agent.demo.task_context import TaskReference
             ActionType,
             "QUERY EXPLAIN MODIFY_RESULT MODIFY_PARAMETER RECALCULATE REINTERPRET "
             "SWITCH_METHOD SWITCH_MODEL COMPARE SEGMENT_EDIT VALIDATE OVERRIDE RESTORE_VERSION "
-            "SCENARIO COMMIT_SCENARIO REPORT HISTORY FULL_INTERPRET STATUS CANCEL_EXECUTION "
+            "SCENARIO COMMIT_SCENARIO REPORT HISTORY FULL_INTERPRET FULL_RERUN "
+            "STATUS CANCEL_EXECUTION "
             "PAUSE_EXECUTION RESUME_EXECUTION RETRY_EXECUTION ACCEPT_RESULT REJECT_RESULT "
             "MARK_FINAL MARK_REVIEW NEW_WELL REPLACE_INPUT ADD_EVIDENCE",
         ),
@@ -324,3 +325,24 @@ def test_schema_exports_discriminated_scopes_and_reused_task_reference():
     assert scope["discriminator"]["propertyName"] == "kind"
     assert len(scope["oneOf"]) == 6
     assert set(PersistMode) == {PersistMode.PREVIEW, PersistMode.CREATE_VERSION}
+
+
+def test_full_rerun_action_serialization_is_distinct_from_initial_interpret():
+    plan = OperationPlan.model_validate(
+        {
+            "input_classification": "EXECUTION_REQUEST",
+            "persist_mode": "CREATE_VERSION",
+            "original_instruction": "对已有任务全量重跑",
+            "operations": [
+                {
+                    "operation_id": "rerun",
+                    "action": "FULL_RERUN",
+                    "target": "WELL",
+                    "task_reference": {"kind": "TASK_ID", "value": "A"},
+                }
+            ],
+        }
+    )
+    assert plan.operations[0].action == ActionType.FULL_RERUN
+    assert OperationPlan.model_validate_json(plan.model_dump_json()) == plan
+    assert '"action":"FULL_RERUN"' in plan.model_dump_json()

@@ -112,19 +112,27 @@ Task 统一按不存在处理。
 
 真实路径是 `qwen-plus` ReAct：系统提示约束领域和 Tool 边界，Tool description 告诉模型动作语义，JSON Schema 约束参数形状，Pydantic 和应用层再次校验。专业 Workflow 内的模型访问仍走统一 ModelGateway，和外层任务意图模型承担不同职责。
 
-## 7. Future 边界
+## 7. Operation 基础设施与后续集成边界
 
-以下概念用于未来更细的能力规划，当前没有实现：
+Task 10.5-A～E1 已实现 Operation Schema / Catalog、任务版本与范围 Resolver、
+Active/View/Recent Context、结构化 Parser、PlanValidator、通用澄清和 OperationExecutionBridge。
+E1 接收程序化的 PartialOperationPlan / OperationPlan，完整解析、校验、适配后调用现有 TaskCommands。
+这些能力尚未接入 qwen-plus ReAct 和用户页面；本文第 2～6 节仍描述现有 Tool 入口。
 
-- 统一 `OperationRequest`；
-- `CapabilityRegistry`；
-- 细粒度 `DependencyGraph`；
-- 可持久化或可解释的独立 `ExecutionPlan` 实体；当前只有应用层确定性计划对象；
-- SW-only 等步骤级重算。
+`FULL_RERUN`（全量重跑已有任务）新增为独立已启用动作，只支持整井并继承现有有效参数。
+`REINTERPRET`（按目标和范围重新解释）仍未实现，不能替换为全量重跑。
+`FULL_INTERPRET`（首次解释）仍已启用，但通用已有任务 Bridge 返回
+`INITIAL_INPUT_ROUTE_REQUIRED`（首次解释需要输入资料入口）；上传和 Fixture 继续走原链。
 
-未来若增加 `RECALCULATE_SW`、`REIDENTIFY_LITHOLOGY`、`REGENERATE_REPORT`、`CHANGE_PREDICTION_MODEL` 或 `REINTERPRET_INTERVAL`，应先形成结构化 `OperationRequest(intent, target, parameters, scope, task_id)`，再进入 CapabilityRegistry、DependencyGraph 和 ExecutionPlan，避免无限扩展 System Prompt。
+E1 的参数修改只接受既有 por、perm、sampling_interval 和 prediction_model 的绝对设置，
+同任务同当前版本可聚合成一次命令；历史基线写、混合读写及其他复合写在提交前整体拒绝。
+报告先由 B Resolver 固定 execution_id，读成功只更新 View；写成功更新 Active 并清空旧 base/scope。
+旧 TaskCommandTool 成功后切换 Active 的行为尚未迁移。详见
+[E1 执行桥记录](tasks/010-5e1-operation-execution-bridge.md)。
 
-扩展这些能力时仍应保持“ReAct 理解意图、Schema 校验参数、Resolver 决定依赖、Workflow 控制执行”的边界。
+E2 负责 ReAct、模型结构化输出、会话澄清生命周期和真实 Web 验收。
+未来的细粒度 DependencyGraph、ImpactAnalyzer、局部重跑、Compare、Scenario 和历史分支写仍未实现。
+专业执行范围继续由现有 Application DependencyResolver 决定，Bridge 不规划 W01～W10。
 
 ## 8. Task 10.3 交互状态控制
 

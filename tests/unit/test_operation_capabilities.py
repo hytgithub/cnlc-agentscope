@@ -44,6 +44,7 @@ def test_enabled_defaults_match_existing_task_tools_and_override_contract():
     enabled = {item.action: item for item in catalog.list_capabilities() if item.is_executable}
     assert set(enabled) == {
         ActionType.FULL_INTERPRET,
+        ActionType.FULL_RERUN,
         ActionType.STATUS,
         ActionType.REPORT,
         ActionType.MODIFY_PARAMETER,
@@ -124,3 +125,13 @@ def test_empty_duplicate_missing_and_unknown_catalog_entries_fail_safely():
         OperationCatalog().get("MADE_UP_ACTION")
     with pytest.raises(ValidationError):
         OperationCatalog().with_status(ActionType.STATUS, "MADE_UP_STATUS")
+
+
+def test_full_rerun_is_enabled_separately_from_reinterpret():
+    catalog = OperationCatalog()
+    capability = catalog.get(ActionType.FULL_RERUN)
+    assert capability.status == "ENABLED"
+    assert capability.handler_name == "rerun_well_interpretation"
+    assert capability.allowed_scopes == (OperationScopeKind.WHOLE_WELL,)
+    assert not capability.supported_parameters
+    assert catalog.get(ActionType.REINTERPRET).status == "NOT_IMPLEMENTED"
