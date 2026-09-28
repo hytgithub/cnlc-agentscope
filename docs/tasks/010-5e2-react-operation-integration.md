@@ -158,3 +158,19 @@ HTTP `/chat/` 与 `/sessions/.../stream` 回归覆盖统一 Tool、上传、修�
 ## Architecture Issue
 
 No Architecture Issue found.
+
+## E2.1 Follow-up：多轮澄清连续性
+
+E2.1 在不改变 Operation Schema 和调用链的前提下补齐连续澄清：合法 Patch 后若仍缺槽，
+Controller 使用更新后的 Partial Plan、本轮重新解析的可信引用和剩余 issues 创建新 Pending，
+使 TARGET、VALUE、PERSIST_MODE 等字段可以逐轮补齐，最终仍只提交一次 Execution。
+
+PLAN 与 CLARIFICATION_REPLY 现共用当前 UserMsg 数字 grounding；ABSOLUTE 值支持百分数折算，
+单层号和多层号必须全部能在本轮找到。模型一次 grounding mismatch 或 malformed Patch 返回
+安全错误但续留原 Pending；新 PLAN、CANCEL、SET_ACTIVE_CONTEXT、过期、owner 改变或 Redis
+miss 仍终止旧 Pending。详细设计和测试见
+[010-5e2-1-clarification-continuation.md](010-5e2-1-clarification-continuation.md)。
+
+E2.1 验证结果：647 个 unit、72 个核心 interaction / ReAct / HTTP integration、3 个真实
+PostgreSQL / Redis persistence 和 1 个真实 qwen-plus smoke 均通过；页面独立会话验证三轮补槽
+只新增一个 Execution，取消后的数值回复没有恢复旧 Pending。

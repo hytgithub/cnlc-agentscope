@@ -98,7 +98,6 @@ class OperationInteractionController:
             if isinstance(request, SetActiveContextRequest):
                 self.runner.clear_operation_clarification()
                 return await self._set_active(request)
-            replying = isinstance(request, ClarificationReplyRequest)
             if isinstance(request, ClarificationReplyRequest):
                 pending = self.runner.apply_operation_clarification(request.patch)
                 source = pending.partial_plan
@@ -125,7 +124,9 @@ class OperationInteractionController:
                         ):
                             op.task_reference = TaskReference(kind="CURRENT")
             result = await self.bridge.execute(source)
-            if result.outcome == "NEED_CLARIFICATION" and not replying:
+            if result.outcome == "NEED_CLARIFICATION":
+                # 每个旧 Pending 只消费一次；合法 Patch 后仍缺槽时，以更新后的计划和
+                # 本轮重新核验的引用生成下一轮 Pending，不从聊天记录恢复旧计划。
                 self._save_pending(source, result)
             output = self._project(result)
             if result.error_code == "NO_EFFECTIVE_CHANGE":

@@ -356,6 +356,19 @@ class OperationClarificationStore:
         self._context[PENDING_OPERATION_KEY] = updated.model_dump(mode="json")
         return updated.model_copy(deep=True)
 
+    def retain(self, *, turn: int) -> PendingOperationClarification | None:
+        """模型输出无效时把同一服务端 Pending 延续到本轮，保留计划与可信引用。"""
+
+        pending = self.peek(turn=turn)
+        if pending is None:
+            return None
+        return self.save(
+            pending.partial_plan,
+            pending.issues,
+            turn=turn,
+            locked_references=pending.locked_references,
+        )
+
     def consume(self, *, turn: int) -> PendingOperationClarification | None:
         """取出后清除；取出不等于允许执行，仍需完整 Context/Plan/Reference 校验。"""
 

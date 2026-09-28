@@ -506,3 +506,63 @@ async def test_cancelled_value_cannot_be_reintroduced_as_new_model_plan(data_dir
         assert len(await runner.repository.list_executions(first.task_id)) == 1
     finally:
         await runner.dispatcher.shutdown()
+
+
+@pytest.mark.parametrize("failure", ["grounding_mismatch", "malformed_patch"])
+async def test_invalid_clarification_reply_preserves_pending(data_dir, monkeypatch, failure):
+    """模型一次错误抽取或坏 Schema 不得中断用户正在补齐的计划。"""
+    from uuid import uuid4
+
+    from agentscope.message import ToolCallBlock
+    from agentscope.model import ChatResponse
+
+    agent, runner = make_agent(data_dir)
+    first = await start(runner)
+    try:
+        await ask(agent, "帮我改一下")
+        await ask(agent, "孔隙度")
+        before = runner.pending_operation_clarification()
+        assert {issue.slot for issue in before.issues} == {"VALUE"}
+        original = agent.model._call_api
+
+        async def invalid(*args, **kwargs):
+            patch = {
+                "value": {"mode": "ABSOLUTE", "value": 0.18, "unit": "1"}
+            }
+            if failure == "malformed_patch":
+                patch["unknown_field"] = "rejected"
+                patch["value"]["value"] = 0.16
+            return ChatResponse(
+                content=[
+                    ToolCallBlock(
+                        id=uuid4().hex,
+                        name="interpret_interpretation_operation",
+                        input=json.dumps(
+                            {
+                                "request": {
+                                    "mode": "CLARIFICATION_REPLY",
+                                    "patch": patch,
+                                }
+                            }
+                        ),
+                    )
+                ],
+                is_last=True,
+            )
+
+        monkeypatch.setattr(agent.model, "_call_api", invalid)
+        rejected, _, _ = await ask(agent, "0.16")
+        assert rejected[0].metadata["error_code"] == "INVALID_OPERATION_PLAN"
+        retained = runner.pending_operation_clarification()
+        assert retained is not None
+        assert retained.partial_plan == before.partial_plan
+        assert retained.locked_references == before.locked_references
+        assert len(await runner.repository.list_executions(first.task_id)) == 1
+
+        monkeypatch.setattr(agent.model, "_call_api", original)
+        completed, _, _ = await ask(agent, "0.16")
+        assert completed[0].metadata["result"]["effective_override"]["por"] == 0.16
+        assert len(await runner.repository.list_executions(first.task_id)) == 2
+        assert runner.pending_operation_clarification() is None
+    finally:
+        await runner.dispatcher.shutdown()

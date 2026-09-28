@@ -80,16 +80,27 @@ async def test_real_qwen_operation_clarification_and_atomicity(data_dir):
         )
 
     try:
+        incomplete = await ask("帮我改一下")
+        assert incomplete["outcome"] == "NEED_CLARIFICATION"
+        assert len(await runner.repository.list_executions(first.task_id)) == 1
+        targeted = await ask("孔隙度")
+        assert targeted["outcome"] == "NEED_CLARIFICATION"
+        assert len(await runner.repository.list_executions(first.task_id)) == 1
+        grounded = await ask("0.16")
+        assert len(grounded["created_execution_ids"]) == 1
+        assert grounded["task_results"][0]["effective_override"]["por"] == 0.16
+        assert len(await runner.repository.list_executions(first.task_id)) == 2
+
         changed = await ask("孔隙度、渗透率都改成0.16")
         assert len(changed["created_execution_ids"]) == 1, changed
-        assert len(await runner.repository.list_executions(first.task_id)) == 2
+        assert len(await runner.repository.list_executions(first.task_id)) == 3
         missing = await ask("改成0.17")
         assert missing["outcome"] == "NEED_CLARIFICATION"
-        assert len(await runner.repository.list_executions(first.task_id)) == 2
+        assert len(await runner.repository.list_executions(first.task_id)) == 3
         completed = await ask("孔隙度")
         assert len(completed["created_execution_ids"]) == 1
         assert completed["task_results"][0]["effective_override"]["por"] == 0.17
-        assert len(await runner.repository.list_executions(first.task_id)) == 3
+        assert len(await runner.repository.list_executions(first.task_id)) == 4
         capability = await ask("你能只重新算Sw吗")
         assert capability["outcome"] == "READ_ONLY"
         assert capability["capability_facts"]
@@ -101,12 +112,12 @@ async def test_real_qwen_operation_clarification_and_atomicity(data_dir):
             "CONDITIONAL_EXECUTION_UNSUPPORTED",
             "INVALID_OPERATION_PLAN",
         }
-        assert len(await runner.repository.list_executions(first.task_id)) == 3
+        assert len(await runner.repository.list_executions(first.task_id)) == 4
         await ask("改成0.18")
         await ask("算了")
         assert runner.pending_operation_clarification() is None
         cancelled = await ask("孔隙度")
         assert not cancelled["created_execution_ids"]
-        assert len(await runner.repository.list_executions(first.task_id)) == 3
+        assert len(await runner.repository.list_executions(first.task_id)) == 4
     finally:
         await runner.dispatcher.shutdown()

@@ -7,8 +7,9 @@ import pytest
 from pydantic import ValidationError
 
 from cnlc_agent.config.settings import AppSettings, PersistenceSettings
+from cnlc_agent.demo.interaction_middleware import validate_grounded_operation_values
 from cnlc_agent.demo.operation_models import OperationPlan
-from cnlc_agent.demo.operation_parser import PartialOperationPlan
+from cnlc_agent.demo.operation_parser import ClarificationSlot, PartialOperationPlan
 from cnlc_agent.demo.operation_tool import OperationToolInput, build_agent_task_tools
 from cnlc_agent.demo.task_tools import TaskCommandRunner
 
@@ -254,3 +255,253 @@ async def test_read_status_without_irrelevant_persist_mode(operation_env):
     assert result.state == "success"
     assert len(result.metadata["operation"]["task_results"]) == 1
     assert len(await runner.repository.list_executions(first.task_id)) == 1
+
+
+async def test_two_slot_clarification_continues_and_keeps_locked_task(operation_env):
+    """TARGET、VALUE 分两轮补齐；Active 漂移不能改变首轮锁定任务。"""
+    runner, tool, first = operation_env
+    second = await runner.run("WELL_MOCK_001")
+    await runner.wait_for_completion(second.task_id, second.execution_id)
+    runner.set_active_task(first.task_id)
+    runner.begin_interaction_turn()
+    incomplete = request(target=None)
+    incomplete["plan"]["operations"][0]["parameters"]["value"] = None
+    initial = await tool.call(request=incomplete)
+    assert initial.metadata["operation"]["outcome"] == "NEED_CLARIFICATION"
+    assert {issue.slot for issue in runner.pending_operation_clarification().issues} >= {
+        ClarificationSlot.TARGET,
+        ClarificationSlot.VALUE,
+    }
+    runner.end_interaction_turn()
+
+    runner.begin_interaction_turn()
+    target = await tool.call(
+        request={"mode": "CLARIFICATION_REPLY", "patch": {"target": "POROSITY"}}
+    )
+    assert target.metadata["operation"]["outcome"] == "NEED_CLARIFICATION"
+    pending = runner.pending_operation_clarification()
+    assert {issue.slot for issue in pending.issues} == {ClarificationSlot.VALUE}
+    assert pending.created_turn == runner._interaction_turn
+    assert pending.locked_references[0].task_id == first.task_id
+    assert len(await runner.repository.list_executions(first.task_id)) == 1
+    assert len(await runner.repository.list_executions(second.task_id)) == 1
+    runner.set_active_task(second.task_id)
+    runner.end_interaction_turn()
+
+    runner.begin_interaction_turn()
+    completed = await tool.call(
+        request={
+            "mode": "CLARIFICATION_REPLY",
+            "patch": {"value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}},
+        }
+    )
+    assert completed.state == "success"
+    assert completed.metadata["result"]["task_id"] == first.task_id
+    assert len(await runner.repository.list_executions(first.task_id)) == 2
+    assert len(await runner.repository.list_executions(second.task_id)) == 1
+    assert runner.pending_operation_clarification() is None
+    replay = await tool.call(
+        request={
+            "mode": "CLARIFICATION_REPLY",
+            "patch": {"value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}},
+        }
+    )
+    assert replay.metadata["error_code"] == "CLARIFICATION_SLOT_INVALID"
+    assert len(await runner.repository.list_executions(first.task_id)) == 2
+
+
+async def test_three_slot_clarification_executes_only_after_last_patch(operation_env):
+    """TARGET、VALUE、PERSIST_MODE 每轮形成新 Pending，最后一轮才执行。"""
+    runner, tool, first = operation_env
+    runner.begin_interaction_turn()
+    incomplete = request(target=None)
+    incomplete["plan"].pop("persist_mode")
+    incomplete["plan"]["operations"][0]["parameters"]["value"] = None
+    await tool.call(request=incomplete)
+    assert len(await runner.repository.list_executions(first.task_id)) == 1
+    runner.end_interaction_turn()
+
+    patches = [
+        {"target": "POROSITY"},
+        {"value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}},
+        {"persist_mode": "CREATE_VERSION"},
+    ]
+    expected = [
+        {ClarificationSlot.VALUE, ClarificationSlot.PERSIST_MODE},
+        {ClarificationSlot.PERSIST_MODE},
+    ]
+    for index, patch in enumerate(patches):
+        runner.begin_interaction_turn()
+        result = await tool.call(request={"mode": "CLARIFICATION_REPLY", "patch": patch})
+        if index < 2:
+            assert result.metadata["operation"]["outcome"] == "NEED_CLARIFICATION"
+            remaining = {
+                issue.slot for issue in runner.pending_operation_clarification().issues
+            }
+            assert remaining == expected[index]
+            assert len(await runner.repository.list_executions(first.task_id)) == 1
+            runner.end_interaction_turn()
+    assert result.state == "success"
+    assert len(await runner.repository.list_executions(first.task_id)) == 2
+    assert runner.pending_operation_clarification() is None
+
+
+async def test_correction_continues_missing_value_and_never_widens_scope(operation_env):
+    """层号修正后继续等待 VALUE，补值后局部能力拒绝且不退化整井。"""
+    runner, tool, first = operation_env
+    intervals = runner.repository._executions[first.execution_id].state_snapshot.interval_result
+    intervals.result["intervals"] = [
+        {"top_depth_m": 2000 + index, "bottom_depth_m": 2001 + index}
+        for index in range(7)
+    ]
+    runner.begin_interaction_turn()
+    incomplete = request(scope={"kind": "INTERVAL_ORDINAL", "ordinal": 5})
+    incomplete["plan"]["operations"][0]["parameters"]["value"] = None
+    first_reply = await tool.call(request=incomplete)
+    assert first_reply.metadata["operation"]["outcome"] == "NEED_CLARIFICATION"
+    runner.end_interaction_turn()
+
+    runner.begin_interaction_turn()
+    corrected = await tool.call(
+        request={
+            "mode": "CLARIFICATION_REPLY",
+            "patch": {
+                "input_classification": "CORRECTION",
+                "scope": {"kind": "INTERVAL_ORDINAL", "ordinal": 6},
+            },
+        }
+    )
+    assert corrected.metadata["operation"]["outcome"] == "NEED_CLARIFICATION"
+    pending = runner.pending_operation_clarification()
+    assert {issue.slot for issue in pending.issues} == {ClarificationSlot.VALUE}
+    assert pending.locked_references[0].scope.kind == "INTERVAL"
+    runner.end_interaction_turn()
+
+    runner.begin_interaction_turn()
+    rejected = await tool.call(
+        request={
+            "mode": "CLARIFICATION_REPLY",
+            "patch": {"value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}},
+        }
+    )
+    assert rejected.metadata["operation"]["outcome"] == "KNOWN_UNSUPPORTED"
+    assert rejected.metadata["operation"]["created_execution_ids"] == []
+    assert len(await runner.repository.list_executions(first.task_id)) == 1
+
+
+async def test_cancel_after_continuation_ends_chain(operation_env):
+    runner, tool, first = operation_env
+    runner.begin_interaction_turn()
+    incomplete = request(target=None)
+    incomplete["plan"]["operations"][0]["parameters"]["value"] = None
+    await tool.call(request=incomplete)
+    runner.end_interaction_turn()
+    runner.begin_interaction_turn()
+    await tool.call(
+        request={"mode": "CLARIFICATION_REPLY", "patch": {"target": "POROSITY"}}
+    )
+    assert runner.pending_operation_clarification() is not None
+    runner.end_interaction_turn()
+    runner.begin_interaction_turn()
+    await tool.call(request={"mode": "CANCEL"})
+    assert runner.pending_operation_clarification() is None
+    runner.end_interaction_turn()
+    runner.begin_interaction_turn()
+    stale = await tool.call(
+        request={
+            "mode": "CLARIFICATION_REPLY",
+            "patch": {"value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}},
+        }
+    )
+    assert stale.metadata["error_code"] == "CLARIFICATION_SLOT_INVALID"
+    assert len(await runner.repository.list_executions(first.task_id)) == 1
+
+
+async def test_new_plan_replaces_existing_continuation(operation_env):
+    runner, tool, first = operation_env
+    incomplete = request(target=None)
+    incomplete["plan"]["operations"][0]["parameters"]["value"] = None
+    await tool.call(request=incomplete)
+    assert runner.pending_operation_clarification() is not None
+    replacement = request()
+    replacement["plan"]["operations"][0]["parameters"]["value"]["value"] = 0.18
+    completed = await tool.call(request=replacement)
+    assert completed.state == "success"
+    assert runner.pending_operation_clarification() is None
+    assert len(await runner.repository.list_executions(first.task_id)) == 2
+
+
+def value_reply(value):
+    return {
+        "mode": "CLARIFICATION_REPLY",
+        "patch": {"value": {"mode": "ABSOLUTE", "value": value, "unit": "1"}},
+    }
+
+
+def ordinal_correction(ordinal):
+    return {
+        "mode": "CLARIFICATION_REPLY",
+        "patch": {
+            "input_classification": "CORRECTION",
+            "scope": {"kind": "INTERVAL_ORDINAL", "ordinal": ordinal},
+        },
+    }
+
+
+def multi_ordinal_plan(ordinals):
+    scope = {"kind": "MULTI_INTERVAL_ORDINAL", "ordinals": ordinals}
+    return {"mode": "PLAN", "plan": request(scope=scope)["plan"]}
+
+
+@pytest.mark.parametrize(
+    "user_text,request_payload,valid",
+    [
+        (
+            "0.16",
+            value_reply(0.16),
+            True,
+        ),
+        (
+            "0.16",
+            value_reply(0.18),
+            False,
+        ),
+        (
+            "16%",
+            value_reply(0.16),
+            True,
+        ),
+        (
+            "16%",
+            value_reply(0.18),
+            False,
+        ),
+        (
+            "不对，是第6层",
+            ordinal_correction(6),
+            True,
+        ),
+        (
+            "不对，是第6层",
+            ordinal_correction(7),
+            False,
+        ),
+        (
+            "第3、5、7层孔隙度改成0.16",
+            multi_ordinal_plan([3, 5, 7]),
+            True,
+        ),
+        (
+            "第3、5、7层孔隙度改成0.16",
+            multi_ordinal_plan([3, 5, 8]),
+            False,
+        ),
+    ],
+)
+def test_current_turn_value_and_ordinal_grounding(user_text, request_payload, valid):
+    structured = OperationToolInput.model_validate({"request": request_payload}).request
+    if valid:
+        validate_grounded_operation_values(structured, user_text)
+    else:
+        with pytest.raises(ValueError):
+            validate_grounded_operation_values(structured, user_text)

@@ -89,7 +89,9 @@ class ScriptedTaskModel(ChatModelBase):
             "给我上一版报告": "REPORT",
             "现在处理到哪里了？": "STATUS",
             "改成0.17": "MODIFY_PARAMETER",
+            "帮我改一下": "MODIFY_PARAMETER",
             "孔隙度": "MODIFY_PARAMETER",
+            "0.16": "MODIFY_PARAMETER",
             "只重新算Sw": "RECALCULATE",
         }[instruction]
         operations = [{"operation_id": "op1", "action": action, "target": "WELL"}]
@@ -115,6 +117,8 @@ class ScriptedTaskModel(ChatModelBase):
                     "parameters": {"value": {"mode": "ABSOLUTE", "value": 0.17, "unit": "1"}},
                 }
             ]
+        if instruction == "帮我改一下":
+            operations = [{"operation_id": "op1", "action": action}]
         if action == "RECALCULATE":
             operations[0]["target"] = "WATER_SATURATION"
             operations[0]["execution_reference"] = {"kind": "TASK_CURRENT"}
@@ -135,6 +139,15 @@ class ScriptedTaskModel(ChatModelBase):
                 "request": {
                     "mode": "CLARIFICATION_REPLY",
                     "patch": {"target": "POROSITY"},
+                }
+            }
+        if instruction == "0.16":
+            parameters = {
+                "request": {
+                    "mode": "CLARIFICATION_REPLY",
+                    "patch": {
+                        "value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}
+                    },
                 }
             }
         return ChatResponse(
@@ -243,6 +256,68 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
     assert len(model.seen) == 4
     assert len(await runner.repository.list_executions(first["task_id"])) == 3
     await runner.dispatcher.shutdown()
+
+
+async def test_react_three_turn_clarification_executes_exactly_once(data_dir):
+    """AgentScope Middleware 与统一 Tool 支持 TARGET、VALUE 分轮补齐。"""
+    runner = TaskCommandRunner(
+        AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),
+        PersistenceSettings(persistence="memory", _env_file=None),
+    )
+    agent = LoggingInterpretationDemoAgent(
+        name="demo",
+        system_prompt="",
+        model=ScriptedTaskModel(),
+        toolkit=Toolkit(tools=build_task_tools(runner)),
+        stream_step_delay_seconds=0,
+        stream_report_chunk_delay_seconds=0,
+    )
+    try:
+        initial = [event async for event in agent.reply_stream(upload_message(data_dir))]
+        first = next(
+            event for event in initial if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        await runner.wait_for_completion(first["task_id"], first["execution_id"])
+
+        first_reply = [
+            event
+            async for event in agent.reply_stream(UserMsg(name="user", content="帮我改一下"))
+        ]
+        assert next(
+            event for event in first_reply if isinstance(event, ToolResultEndEvent)
+        ).metadata["operation"]["outcome"] == "NEED_CLARIFICATION"
+        assert len(await runner.repository.list_executions(first["task_id"])) == 1
+
+        second_reply = [
+            event async for event in agent.reply_stream(UserMsg(name="user", content="孔隙度"))
+        ]
+        assert next(
+            event for event in second_reply if isinstance(event, ToolResultEndEvent)
+        ).metadata["operation"]["outcome"] == "NEED_CLARIFICATION"
+        assert {issue.slot for issue in runner.pending_operation_clarification().issues} == {
+            "VALUE"
+        }
+        assert len(await runner.repository.list_executions(first["task_id"])) == 1
+
+        third_reply = [
+            event async for event in agent.reply_stream(UserMsg(name="user", content="0.16"))
+        ]
+        modified = next(
+            event for event in third_reply if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        assert modified["effective_override"]["por"] == 0.16
+        assert len(await runner.repository.list_executions(first["task_id"])) == 2
+        assert runner.pending_operation_clarification() is None
+
+        replay = [
+            event async for event in agent.reply_stream(UserMsg(name="user", content="0.16"))
+        ]
+        assert next(event for event in replay if isinstance(event, ToolResultEndEvent)).metadata[
+            "error_code"
+        ] == "CLARIFICATION_SLOT_INVALID"
+        assert len(await runner.repository.list_executions(first["task_id"])) == 2
+    finally:
+        await runner.dispatcher.shutdown()
 
 
 @pytest.mark.parametrize(

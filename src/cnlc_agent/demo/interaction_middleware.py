@@ -27,6 +27,73 @@ from cnlc_agent.demo.interaction_state import (
 )
 from cnlc_agent.demo.task_tools import TaskCommandRunner, interaction_chunk
 
+_NUMBER_PATTERN = re.compile(
+    r"(?<![\d.])([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(%)?"
+)
+
+
+def extract_grounded_numbers(user_text: str) -> set[float]:
+    """提取当前用户消息中的阿拉伯数字；百分数按绝对小数折算。"""
+
+    return {
+        float(match.group(1)) / (100 if match.group(2) else 1)
+        for match in _NUMBER_PATTERN.finditer(user_text)
+    }
+
+
+def _scope_ordinals(scope: Any) -> list[int]:
+    """只读取模型已结构化的层号，不解释自然语言。"""
+
+    from cnlc_agent.demo.operation_parser import (
+        IntervalOrdinalReference,
+        MultiIntervalOrdinalReference,
+    )
+
+    if isinstance(scope, IntervalOrdinalReference):
+        return [scope.ordinal]
+    if isinstance(scope, MultiIntervalOrdinalReference):
+        return scope.ordinals
+    return []
+
+
+def validate_grounded_operation_values(request: Any, user_text: str) -> None:
+    """验证关键数值来自当前轮；不判断数字对应的业务意图。"""
+
+    from cnlc_agent.demo.operation_interaction import ClarificationReplyRequest, PlanRequest
+
+    numbers = extract_grounded_numbers(user_text)
+    values: list[float] = []
+    ordinals: list[int] = []
+    if isinstance(request, PlanRequest):
+        ordinals.extend(_scope_ordinals(request.plan.shared_context.scope))
+        for operation in request.plan.operations:
+            value = operation.parameters.value
+            if value is not None and value.mode == "ABSOLUTE":
+                values.append(value.value)
+            ordinals.extend(_scope_ordinals(operation.scope))
+    elif isinstance(request, ClarificationReplyRequest):
+        value = request.patch.value
+        if value is not None and value.mode == "ABSOLUTE":
+            values.append(value.value)
+        ordinals.extend(_scope_ordinals(request.patch.scope))
+    if any(value not in numbers for value in values) or any(
+        float(ordinal) not in numbers for ordinal in ordinals
+    ):
+        raise ValueError("operation numbers are not grounded in this turn")
+
+
+def raw_operation_mode(raw: str) -> str | None:
+    """仅识别生命周期 mode，供无效 Schema 时决定是否保留既有 Pending。"""
+
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("request"), dict):
+        return None
+    mode = payload["request"].get("mode")
+    return mode if isinstance(mode, str) else None
+
 
 class InteractionStateMiddleware(MiddlewareBase):
     """每轮读取事实并发布受控上下文，旧澄清只允许紧邻下一轮使用。"""
@@ -105,41 +172,34 @@ class InteractionStateMiddleware(MiddlewareBase):
         ]
         # AgentScope 的 Schema 参数清理可能删掉未知字段；先校验原始调用，
         # 防止局部范围或错误嵌套被静默丢弃后变成另一项合法操作。
-        from cnlc_agent.demo.operation_interaction import PlanRequest
         from cnlc_agent.demo.operation_tool import OPERATION_TOOL_NAME, OperationToolInput
 
+        pending_before_validation = self.runner.pending_operation_clarification()
+        invalid_operation_mode = None
         try:
             for call in calls:
                 if call.name == OPERATION_TOOL_NAME:
+                    invalid_operation_mode = raw_operation_mode(call.input)
                     request = OperationToolInput.model_validate_json(call.input).request
-                    if isinstance(request, PlanRequest):
-                        # 仅验证模型数值来源，不进行意图分类或专业计算。新计划不能从已取消
-                        # 的旧聊天借值；跨轮补齐必须通过有效 Pending 的 CLARIFICATION_REPLY。
-                        user_text = next(
-                            (
-                                msg.get_text_content() or ""
-                                for msg in reversed(agent.state.context)
-                                if msg.role == "user"
-                            ),
-                            "",
-                        )
-                        numbers = {
-                            float(match.group(1)) / (100 if match.group(2) else 1)
-                            for match in re.finditer(
-                                r"(?<![\d.])([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(%)?",
-                                user_text,
-                            )
-                        }
-                        if any(
-                            op.action == "MODIFY_PARAMETER"
-                            and op.parameters.value is not None
-                            and op.parameters.value.mode == "ABSOLUTE"
-                            and op.parameters.value.value not in numbers
-                            for op in request.plan.operations
-                        ):
-                            raise ValueError("new modification value is not grounded in this turn")
+                    user_text = next(
+                        (
+                            msg.get_text_content() or ""
+                            for msg in reversed(agent.state.context)
+                            if msg.role == "user"
+                        ),
+                        "",
+                    )
+                    validate_grounded_operation_values(request, user_text)
         except (ValidationError, ValueError, TypeError):
-            self.runner.clear_operation_clarification()
+            if pending_before_validation is not None and invalid_operation_mode not in {
+                "PLAN",
+                "CANCEL",
+                "SET_ACTIVE_CONTEXT",
+            }:
+                # 用户已经回应，但模型的 Patch 无效；续留服务端计划供下一轮重答。
+                self.runner.retain_operation_clarification()
+            else:
+                self.runner.clear_operation_clarification()
             chunk = interaction_chunk(
                 "INVALID_OPERATION_PLAN", "操作结构无效，请明确任务、目标、范围和修改值。"
             )

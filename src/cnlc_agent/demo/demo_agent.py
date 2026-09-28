@@ -55,6 +55,8 @@ AgentScope ReAct 只理解用户意图，服务器解析、校验和执行。
 只有两个工具：run_well_interpretation 用于明确的 Fixture 井号首次解释；
 已有任务所有后续操作
 必须使用 interpret_interpretation_operation。
+测井解释范围内的条件请求、能力询问和不支持操作也必须调用该工具，
+由服务器返回受控结论，不能直接用自然语言回答。
 上传文件由 Upload Middleware 处理，无附件且无明确井号时请用户上传资料。
 
 每轮只提交一个 Tool Call；
@@ -91,6 +93,10 @@ PLAN 节点的数值必须放在 parameters.value，不能放在节点顶层。
 
 “改成0.17” -> MODIFY_PARAMETER、value=0.17、target=null；
 服务器保存澄清。
+
+“帮我改一下” -> MODIFY_PARAMETER、target=null、value=null；
+下一轮“孔隙度”只补 target；如果仍缺值，再下一轮“0.16”只补 ABSOLUTE value=0.16。
+每轮 CLARIFICATION_REPLY 只提交当前用户明确补充的槽位，不重建历史计划。
 
 下一轮“孔隙度”且可信快照有 pending_operation_clarification，
 使用 CLARIFICATION_REPLY patch target=POROSITY。
@@ -302,6 +308,24 @@ class MockTaskShellModel(ChatModelBase):
                 "interpret_interpretation_operation",
                 {"request": {"mode": "CLARIFICATION_REPLY", "patch": {"target": target}}},
             )
+        elif pending and re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*%?", instruction):
+            percent = instruction.endswith("%")
+            raw_value = float(instruction.rstrip("%").strip())
+            name, parameters = (
+                "interpret_interpretation_operation",
+                {
+                    "request": {
+                        "mode": "CLARIFICATION_REPLY",
+                        "patch": {
+                            "value": {
+                                "mode": "ABSOLUTE",
+                                "value": raw_value / (100 if percent else 1),
+                                "unit": "1",
+                            }
+                        },
+                    }
+                },
+            )
         elif pending and "不对" in instruction:
             ordinal = re.search(r"第(\d+)层", instruction)
             if ordinal:
@@ -485,7 +509,9 @@ class MockTaskShellModel(ChatModelBase):
                 if len(ordinals) == 1
                 else {"kind": "MULTI_INTERVAL_ORDINAL", "ordinals": ordinals}
             )
-        modify = any(word in lower for word in ("修改", "改成", "改为", "提高", "降低"))
+        modify = any(
+            word in lower for word in ("修改", "改成", "改为", "改一下", "提高", "降低")
+        )
         full = any(
             word in lower
             for word in ("全部重跑", "全部重新跑", "全量重跑", "全流程重跑", "重新解释一次")
@@ -604,7 +630,18 @@ class LoggingInterpretationDemoAgent(Agent):
         on_acting 位于框架输入校验之后，无法拦截这一分支；只覆盖项目子类的
         错误投影，继续由上游保存消息和产生标准事件，不修改框架源码。
         """
+        from cnlc_agent.demo.interaction_middleware import raw_operation_mode
+        from cnlc_agent.demo.operation_tool import OPERATION_TOOL_NAME
+
         del message
+        if tool_call.name == OPERATION_TOOL_NAME:
+            pending = self._task_runner.pending_operation_clarification()
+            mode = raw_operation_mode(tool_call.input)
+            if pending is not None and mode not in {"PLAN", "CANCEL", "SET_ACTIVE_CONTEXT"}:
+                # AgentScope 在 Middleware 之前拒绝 Schema 时，也不能销毁正在补齐的计划。
+                self._task_runner.retain_operation_clarification()
+            elif mode in {"PLAN", "CANCEL", "SET_ACTIVE_CONTEXT"}:
+                self._task_runner.clear_operation_clarification()
         payload = {
             "error_code": "INVALID_OPERATION_PLAN",
             "message": "操作结构无效，请明确任务、目标、范围和修改值。",
@@ -672,6 +709,7 @@ class LoggingInterpretationDemoAgent(Agent):
             or tool._runner is not runner
         ):
             raise ValueError("Demo Agent 的任务 Tool 必须共享同一 TaskCommandRunner")
+        self._task_runner = runner
         step_delay = (
             AppSettings().stream_step_delay_seconds
             if stream_step_delay_seconds is None

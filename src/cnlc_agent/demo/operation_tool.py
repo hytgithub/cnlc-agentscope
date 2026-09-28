@@ -12,6 +12,7 @@ from pydantic import ValidationError, model_validator
 
 from cnlc_agent.demo.operation_clarification import ClarificationPatchError
 from cnlc_agent.demo.operation_interaction import (
+    ClarificationReplyRequest,
     OperationInteractionController,
     OperationRequest,
     OperationToolResult,
@@ -104,12 +105,15 @@ class InterpretInterpretationOperationTool(ToolBase):
 
     async def call(self, *args: Any, **kwargs: Any) -> ToolChunk:
         """拒绝原始异常泄露，输出只含稳定结果；Pending owner 不进入模型上下文。"""
+        request = None
         try:
             if args:
                 raise ValueError("keyword arguments required")
             request = OperationToolInput.model_validate(kwargs).request
             result = await self.controller.handle(request)
         except ClarificationPatchError:
+            if isinstance(request, ClarificationReplyRequest):
+                self.runner.retain_operation_clarification()
             result = OperationToolResult(
                 outcome="REJECTED",
                 error_code="CLARIFICATION_SLOT_INVALID",

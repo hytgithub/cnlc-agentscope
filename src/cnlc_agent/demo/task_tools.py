@@ -138,6 +138,11 @@ class TaskCommandRunner:
         """修补不会延长原始计划的有效窗口。"""
         return self._operation_store.apply_patch(patch, turn=self._interaction_turn)
 
+    def retain_operation_clarification(self) -> PendingOperationClarification | None:
+        """模型一次无效澄清不破坏用户正在补齐的服务端计划。"""
+
+        return self._operation_store.retain(turn=self._interaction_turn)
+
     def clear_operation_clarification(self) -> None:
         """消费、取消或新请求清除 Pending，不修改业务历史。"""
         self._operation_store.clear()
