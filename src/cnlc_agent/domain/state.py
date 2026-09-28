@@ -21,6 +21,7 @@ from cnlc_agent.domain.models import (
     utc_now,
 )
 from cnlc_agent.domain.override import ExecutionContext, InterpretationOverride
+from cnlc_agent.domain.stages import StageRun
 
 
 class StatePatch(Contract):
@@ -98,6 +99,7 @@ class InterpretationState(StatePatch):
     current_step: StepId | None = None
     completed_steps: list[StepId] = Field(default_factory=list)
     executions: list[StepExecution] = Field(default_factory=list)
+    stage_runs: list[StageRun] = Field(default_factory=list)
     reused_steps: list[ReusedStep] = Field(default_factory=list)
     changes: list[StateChange] = Field(default_factory=list)
     missing_data: list[MissingData] = Field(default_factory=list)

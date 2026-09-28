@@ -10,6 +10,8 @@ from cnlc_agent.application.ports import InterpretationStateStore, Telemetry
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import ApplicationError, WorkflowError
 from cnlc_agent.domain.models import ErrorDetail, JsonObject, RawData, StageResult, utc_now
+from cnlc_agent.domain.stage_runtime import begin_stage, finish_stage
+from cnlc_agent.domain.stages import STAGE_STEPS
 from cnlc_agent.domain.state import (
     InterpretationState,
     StateChange,
@@ -376,6 +378,9 @@ class InterpretationWorkflow:
             for index, node in enumerate(self.nodes):
                 if index < start_index:
                     continue
+                stage = next(stage for stage, steps in STAGE_STEPS.items() if node.step_id in steps)
+                if node.step_id == STAGE_STEPS[stage][0]:
+                    begin_stage(state, stage)
                 # 在执行节点前先记录 RUNNING 快照，确保崩溃时仍能定位当前步骤。
                 state.current_step = node.step_id
                 state.status = StepStatus.RUNNING
@@ -495,6 +500,8 @@ class InterpretationWorkflow:
                             "output_summary": step_output_summary(outcome, state, node.step_id),
                         },
                     )
+                    if outcome.status not in COMPLETED or node.step_id == STAGE_STEPS[stage][-1]:
+                        finish_stage(state, stage)
                     await self.store.save(state)
                 if outcome.status not in COMPLETED:
                     # FAILED、BLOCKED、REVIEW_REQUIRED 均为显式终止分支，禁止继续后续步骤。

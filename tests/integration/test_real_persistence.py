@@ -20,6 +20,7 @@ from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.execution import ExecutionStatus
 from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
+from cnlc_agent.domain.stages import STAGE_ORDER, StageRunStatus
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolExecutionMode, ToolRun, ToolRunStatus
 from cnlc_agent.infrastructure.database import (
@@ -137,6 +138,8 @@ async def test_real_workflow_restart_and_duplicate(migrated, tmp_path):
             state, report = await app.run(request)
             assert state.status.value == "SUCCESS"
             assert len(state.completed_steps) == 10
+            assert [run.stage for run in state.stage_runs] == list(STAGE_ORDER)
+            assert all(run.status == StageRunStatus.CONFIRMED for run in state.stage_runs)
             # Redis 是可丢弃运行检查点，可能停在 Workflow 最后一步；报告后的
             # current_step 清理与最终 updated_at 以 PostgreSQL Execution 为准。
             cached = await store.get(request.task_id)
@@ -145,6 +148,7 @@ async def test_real_workflow_restart_and_duplicate(migrated, tmp_path):
             assert cached.workflow_execution_id == state.workflow_execution_id
             assert cached.completed_steps == state.completed_steps
             assert cached.status == state.status
+            assert cached.stage_runs == state.stage_runs[:3]
             assert 0 < await client.ttl(store.key(request.task_id)) <= 60
             with pytest.raises(InfrastructureError) as caught:
                 await app.run(request)
