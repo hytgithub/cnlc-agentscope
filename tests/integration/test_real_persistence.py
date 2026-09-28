@@ -217,6 +217,94 @@ async def test_staged_confirmation_survives_postgresql_restart(migrated):
         await second_engine.dispose()
 
 
+async def test_stage_tool_runs_survive_restart_and_keep_wells_isolated(migrated, tmp_path):
+    """ToolRun 只按 Execution 投影，external call 关联可跨 PostgreSQL 连接读回。"""
+
+    fixture_text = (ROOT / "mock_data/WELL_MOCK_001.json").read_text(encoding="utf-8")
+    well_ids = ("WELL_TOOL_A", "WELL_TOOL_B")
+    for well_id in well_ids:
+        (tmp_path / f"{well_id}.json").write_text(
+            fixture_text.replace("WELL_MOCK_001", well_id), encoding="utf-8"
+        )
+    first_engine = create_async_engine(DB_URL)
+    second_engine = create_async_engine(DB_URL)
+    task_ids: list[str] = []
+    records = []
+    first_app = None
+    second_app = None
+    try:
+        first_repository = PostgreSQLTaskRepository(first_engine)
+        first_app = build_application(
+            AppSettings(
+                mode="demo",
+                model_provider="mock",
+                professional_provider="company_mock",
+                mock_data_dir=tmp_path,
+                _env_file=None,
+            ),
+            task_repository=first_repository,
+        )
+        first_orchestrator = StageOrchestrator(first_app)
+        for index, well_id in enumerate(well_ids):
+            request = TaskRequest(well_id=well_id)
+            task_ids.append(request.task_id)
+            state = InterpretationState(task=request, mode="demo")
+            await first_repository.create_task(state)
+            execution = await first_repository.create_execution(
+                state, "INITIAL", run_mode=ExecutionRunMode.STAGED_CONFIRMATION
+            )
+            waiting = await first_orchestrator.execute_next_stage(
+                execution.execution_id, worker_id=f"tool-audit-{index}"
+            )
+            records.append((request, execution, waiting.state_snapshot.stage_runs[-1]))
+
+        await first_app.close()
+        first_app = None
+        await first_engine.dispose()
+
+        reopened = PostgreSQLTaskRepository(second_engine)
+        second_app = build_application(
+            AppSettings(
+                mode="demo",
+                model_provider="mock",
+                professional_provider="company_mock",
+                mock_data_dir=tmp_path,
+                _env_file=None,
+            ),
+            task_repository=reopened,
+        )
+        reopened_orchestrator = StageOrchestrator(second_app)
+        views = [
+            await reopened_orchestrator.get_stage_result(
+                request.task_id, execution.execution_id, stage_run.id
+            )
+            for request, execution, stage_run in records
+        ]
+        for view, (request, execution, _) in zip(views, records, strict=True):
+            assert view.task_id == request.task_id
+            assert view.well_id == request.well_id
+            assert {item.tool_code for item in view.tool_runs} == {
+                "company_analysis",
+                "get_well_data",
+            }
+            assert all(item.execution_id == execution.execution_id for item in view.tool_runs)
+            call_ids = {item.external_call_id for item in view.tool_runs}
+            assert len(call_ids) == 1
+            assert None not in call_ids
+        assert {
+            item.tool_run_id for item in views[0].tool_runs
+        }.isdisjoint(item.tool_run_id for item in views[1].tool_runs)
+    finally:
+        if first_app is not None:
+            await first_app.close()
+        if second_app is not None:
+            await second_app.close()
+        async with second_engine.begin() as connection:
+            await connection.execute(delete(TaskRow).where(TaskRow.task_id.in_(task_ids)))
+        await first_engine.dispose()
+        await second_engine.dispose()
+
+
 async def test_postgresql_waiting_execution_can_be_superseded_and_old_confirm_is_rejected(
     migrated,
 ):

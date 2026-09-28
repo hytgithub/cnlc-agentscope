@@ -12,6 +12,7 @@ from cnlc_agent.domain.errors import ApplicationError, InfrastructureError, Tool
 from cnlc_agent.domain.models import Contract, ErrorDetail, JsonObject, WellId
 from cnlc_agent.domain.tool_run import ToolExecutionMode, ToolRun, ToolRunStatus
 from cnlc_agent.tools.audit import bounded, tool_input_snapshot, tool_output_snapshot
+from cnlc_agent.tools.catalog import validate_tool_step
 
 
 class ToolInput(Contract):
@@ -65,6 +66,8 @@ class ToolCaller:
     async def call(self, tool: Tool, request: ToolInput) -> ToolOutput:
         """执行一次 Tool 调用，仅接受 SUCCESS 或 WARNING 终态。"""
 
+        # 组合根保证业务 Tool 均已登记；此处再防止已登记 Tool 被错误步骤调用。
+        validate_tool_step(tool.name, request.step_id)
         attributes: JsonObject = {
             "task_id": request.task_id,
             "trace_id": request.trace_id,
@@ -138,6 +141,7 @@ class ToolCaller:
             if run is not None:
                 assert self.repository is not None
                 metadata_source = output.metadata.get("source")
+                external_call_id = output.metadata.get("external_call_id")
                 await self.repository.finish_tool_run(
                     run.tool_run_id,
                     status=(ToolRunStatus.WARNING if output.status == StepStatus.WARNING
@@ -146,6 +150,12 @@ class ToolCaller:
                            else run.source,
                     output_snapshot=tool_output_snapshot(
                         output.status.value, output.data, output.warnings, output.metadata
+                    ),
+                    source_external_call_id=(
+                        external_call_id
+                        if isinstance(external_call_id, str)
+                        and 0 < len(external_call_id) <= 128
+                        else None
                     ),
                 )
             self.telemetry.event("tool.result", {**attributes, "status": output.status.value})

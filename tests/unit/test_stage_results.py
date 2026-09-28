@@ -178,6 +178,7 @@ async def test_historical_and_stale_results_cannot_be_confirmed(data_dir):
         request.task_id, first.execution_id, first_run.id
     )
     assert historical.can_confirm is False
+    assert {item.tool_code for item in historical.tool_runs} == {"get_well_data"}
     assert "EXECUTION_NOT_CURRENT" in {
         blocker.code for blocker in historical.confirmation_blockers
     }
@@ -248,6 +249,14 @@ async def test_wrong_task_and_multiple_wells_are_isolated(data_dir):
     assert first_view.well_id == "WELL_MOCK_001"
     assert second_view.well_id == "WELL_MOCK_002"
     assert first_view.task_id != second_view.task_id
+    assert first_view.tool_runs
+    assert second_view.tool_runs
+    assert all(
+        item.execution_id == records[0][1].execution_id for item in first_view.tool_runs
+    )
+    assert all(
+        item.execution_id == records[1][1].execution_id for item in second_view.tool_runs
+    )
     with pytest.raises(InfrastructureError) as caught:
         await projector.get_stage_result(
             records[1][0].task_id,

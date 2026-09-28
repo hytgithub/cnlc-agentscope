@@ -41,7 +41,7 @@ class ToolRun(Contract):
     source: str = Field(min_length=1, max_length=256)
     input_snapshot: JsonObject = Field(default_factory=dict)
     output_snapshot: JsonObject = Field(default_factory=dict)
-    source_external_call_id: str | None = None
+    source_external_call_id: str | None = Field(default=None, min_length=1, max_length=128)
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None
     error_code: str | None = None

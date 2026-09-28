@@ -9,6 +9,11 @@ from typing import Literal, NamedTuple, Self, cast
 from pydantic import Field, JsonValue, model_validator
 
 from cnlc_agent.application.ports import TaskRepository
+from cnlc_agent.application.stage_tool_runs import (
+    MAX_STAGE_TOOL_RUNS,
+    StageToolRunView,
+    project_stage_tool_runs,
+)
 from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.execution import Execution, ExecutionStatus, InterpretationTask
 from cnlc_agent.domain.models import Contract, JsonObject, StageResult
@@ -19,6 +24,7 @@ from cnlc_agent.domain.stages import (
     StageValidity,
 )
 from cnlc_agent.domain.state import InterpretationState
+from cnlc_agent.domain.tool_run import ToolRun
 
 MAX_ITEMS = 50
 MAX_LIST_ITEMS = 50
@@ -72,6 +78,9 @@ class StageResultView(Contract):
     confirmation_blockers: list[ConfirmationBlocker] = Field(
         default_factory=list, max_length=4
     )
+    tool_runs: list[StageToolRunView] = Field(
+        default_factory=list, max_length=MAX_STAGE_TOOL_RUNS
+    )
     updated_at: datetime
 
     @model_validator(mode="after")
@@ -94,9 +103,14 @@ class StageResultView(Contract):
             elif isinstance(value, str) and len(value) > MAX_TEXT_LENGTH:
                 raise ValueError("stage result projection text is too large")
 
-        payload = cast(JsonValue, self.model_dump(mode="json", exclude={"updated_at"}))
-        walk(payload)
-        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        projection_payload = cast(
+            JsonValue,
+            self.model_dump(mode="json", exclude={"updated_at", "tool_runs"}),
+        )
+        walk(projection_payload)
+        # ToolRunView 自身执行字段、深度和体积校验；这里再把它纳入整体大小上限。
+        full_payload = self.model_dump(mode="json", exclude={"updated_at"})
+        encoded = json.dumps(full_payload, ensure_ascii=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > MAX_VIEW_BYTES:
             raise ValueError("stage result projection is too large")
         return self
@@ -606,12 +620,18 @@ class StageResultProjector:
         execution = await self.repository.get_execution(execution_id)
         if task is None or execution is None or execution.task_id != task_id:
             raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在或不属于任务")
-        return self.project_loaded(task, execution, stage_run_id)
+        tool_runs = await self.repository.list_tool_runs(execution_id)
+        return self.project_loaded(task, execution, stage_run_id, tool_runs=tool_runs)
 
     def project_loaded(
-        self, task: InterpretationTask, execution: Execution, stage_run_id: str
+        self,
+        task: InterpretationTask,
+        execution: Execution,
+        stage_run_id: str,
+        *,
+        tool_runs: list[ToolRun] | None = None,
     ) -> StageResultView:
-        """供已完成归属校验的应用查询复用，保持展示拼装职责集中。"""
+        """纯投影 helper；调用方必须显式提供已查询的 ToolRun，不访问仓库。"""
 
         if execution.task_id != task.task_id or (
             execution.state_snapshot.task.well_id != task.well_id
@@ -695,5 +715,6 @@ class StageResultProjector:
             output_refs=dict(run.output_refs),
             can_confirm=not blockers,
             confirmation_blockers=blockers,
+            tool_runs=project_stage_tool_runs(tool_runs or [], run.stage),
             updated_at=max(timestamps),
         )

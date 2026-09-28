@@ -36,6 +36,7 @@ Task 与 Execution 归属，再只在该 Execution 的状态快照中查找 Stag
 | `warnings`、`conflicts`、`missing_items` | 已有诊断、冲突和明确缺失项，稳定去重并限制数量。 |
 | `input_refs`、`output_refs` | StageRun 的逻辑引用；不得是本地文件路径或结果正文。 |
 | `can_confirm`、`confirmation_blockers` | 确认能力和结构化阻断原因。 |
+| `tool_runs` | 当前业务阶段内实际 ToolRun 的有界审计投影，最多 50 条。 |
 | `updated_at` | Execution / StageRun 相关事实中的最新时间。 |
 
 投影代码按字段白名单读取专业结果，不透传任意 `StageResult.result`。文本、列表、嵌套深度和
@@ -127,6 +128,7 @@ STALE（已失效）来源结果也可展示，用于说明失效依据，但不
 - StageRun 必须存在于所查 Execution 的持久快照且属于同一 Task。
 - `metrics`、`items` 禁止出现 `raw_data`、`processed_data`、`depths`、`values`、
   `curve_values`、`markdown` 或 `candidate_markdown` 键。
+- `tool_runs` 只投影持久化的有界 input/output snapshot；不加载完整 Tool 输入、provider 响应或报告正文。
 - 条目与诊断列表最多 50 项，JSON 嵌套深度最多 5 层，展示正文最多 128 KiB。
 - 允许展示曲线名、单位、数量、已有 min/max、已有测量值以及逻辑 refs。
 
@@ -136,5 +138,8 @@ STALE（已失效）来源结果也可展示，用于说明失效依据，但不
 
 本任务不增加前端 UI、Trace 事件、LLM Prompt、真实公司 API、专业算法或曲线数据副本。
 确认和继续执行仍由 StageOrchestrator 与仓储事务处理；Projector 不修改任何状态。
+
+ToolRun 的阶段过滤与审计边界详见
+[四阶段 Tool 映射与可审计 Mock 集成](four-stage-tool-mapping.md)。
 
 No Architecture Issue found.

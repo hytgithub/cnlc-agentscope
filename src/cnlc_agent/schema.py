@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from cnlc_agent.application.stage_orchestrator import StageProgress
 from cnlc_agent.application.stage_results import StageResultView
+from cnlc_agent.application.stage_tool_runs import StageToolRunView
 from cnlc_agent.domain.dataset_revision import (
     DatasetChangeSet,
     DatasetPatchRequest,
@@ -41,6 +42,7 @@ CONTRACTS: dict[str, type[Contract]] = {
     "stage-run": StageRun,
     "stage-progress": StageProgress,
     "stage-result-view": StageResultView,
+    "stage-tool-run-view": StageToolRunView,
     "tool-input": ToolInput,
     "tool-output": ToolOutput,
 }

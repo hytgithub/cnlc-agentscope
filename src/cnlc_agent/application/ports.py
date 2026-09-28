@@ -141,6 +141,7 @@ class TaskRepository(Protocol):
         output_snapshot: JsonObject,
         error_code: str | None = None,
         error_message: str | None = None,
+        source_external_call_id: str | None = None,
     ) -> ToolRun: ...
 
     async def get_tool_run(self, tool_run_id: str) -> ToolRun | None: ...

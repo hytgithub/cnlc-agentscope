@@ -443,6 +443,7 @@ class PostgreSQLTaskRepository:
         output_snapshot: JsonObject,
         error_code: str | None = None,
         error_message: str | None = None,
+        source_external_call_id: str | None = None,
     ) -> ToolRun:
         """行锁保障一次终结；审计记录的身份、起点和输入不可改写。"""
 
@@ -467,6 +468,7 @@ class PostgreSQLTaskRepository:
                     "finished_at": utc_now(),
                     "error_code": error_code,
                     "error_message": error_message,
+                    "source_external_call_id": source_external_call_id,
                 })
                 row.status = finished.status.value
                 row.source = finished.source
@@ -474,6 +476,7 @@ class PostgreSQLTaskRepository:
                 row.finished_at = finished.finished_at
                 row.error_code = finished.error_code
                 row.error_message = finished.error_message
+                row.source_external_call_id = finished.source_external_call_id
             return finished
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库工具审计结束失败") from None

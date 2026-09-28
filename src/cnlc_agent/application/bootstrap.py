@@ -19,6 +19,7 @@ from cnlc_agent.infrastructure.mock import (
 from cnlc_agent.infrastructure.model_gateway import OpenAICompatibleModelGateway
 from cnlc_agent.infrastructure.telemetry import LoggingTelemetry
 from cnlc_agent.reports.assembler import ReportAssembler
+from cnlc_agent.tools.catalog import validate_injected_tools
 from cnlc_agent.tools.company_batches import build_company_mock_tools
 from cnlc_agent.tools.contracts import Tool, ToolCaller
 from cnlc_agent.tools.mock import GetWellDataTool, MockResultTool
@@ -51,6 +52,7 @@ def build_application(
         tools[name] = MockResultTool(name, key, repository, prediction)
     if settings.professional_provider == "company_mock":
         tools = dict(build_company_mock_tools(repository, caller))
+    validate_injected_tools(tools)
     close_callbacks: list[Callable[[], Awaitable[None]]] = []
     gateway: ModelGateway
     if settings.model_provider == "mock":

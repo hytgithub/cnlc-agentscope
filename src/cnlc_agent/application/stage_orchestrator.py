@@ -113,7 +113,7 @@ class StageOrchestrator:
         )
         current = waiting or (runs[-1] if runs else None)
         stage_result = (
-            self.results.project_loaded(task, execution, current.id)
+            await self.results.project(task_id, execution_id, current.id)
             if current is not None
             else None
         )

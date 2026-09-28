@@ -738,6 +738,7 @@ class InMemoryTaskRepository:
         output_snapshot: JsonObject,
         error_code: str | None = None,
         error_message: str | None = None,
+        source_external_call_id: str | None = None,
     ) -> ToolRun:
         """终态只写一次，不允许改写历史调用结果。"""
 
@@ -757,6 +758,7 @@ class InMemoryTaskRepository:
                 "finished_at": utc_now(),
                 "error_code": error_code,
                 "error_message": error_message,
+                "source_external_call_id": source_external_call_id,
             })
             self._tool_runs[tool_run_id] = finished
             return finished.model_copy(deep=True)

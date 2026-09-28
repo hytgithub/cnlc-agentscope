@@ -9,10 +9,15 @@ from cnlc_agent.application.bootstrap import build_application
 from cnlc_agent.config.settings import AppSettings
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.models import TaskRequest
+from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolExecutionMode
-from cnlc_agent.infrastructure.mock import MockWellRepository
+from cnlc_agent.infrastructure.mock import InMemoryTaskRepository, MockWellRepository
 from cnlc_agent.infrastructure.telemetry import LoggingTelemetry
-from cnlc_agent.tools.company_batches import CompanyBatchResults, MockCompanyBatchProvider
+from cnlc_agent.tools.company_batches import (
+    CompanyBatchResults,
+    MockCompanyBatchProvider,
+    build_company_mock_tools,
+)
 from cnlc_agent.tools.contracts import ToolCaller, ToolInput
 
 
@@ -63,6 +68,12 @@ async def test_four_batches_fill_existing_workflow_and_report(data_dir):
             "company_report",
         ]
         assert len({run.output_snapshot["metadata"]["external_call_id"] for run in batches}) == 4
+        assert all(run.source_external_call_id for run in batches)
+        assert all(
+            run.source_external_call_id
+            == run.output_snapshot["metadata"]["external_call_id"]
+            for run in runs
+        )
         assert all(
             run.execution_mode == ToolExecutionMode.DERIVED for run in runs if run not in batches
         )
@@ -122,6 +133,32 @@ async def test_batch_is_shared_concurrently_but_isolated_between_executions(data
     third = await batches.get("interpretation", newer)
     assert third.metadata["external_call_id"] != second.metadata["external_call_id"]
     assert calls == ["one", "two"]
+
+
+async def test_interpretation_batch_can_first_run_at_w06(data_dir):
+    """局部执行第一次在 W06 请求 interpretation batch 时必须通过 Catalog 防线。"""
+
+    repository = InMemoryTaskRepository()
+    state = InterpretationState(task=TaskRequest(well_id="WELL_MOCK_001"), mode="demo")
+    await repository.create(state)
+    caller = ToolCaller(LoggingTelemetry(), 10, repository)
+    tools = build_company_mock_tools(MockWellRepository(data_dir), caller)
+    request = ToolInput(
+        task_id=state.task.task_id,
+        trace_id=state.trace_id,
+        well_id=state.task.well_id,
+        step_id=StepId.W06,
+        parameters={"execution_id": state.workflow_execution_id},
+    )
+
+    output = await caller.call(tools["calculate_sw"], request)
+    assert output.status == StepStatus.SUCCESS
+    runs = await repository.list_tool_runs(state.workflow_execution_id)
+    assert [run.tool_code for run in runs] == ["calculate_sw", "company_interpretation"]
+    assert runs[0].execution_mode == ToolExecutionMode.DERIVED
+    assert runs[1].execution_mode == ToolExecutionMode.MOCK
+    assert runs[0].source_external_call_id == runs[1].source_external_call_id
+    assert runs[0].source_external_call_id
 
 
 @pytest.mark.parametrize(

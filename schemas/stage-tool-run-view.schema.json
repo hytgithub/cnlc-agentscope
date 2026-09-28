@@ -1,0 +1,193 @@
+{
+  "$defs": {
+    "InterpretationStage": {
+      "description": "复用既有规划阶段值，DECODE 别名保持 Demo 的 DATA_DECODE 协议兼容。",
+      "enum": [
+        "DATA_DECODE",
+        "DATA_DECODE",
+        "PREPROCESS",
+        "INTERPRET",
+        "REPORT"
+      ],
+      "title": "InterpretationStage",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "StepId": {
+      "description": "固定业务流程 W01-W10 的步骤标识。",
+      "enum": [
+        "W01",
+        "W02",
+        "W03",
+        "W04",
+        "W05",
+        "W06",
+        "W07",
+        "W08",
+        "W09",
+        "W10"
+      ],
+      "title": "StepId",
+      "type": "string"
+    },
+    "ToolExecutionMode": {
+      "description": "调用的物理来源类型，由具体 Tool 显式声明。",
+      "enum": [
+        "MOCK",
+        "REAL",
+        "VIRTUAL",
+        "DERIVED"
+      ],
+      "title": "ToolExecutionMode",
+      "type": "string"
+    },
+    "ToolRunStatus": {
+      "description": "工具调用生命周期；与 ExecutionPlan 的 RUN/REUSE 分开。",
+      "enum": [
+        "RUNNING",
+        "SUCCESS",
+        "WARNING",
+        "FAILED"
+      ],
+      "title": "ToolRunStatus",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "单次 Tool 调用的小型展示事实；来源是 ToolRun 的有界审计快照。",
+  "properties": {
+    "business_stage": {
+      "$ref": "#/$defs/InterpretationStage"
+    },
+    "duration_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Duration Ms"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Code"
+    },
+    "error_message": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Message"
+    },
+    "execution_id": {
+      "minLength": 1,
+      "title": "Execution Id",
+      "type": "string"
+    },
+    "execution_mode": {
+      "$ref": "#/$defs/ToolExecutionMode"
+    },
+    "external_call_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "External Call Id"
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Finished At"
+    },
+    "input_summary": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Input Summary",
+      "type": "object"
+    },
+    "output_summary": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Output Summary",
+      "type": "object"
+    },
+    "source": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/ToolRunStatus"
+    },
+    "step_id": {
+      "$ref": "#/$defs/StepId"
+    },
+    "tool_code": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Tool Code",
+      "type": "string"
+    },
+    "tool_run_id": {
+      "minLength": 1,
+      "title": "Tool Run Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tool_run_id",
+    "execution_id",
+    "tool_code",
+    "step_id",
+    "business_stage",
+    "status",
+    "execution_mode",
+    "source",
+    "started_at"
+  ],
+  "title": "StageToolRunView",
+  "type": "object"
+}
