@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from cnlc_agent.application.bootstrap import build_application
+from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispatcher
 from cnlc_agent.application.planning import ExecutionPlan, ExecutionStage, PlanAction
 from cnlc_agent.application.stage_orchestrator import StageOrchestrator
 from cnlc_agent.config.settings import AppSettings
@@ -160,6 +161,94 @@ async def test_superseded_waiting_execution_cannot_be_confirmed(data_dir):
     assert unchanged is not None
     assert unchanged.status == ExecutionStatus.WAITING_CONFIRMATION
     assert unchanged.state_snapshot.stage_runs[-1].status == StageRunStatus.WAITING_CONFIRM
+
+
+async def test_confirmed_queued_execution_can_be_redispatched_without_repeating_stage(data_dir):
+    """确认提交后即使原 dispatcher 丢失，也能按持久事实重投同一 Execution。"""
+
+    app, request, initial, orchestrator = await staged_app(data_dir)
+    first_waiting = await orchestrator.execute_next_stage(
+        initial.execution_id, worker_id="first-worker"
+    )
+    first_run = first_waiting.state_snapshot.stage_runs[-1]
+    queued = await orchestrator.confirm_stage(
+        request.task_id,
+        initial.execution_id,
+        InterpretationStage.DECODE,
+        first_run.id,
+        actor="tester",
+    )
+    assert queued.status == ExecutionStatus.QUEUED
+
+    # 模拟确认事务提交后进程退出：新 dispatcher 只拿 execution_id，通用
+    # execute_prepared 根据数据库/仓库中的 run_mode 恢复 staged 执行方式。
+    dispatcher = InProcessExecutionDispatcher()
+
+    async def resume(worker_id: str) -> None:
+        await app.execute_prepared(initial.execution_id, worker_id=worker_id)
+
+    try:
+        await dispatcher.submit(initial.execution_id, resume)
+        await dispatcher.submit(initial.execution_id, resume)
+        await dispatcher.wait(initial.execution_id)
+    finally:
+        await dispatcher.shutdown()
+
+    second_waiting = await app.repository.get_execution(initial.execution_id)
+    assert second_waiting is not None
+    assert second_waiting.status == ExecutionStatus.WAITING_CONFIRMATION
+    current_runs = [
+        run
+        for run in second_waiting.state_snapshot.stage_runs
+        if run.execution_id == initial.execution_id
+    ]
+    assert [run.stage for run in current_runs] == [
+        InterpretationStage.DECODE,
+        InterpretationStage.PREPROCESS,
+    ]
+    assert current_runs[0].status == StageRunStatus.CONFIRMED
+    assert current_runs[1].status == StageRunStatus.WAITING_CONFIRM
+    assert [item.step_id for item in second_waiting.state_snapshot.executions] == [
+        StepId.W01,
+        StepId.W02,
+        StepId.W03,
+    ]
+
+
+async def test_successful_stage_boundary_is_only_persisted_by_atomic_pause(
+    data_dir, monkeypatch
+):
+    """普通检查点不得提前写入 WAITING_CONFIRM，暂停操作负责最终原子提交。"""
+
+    app, _, initial, orchestrator = await staged_app(data_dir)
+    original = app.repository.save_execution_state
+    prematurely_saved_waiting: list[str] = []
+
+    async def observe(state: InterpretationState) -> None:
+        prematurely_saved_waiting.extend(
+            run.id
+            for run in state.stage_runs
+            if run.execution_id == initial.execution_id
+            and run.status == StageRunStatus.WAITING_CONFIRM
+        )
+        await original(state)
+
+    monkeypatch.setattr(app.repository, "save_execution_state", observe)
+    for index, stage in enumerate(STAGE_ORDER):
+        waiting = await orchestrator.execute_next_stage(
+            initial.execution_id, worker_id=f"worker-{index}"
+        )
+        assert waiting.status == ExecutionStatus.WAITING_CONFIRMATION
+        assert waiting.state_snapshot.stage_runs[-1].stage == stage
+        if stage != InterpretationStage.REPORT:
+            await orchestrator.confirm_stage(
+                waiting.task_id,
+                waiting.execution_id,
+                stage,
+                waiting.state_snapshot.stage_runs[-1].id,
+                actor="tester",
+            )
+    assert prematurely_saved_waiting == []
 
 
 async def test_continuous_mode_still_runs_all_stages(data_dir):

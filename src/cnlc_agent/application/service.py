@@ -326,7 +326,22 @@ class InterpretationTaskService:
         materialize: Callable[[InterpretationInputVersion], Awaitable[None]] | None = None,
         lease_seconds: float = 90.0,
     ) -> tuple[InterpretationState, str]:
-        """claim 已准备执行，续租并写入唯一终态；提交请求不调用此方法等待结果。"""
+        """仅按 Execution 持久化的运行模式执行，支持同一 QUEUED 记录重投。"""
+
+        prepared = await self.repository.get_execution(execution_id)
+        if prepared is None:
+            raise InfrastructureError("EXECUTION_NOT_FOUND", "执行记录不存在")
+        if prepared.run_mode == ExecutionRunMode.STAGED_CONFIRMATION:
+            # 延迟导入避免 Service 与 StageOrchestrator 的模块初始化环。
+            from cnlc_agent.application.stage_orchestrator import StageOrchestrator
+
+            paused = await StageOrchestrator(self).execute_next_stage(
+                execution_id,
+                worker_id=worker_id,
+                materialize=materialize,
+                lease_seconds=lease_seconds,
+            )
+            return paused.state_snapshot, paused.markdown
 
         now = utc_now()
         claimed = await self.repository.claim_execution(

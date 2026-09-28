@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from cnlc_agent.application.bootstrap import build_application
 from cnlc_agent.application.dataset_revision_service import DatasetRevisionService
+from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispatcher
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.stage_orchestrator import StageOrchestrator
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
@@ -189,10 +190,23 @@ async def test_staged_confirmation_survives_postgresql_restart(migrated):
         conflict = next(item for item in confirmations if isinstance(item, InfrastructureError))
         assert conflict.code == "STAGE_CONFIRMATION_CONFLICT"
         assert queued.status == ExecutionStatus.QUEUED
+        assert queued.run_mode == ExecutionRunMode.STAGED_CONFIRMATION
         assert queued.execution_id == execution.execution_id
-        second_waiting = await second_orchestrator.execute_next_stage(
-            execution.execution_id, worker_id="postgres-stage-2"
-        )
+        # 模拟确认事务已经提交、原 dispatcher 尚未 submit 就崩溃。新进程只按
+        # 持久化 execution_id 重新投递，execute_prepared 根据 run_mode 恢复下一阶段。
+        dispatcher = InProcessExecutionDispatcher()
+
+        async def resume(worker_id: str) -> None:
+            await second_app.execute_prepared(execution.execution_id, worker_id=worker_id)
+
+        try:
+            await dispatcher.submit(execution.execution_id, resume)
+            await dispatcher.submit(execution.execution_id, resume)
+            await dispatcher.wait(execution.execution_id)
+        finally:
+            await dispatcher.shutdown()
+        second_waiting = await second_repository.get_execution(execution.execution_id)
+        assert second_waiting is not None
         assert second_waiting.status == ExecutionStatus.WAITING_CONFIRMATION
         assert second_waiting.state_snapshot.stage_runs[-1].stage == STAGE_ORDER[1]
         assert second_waiting.started_at == waiting.started_at
@@ -201,6 +215,56 @@ async def test_staged_confirmation_survives_postgresql_restart(migrated):
             await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
         await first_engine.dispose()
         await second_engine.dispose()
+
+
+async def test_postgresql_waiting_execution_can_be_superseded_and_old_confirm_is_rejected(
+    migrated,
+):
+    """WAITING_CONFIRMATION 不阻止 V2；Task 指针移动后 V1 只能读取。"""
+
+    request = TaskRequest(well_id="WELL_MOCK_001")
+    engine = create_async_engine(DB_URL)
+    repository = PostgreSQLTaskRepository(engine)
+    app = build_application(
+        AppSettings(mock_data_dir=ROOT / "mock_data", _env_file=None),
+        task_repository=repository,
+    )
+    orchestrator = StageOrchestrator(app)
+    try:
+        first_state = InterpretationState(task=request)
+        await repository.create_task(first_state)
+        first = await repository.create_execution(
+            first_state, "INITIAL", run_mode=ExecutionRunMode.STAGED_CONFIRMATION
+        )
+        waiting = await orchestrator.execute_next_stage(
+            first.execution_id, worker_id="postgres-v1"
+        )
+        first_run = waiting.state_snapshot.stage_runs[-1]
+
+        second = await repository.create_execution(
+            InterpretationState(task=request),
+            "RERUN",
+            expected_current_execution_id=first.execution_id,
+            run_mode=ExecutionRunMode.STAGED_CONFIRMATION,
+        )
+        task = await repository.get_task(request.task_id)
+        assert task is not None and task.current_execution_id == second.execution_id
+
+        with pytest.raises(InfrastructureError) as caught:
+            await orchestrator.confirm_stage(
+                request.task_id,
+                first.execution_id,
+                STAGE_ORDER[0],
+                first_run.id,
+                actor="postgres-test",
+            )
+        assert caught.value.code == "EXECUTION_NOT_CURRENT"
+        unchanged = await repository.get_execution(first.execution_id)
+        assert unchanged == waiting
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
+        await engine.dispose()
 
 
 async def test_real_workflow_restart_and_duplicate(migrated, tmp_path):

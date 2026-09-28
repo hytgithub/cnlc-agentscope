@@ -229,7 +229,6 @@ class StageOrchestrator:
                         f"report-config:style:{self.service.reports.generator.style.value}"
                     ),
                 )
-                await self.repository.save_execution_state(state)
                 markdown = self.service.reports.to_markdown(state)
                 finish_stage(state, stage, auto_confirm=False)
             else:

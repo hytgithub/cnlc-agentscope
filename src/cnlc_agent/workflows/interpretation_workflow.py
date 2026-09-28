@@ -371,7 +371,7 @@ class InterpretationWorkflow:
     async def run_stage(
         self, state: InterpretationState, stage: InterpretationStage
     ) -> InterpretationState:
-        """只执行一个业务阶段；REPORT 由报告装配器在应用层执行。"""
+        """只执行一个业务阶段；成功边界由 Repository 在暂停事务中持久化。"""
 
         steps = STAGE_STEPS[stage]
         if not steps:
@@ -382,6 +382,7 @@ class InterpretationWorkflow:
             end_step=steps[-1],
             auto_confirm=False,
             require_new_state=False,
+            defer_successful_boundary=True,
         )
 
     async def _run_steps(
@@ -392,6 +393,7 @@ class InterpretationWorkflow:
         end_step: StepId = StepId.W10,
         auto_confirm: bool,
         require_new_state: bool,
+        defer_successful_boundary: bool = False,
     ) -> InterpretationState:
         """连续与分阶段模式共用唯一节点循环，避免两套 W01～W10 语义漂移。"""
 
@@ -547,7 +549,16 @@ class InterpretationWorkflow:
                     )
                     if outcome.status not in COMPLETED or node.step_id == STAGE_STEPS[stage][-1]:
                         finish_stage(state, stage, auto_confirm=auto_confirm)
-                    await self.store.save(state)
+                    # 分阶段模式的最后一个成功节点已经产生 WAITING_CONFIRM。
+                    # 该快照必须和 Execution/Task 状态及 lease 释放一起由 Repository
+                    # 原子提交，不能先作为 RUNNING Execution 的普通检查点单独保存。
+                    final_successful_boundary = (
+                        defer_successful_boundary
+                        and node.step_id == end_step
+                        and outcome.status in COMPLETED
+                    )
+                    if not final_successful_boundary:
+                        await self.store.save(state)
                 if outcome.status not in COMPLETED:
                     # FAILED、BLOCKED、REVIEW_REQUIRED 均为显式终止分支，禁止继续后续步骤。
                     break
@@ -557,6 +568,7 @@ class InterpretationWorkflow:
             if state.status in COMPLETED:
                 state.current_step = None
             state.updated_at = utc_now()
-            await self.store.save(state)
+            if not (defer_successful_boundary and state.status in COMPLETED):
+                await self.store.save(state)
             self.telemetry.event("workflow.result", {**attributes, "status": state.status.value})
             return state
