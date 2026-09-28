@@ -28,7 +28,9 @@ from cnlc_agent.demo.demo_agent import (
     MockTaskShellCredential,
     MockTaskShellModel,
 )
-from cnlc_agent.demo.task_tools import ALLOWED_TASK_TOOLS, TaskCommandRunner, build_task_tools
+from cnlc_agent.demo.operation_tool import ALLOWED_AGENT_TASK_TOOLS as ALLOWED_TASK_TOOLS
+from cnlc_agent.demo.operation_tool import build_agent_task_tools as build_task_tools
+from cnlc_agent.demo.task_tools import TaskCommandRunner
 from cnlc_agent.domain.errors import ToolError
 from cnlc_agent.infrastructure.mock import MockModelGateway
 from cnlc_agent.tools.mock import MockResultTool
@@ -80,21 +82,80 @@ class ScriptedTaskModel(ChatModelBase):
         if previous is None:
             output = results[-1].output
             previous = json.loads(output if isinstance(output, str) else output[0].text)
-        task_id = previous["task_id"]
-        name, parameters = {
-            "把孔隙度、渗透率改成0.16": ("modify_well_interpretation", {"por": 0.16, "perm": 0.16}),
-            "全部重新跑": ("rerun_well_interpretation", {}),
-            "给我上一版报告": ("get_interpretation_report", {"selector": "PREVIOUS"}),
-            "现在处理到哪里了？": ("get_interpretation_status", {}),
+        # 独立脚本直接形成结构化 Tool Call，验证生产入口，不依赖 Mock 关键词解析。
+        action = {
+            "把孔隙度、渗透率改成0.16": "MODIFY_PARAMETER",
+            "全部重新跑": "FULL_RERUN",
+            "给我上一版报告": "REPORT",
+            "现在处理到哪里了？": "STATUS",
+            "改成0.17": "MODIFY_PARAMETER",
+            "帮我改一下": "MODIFY_PARAMETER",
+            "孔隙度": "MODIFY_PARAMETER",
+            "0.16": "MODIFY_PARAMETER",
+            "只重新算Sw": "RECALCULATE",
         }[instruction]
+        operations = [{"operation_id": "op1", "action": action, "target": "WELL"}]
+        if action == "MODIFY_PARAMETER":
+            operations = [
+                {
+                    "operation_id": f"op{i}",
+                    "action": action,
+                    "target": target,
+                    "parameters": {"value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}},
+                }
+                for i, target in enumerate(["POROSITY", "PERMEABILITY"], 1)
+            ]
+        if action in {"REPORT", "STATUS", "FULL_RERUN"}:
+            operations[0]["execution_reference"] = {
+                "kind": "PREVIOUS" if action == "REPORT" else "TASK_CURRENT"
+            }
+        if instruction == "改成0.17":
+            operations = [
+                {
+                    "operation_id": "op1",
+                    "action": action,
+                    "parameters": {"value": {"mode": "ABSOLUTE", "value": 0.17, "unit": "1"}},
+                }
+            ]
+        if instruction == "帮我改一下":
+            operations = [{"operation_id": "op1", "action": action}]
+        if action == "RECALCULATE":
+            operations[0]["target"] = "WATER_SATURATION"
+            operations[0]["execution_reference"] = {"kind": "TASK_CURRENT"}
+        name = "interpret_interpretation_operation"
+        parameters = {
+            "request": {
+                "mode": "PLAN",
+                "plan": {
+                    "input_classification": "EXECUTION_REQUEST",
+                    "persist_mode": "CREATE_VERSION",
+                    "original_instruction": instruction,
+                    "operations": operations,
+                },
+            }
+        }
+        if instruction == "孔隙度":
+            parameters = {
+                "request": {
+                    "mode": "CLARIFICATION_REPLY",
+                    "patch": {"target": "POROSITY"},
+                }
+            }
+        if instruction == "0.16":
+            parameters = {
+                "request": {
+                    "mode": "CLARIFICATION_REPLY",
+                    "patch": {
+                        "value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}
+                    },
+                }
+            }
         return ChatResponse(
             content=[
                 ToolCallBlock(
                     id=uuid4().hex,
                     name=name,
-                    input=json.dumps(
-                        {"task_reference": {"kind": "TASK_ID", "value": task_id}, **parameters}
-                    ),
+                    input=json.dumps(parameters),
                 )
             ],
             is_last=True,
@@ -197,6 +258,68 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
     await runner.dispatcher.shutdown()
 
 
+async def test_react_three_turn_clarification_executes_exactly_once(data_dir):
+    """AgentScope Middleware 与统一 Tool 支持 TARGET、VALUE 分轮补齐。"""
+    runner = TaskCommandRunner(
+        AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),
+        PersistenceSettings(persistence="memory", _env_file=None),
+    )
+    agent = LoggingInterpretationDemoAgent(
+        name="demo",
+        system_prompt="",
+        model=ScriptedTaskModel(),
+        toolkit=Toolkit(tools=build_task_tools(runner)),
+        stream_step_delay_seconds=0,
+        stream_report_chunk_delay_seconds=0,
+    )
+    try:
+        initial = [event async for event in agent.reply_stream(upload_message(data_dir))]
+        first = next(
+            event for event in initial if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        await runner.wait_for_completion(first["task_id"], first["execution_id"])
+
+        first_reply = [
+            event
+            async for event in agent.reply_stream(UserMsg(name="user", content="帮我改一下"))
+        ]
+        assert next(
+            event for event in first_reply if isinstance(event, ToolResultEndEvent)
+        ).metadata["operation"]["outcome"] == "NEED_CLARIFICATION"
+        assert len(await runner.repository.list_executions(first["task_id"])) == 1
+
+        second_reply = [
+            event async for event in agent.reply_stream(UserMsg(name="user", content="孔隙度"))
+        ]
+        assert next(
+            event for event in second_reply if isinstance(event, ToolResultEndEvent)
+        ).metadata["operation"]["outcome"] == "NEED_CLARIFICATION"
+        assert {issue.slot for issue in runner.pending_operation_clarification().issues} == {
+            "VALUE"
+        }
+        assert len(await runner.repository.list_executions(first["task_id"])) == 1
+
+        third_reply = [
+            event async for event in agent.reply_stream(UserMsg(name="user", content="0.16"))
+        ]
+        modified = next(
+            event for event in third_reply if isinstance(event, ToolResultEndEvent)
+        ).metadata["result"]
+        assert modified["effective_override"]["por"] == 0.16
+        assert len(await runner.repository.list_executions(first["task_id"])) == 2
+        assert runner.pending_operation_clarification() is None
+
+        replay = [
+            event async for event in agent.reply_stream(UserMsg(name="user", content="0.16"))
+        ]
+        assert next(event for event in replay if isinstance(event, ToolResultEndEvent)).metadata[
+            "error_code"
+        ] == "CLARIFICATION_SLOT_INVALID"
+        assert len(await runner.repository.list_executions(first["task_id"])) == 2
+    finally:
+        await runner.dispatcher.shutdown()
+
+
 @pytest.mark.parametrize(
     "instruction",
     [
@@ -219,10 +342,9 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
     ],
 )
 def test_mock_status_query_variants(instruction):
-    assert MockTaskShellModel._command(instruction) == (
-        "get_interpretation_status",
-        {"task_reference": {"kind": "CURRENT"}},
-    )
+    name, args = MockTaskShellModel._command(instruction)
+    assert name == "interpret_interpretation_operation"
+    assert args["request"]["plan"]["operations"][0]["action"] == "STATUS"
 
 
 async def test_modify_disconnect_does_not_cancel_shared_execution(data_dir, monkeypatch):
@@ -323,14 +445,32 @@ async def test_modify_failure_stream_stops_at_failed_step(data_dir, monkeypatch)
 async def test_missing_task_enters_react_without_inventing_identity(data_dir):
     model = ScriptedTaskModel()
     agent = LoggingInterpretationDemoAgent(
-        name="demo", system_prompt="", model=model, toolkit=Toolkit(tools=build_task_tools())
+        name="demo",
+        system_prompt="",
+        model=model,
+        toolkit=Toolkit(
+            tools=build_task_tools(
+                TaskCommandRunner(
+                    AppSettings(model_provider="mock", _env_file=None),
+                    PersistenceSettings(persistence="memory", _env_file=None),
+                )
+            )
+        ),
     )
     events = [e async for e in agent.reply_stream(UserMsg(name="user", content="把孔隙度改成0.16"))]
     assert model.seen
     assert not any(isinstance(e, ToolResultEndEvent) for e in events)
     assert "请先上传" in agent.state.context[-1].get_text_content()
     # 行为约束进入同一 ReAct 系统提示，没有第二套意图模型或步骤依赖规则。
-    for rule in ("领域外", "Rw", "Archie", "含水饱和度", "16%", "PERM", "不猜", "PREVIOUS"):
+    for rule in (
+        "不从聊天记忆",
+        "conditions",
+        "interval_id",
+        "16%",
+        "PERMEABILITY",
+        "不猜",
+        "PREVIOUS",
+    ):
         assert rule in DEMO_SYSTEM_PROMPT
 
 
@@ -449,7 +589,7 @@ async def test_mock_shell_resolves_active_previous_and_named_wells(data_dir, fix
             event for event in previous_version_events if isinstance(event, ToolResultEndEvent)
         )
         assert previous_version.state == "error"
-        assert previous_version.metadata["error_code"] == "REPORT_NOT_FOUND"
+        assert previous_version.metadata["error_code"] == "EXECUTION_NOT_FOUND"
         assert runner.active_task_id == second["task_id"]
 
         previous_well_events = [
@@ -463,7 +603,8 @@ async def test_mock_shell_resolves_active_previous_and_named_wells(data_dir, fix
         assert previous_well["task_id"] == first["task_id"]
         assert previous_well["execution_id"] == modified_a["execution_id"]
         assert previous_well["report_markdown"] == report_a
-        assert runner.active_task_id == first["task_id"]
+        assert runner.active_task_id == second["task_id"]
+        assert runner.interaction_context.view.task_id == first["task_id"]
 
         named_events = [
             event
@@ -476,6 +617,19 @@ async def test_mock_shell_resolves_active_previous_and_named_wells(data_dir, fix
         ).metadata["result"]
         assert named["task_id"] == first["task_id"]
 
+        conflict_events = [
+            e async for e in agent.reply_stream(UserMsg(name="user", content="孔隙度改成0.18"))
+        ]
+        assert (
+            next(e for e in conflict_events if isinstance(e, ToolResultEndEvent)).metadata[
+                "error_code"
+            ]
+            == "VIEW_ACTIVE_CONTEXT_CONFLICT"
+        )
+        assert len(await runner.repository.list_executions(first["task_id"])) == 2
+        assert len(await runner.repository.list_executions(second["task_id"])) == 1
+        await _consume_focus(agent, "切到 WELL_MOCK_001")
+        # 同井 View 是当前版本时可安全操作；历史版本仍会要求明确。
         modify_again_events = [
             event
             async for event in agent.reply_stream(
@@ -497,7 +651,7 @@ async def test_mock_shell_resolves_active_previous_and_named_wells(data_dir, fix
         switched = next(
             event for event in switch_events if isinstance(event, ToolResultEndEvent)
         ).metadata["result"]
-        assert switched["task_id"] == second["task_id"]
+        assert switched["outcome"] == "READ_ONLY"
         assert runner.active_task_id == second["task_id"]
 
         status_events = [
@@ -576,7 +730,12 @@ async def test_mock_shell_explains_unsupported_sw_only_rerun(data_dir):
         ]
         result = next(event for event in events if isinstance(event, ToolResultEndEvent))
         assert result.metadata["error_code"] == "UNSUPPORTED_OPERATION"
-        assert "尚不支持该局部重算" in agent.state.context[-1].get_text_content()
+        assert "局部重算能力" in agent.state.context[-1].get_text_content()
         assert len(await runner.repository.list_executions(first["task_id"])) == 1
     finally:
         await runner.dispatcher.shutdown()
+
+
+async def _consume_focus(agent, text):
+    """消费显式焦点切换，不产生业务执行。"""
+    return [e async for e in agent.reply_stream(UserMsg(name="user", content=text))]

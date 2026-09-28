@@ -199,3 +199,328 @@ Execution 没有 `PENDING` 和 `SKIPPED`；这两个值属于 Workflow 步骤状
 2. 面向人的文档首次出现状态、枚举、动作码或稳定错误码时，写成 `CODE（中文含义）` 或提供紧邻的中文说明表。
 3. 新增或修改枚举时，同步更新本文。
 4. 历史 Task 记录可以保留当时原始代码值，但新增加的说明必须引用本文；Current Design 文档不得只列英文枚举而不解释。
+
+## 18. InputClassification（输入性质，Task 10.5-A）
+
+以下语义契约仅建模，尚未接入 ReAct、解析器或执行层。输入性质不等于业务动作。
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `EXECUTION_REQUEST` | 执行请求 | 请求产生业务执行或修改。 |
+| `READ_REQUEST` | 只读请求 | 请求读取已有业务事实。 |
+| `CLARIFICATION_REPLY` | 澄清回复 | 补充此前尚不明确的信息。 |
+| `CORRECTION` | 修正上一输入 | 纠正前一输入的含义，不自动撤销已执行事实。 |
+| `CONFIRMATION` | 确认 / 采用 | 表达接受或采用意向，不直接形成写操作。 |
+| `CANCELLATION` | 取消 / 撤销请求 | 表达取消意向，需区分取消交互与取消后台执行。 |
+| `CAPABILITY_QUERY` | 能力询问 | 询问能否操作；不能直接当成执行请求。 |
+| `META_REQUEST` | 系统操作请求 | 面向系统交互或管理的请求。 |
+| `OUT_OF_DOMAIN` | 领域外请求 | 不属于测井解释及其任务操作；已识别但未开放的动作不属于此类。 |
+
+## 19. ActionType（操作业务动作）
+
+这是 Operation 的有限语义空间，不替换第 9 节的现有任务级意图；可识别不意味着可执行。
+
+Task 10.5-E1 补充 `FULL_RERUN`（全量重跑）：已有授权 Task 的整井重跑，继承现有有效参数。
+其 Capability 为 ENABLED（已启用），handler 为 rerun_well_interpretation；不能代替首次解释或局部重新解释。
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `QUERY` | 查询结果 | 读取指定业务对象结果。 |
+| `EXPLAIN` | 解释原因 / 溯源 | 追溯结果依据、证据和来源。 |
+| `MODIFY_RESULT` | 人工修改派生结果 | 表达修改派生值的意图，不修改原始曲线。 |
+| `MODIFY_PARAMETER` | 修改计算参数 | 表达参数设置，实际支持范围仍以原命令契约为准。 |
+| `RECALCULATE` | 重新计算 | 表达对指定目标重算，不隐式升级为整井全量重跑。 |
+| `REINTERPRET` | 重新解释 | 基于目标、范围和版本重新解释。 |
+| `SWITCH_METHOD` | 切换方法 | 请求更换计算或解释方法。 |
+| `SWITCH_MODEL` | 切换预测模型 | 请求更换专业预测模型，不等同于更换外层语言模型。 |
+| `COMPARE` | 比较结果 | 比较明确的版本或操作输出。 |
+| `SEGMENT_EDIT` | 修改层段 | 表达层段或层界编辑意图。 |
+| `VALIDATE` | 综合验证 | 请求独立验证已有解释。 |
+| `OVERRIDE` | 人工最终解释覆盖 | 表达人工最终结论修订，不表示数据库原地覆盖。 |
+| `RESTORE_VERSION` | 恢复历史版本 | 表达恢复指定历史结果的意图；具体版本行为待确认。 |
+| `SCENARIO` | 方案试算 | 表达临时方案计算意图。 |
+| `COMMIT_SCENARIO` | 应用试算结果 | 表达将试算结果采用为正式结果的意图。 |
+| `REPORT` | 查看 / 生成报告 | 表达报告需求；当前能力声明只开放已有报告读取。 |
+| `HISTORY` | 查询历史 | 查询解释版本历史。 |
+| `FULL_INTERPRET` | 首次 / 整井解释 | 当前能力声明对应首次解释；不替代现有全量重跑动作。 |
+| `STATUS` | 查询执行状态 | 读取持久执行进度和状态。 |
+| `CANCEL_EXECUTION` | 取消执行 | 请求停止后台执行；不同于取消澄清。 |
+| `PAUSE_EXECUTION` | 暂停执行 | 请求暂停后台业务执行。 |
+| `RESUME_EXECUTION` | 恢复执行 | 请求恢复已暂停执行。 |
+| `RETRY_EXECUTION` | 重试执行 | 表达重试意图，重试策略不由语义模型决定。 |
+| `ACCEPT_RESULT` | 接受结果 | 表达人工接受结果的决定。 |
+| `REJECT_RESULT` | 拒绝结果 | 表达人工拒绝结果的决定。 |
+| `MARK_FINAL` | 标记最终版本 | 表达选择最终版本的意图。 |
+| `MARK_REVIEW` | 标记待复核 | 表达人工复核标记意图，不复制 Workflow 状态。 |
+| `NEW_WELL` | 新井资料 | 表达新井文件输入意图；目前上传沿用已有入口。 |
+| `REPLACE_INPUT` | 替换既有输入资料 | 表达同任务输入替换，不等同于目前上传创建新任务。 |
+| `ADD_EVIDENCE` | 补充验证证据 | 表达追加岩心、录井、试油、邻井等资料的意图。 |
+
+## 20. TargetType（操作对象类型）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `WELL` | 井 | 整口井的业务对象。 |
+| `RAW_CURVE` | 原始测井曲线 | 原始曲线对象；可识别不授权修改原始数据。 |
+| `LITHOLOGY` | 岩性 | 岩性识别结果。 |
+| `VSH` | 泥质含量 | 泥质含量结果。 |
+| `POROSITY` | 孔隙度 | 孔隙度结果或对应参数目标。 |
+| `PERMEABILITY` | 渗透率 | 渗透率结果或对应参数目标。 |
+| `WATER_SATURATION` | 含水饱和度 | 含水饱和度结果。 |
+| `FLUID` | 流体解释 | 综合流体识别结果。 |
+| `ZONE_CLASSIFICATION` | 油气水层分类 | 解释层类型结果。 |
+| `INTERVAL` | 解释层段 | 层段对象；具体标识在范围字段中。 |
+| `LAYER_BOUNDARY` | 层界 | 解释层段的边界对象。 |
+| `RW` | 地层水电阻率 | 地层水电阻率参数。 |
+| `ARCHIE_PARAMETER` | Archie 参数 | Archie 公式相关参数，不在此定义取值规则。 |
+| `CUTOFF` | 截止值 | 业务判别阈值，不在此补造具体标准。 |
+| `MODEL` | 预测模型 | 专业预测模型对象。 |
+| `METHOD` | 计算 / 解释方法 | 计算或解释方法对象。 |
+| `EVIDENCE` | 验证证据 | 用于验证的外部证据对象。 |
+| `REPORT` | 报告 | 解释报告对象。 |
+| `EXECUTION` | 解释版本 | 一次实际执行所形成的版本对象。 |
+
+## 21. OperationScopeKind 与 OperationScope（操作范围）
+
+OperationScope 是以 `kind` 判别的 Pydantic 联合类型。Target 与 Scope 分开存储。
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `WHOLE_WELL` | 整井范围 | 无局部范围附加字段。 |
+| `INTERVAL` | 单个解释层 | 必须提供稳定 `interval_id`；不接受层号代替标识。 |
+| `MULTI_INTERVAL` | 多个解释层 | 必须提供非空 `interval_ids`。 |
+| `DEPTH_RANGE` | 深度区间 | 提供 top、bottom 和 depth_reference，要求 top 小于 bottom，单位为米。 |
+| `DEPTH_POINT` | 单深度点 | 提供 depth 和 depth_reference，单位为米。 |
+| `FILTER_SET` | 条件筛选结果集 | 保存 filter_expression 与 resolved_ids；null 为未解析，空列表为无匹配。 |
+
+筛选不在本阶段执行；未来冻结集合时必须明确所依据的任务和 Execution。
+
+## 22. DepthReference（深度基准）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `MD` | 测量深度 | 沿井眼测量的深度基准。 |
+| `TVD` | 真垂深 | 真垂直深度基准。 |
+| `TVDSS` | 海拔基准真垂深 | 海拔基准的真垂直深度，可带符号；本阶段不转换。 |
+
+## 23. ExecutionReferenceKind（解释版本引用）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `TASK_CURRENT` | 任务当前最新版本 | 指向任务当前版本，尚未执行查询。 |
+| `ACTIVE_BASE` | 当前工作基线版本 | 用户继续工作的基线，可能不同于任务最新版本。 |
+| `PREVIOUS` | 上一版本 | 同一任务上一版本，具体解析由后续 Resolver 决定。 |
+| `LATEST_SUCCESSFUL` | 最近成功版本 | 指定同任务最近成功版本。 |
+| `FIRST` | 首次解释版本 | 指定同任务首次解释版本。 |
+| `SEQUENCE` | 按版本序号指定 | sequence 必须是正整数，拒绝布尔值、字符串和小数。 |
+| `EXECUTION_ID` | 按明确执行 ID 指定 | execution_id 必须非空，后续仍需校验归属。 |
+
+只有序号选择器携带 sequence，只有 ID 选择器携带 execution_id；其他引用不携带二者。
+本模型不替换既有 TaskReference，也不查询版本。
+
+## 24. ValueMode（数值修改方式）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `ABSOLUTE` | 设置成绝对值 | 例如改成 16% 表达为 value=16、unit=%。 |
+| `DELTA` | 增加 / 减少绝对量 | 例如提高 2 个百分点表达为 value=2、unit=percentage_point。 |
+| `PERCENT_CHANGE` | 按比例变化 | 例如提高 2% 表达为 value=2、unit=%，相对于原值变化。 |
+
+ValueSpec 必须提供 mode、有限数值 value 和非空 unit，不转换单位或推断专业取值范围。
+unit 为文本，`1` 表示示例中的无量纲比例；百分数和百分点的换算由后续明确契约负责。
+
+## 25. PersistMode（结果保存意向）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `PREVIEW` | 预览 / 临时结果 | 不请求创建正式结果版本。 |
+| `CREATE_VERSION` | 创建正式新版本 | 表达追加版本的意向，不自动创建 Execution。 |
+
+OperationPlan 要求显式填写保存意向；没有原地覆盖历史的模式。
+
+## 26. OperationConstraintType 与 OperationConstraint（操作限制）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `ONLY_SCOPE` | 仅限当前范围 | 不超出当前节点或共享上下文明确的范围。 |
+| `DO_NOT_PERSIST` | 不保存正式结果 | 表达不创建正式结果的限制。 |
+| `EXCLUDE_MODEL` | 排除模型 | 必须携带 model_id。 |
+| `USE_RULE_ONLY` | 仅使用规则 | 表达仅采用规则方法的限制。 |
+| `KEEP_UNAFFECTED_RESULTS` | 保留未受影响结果 | 表达保留意向，不在此计算影响范围。 |
+| `NO_FULL_RERUN` | 禁止整井全量重跑 | 不允许将局部请求自动升级成全量执行。 |
+| `EXCLUDE_SCOPE` | 排除指定范围 | 必须携带结构化 scope。 |
+
+限制可组合；仅排除模型和排除范围携带各自参数，冲突裁决留给后续 PlanValidator。
+
+## 27. OperationEdgeType（操作关系）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `SEQUENCE` | 顺序依赖 | 表达一个操作发生在另一个之后。 |
+| `DATA_DEPENDENCY` | 数据依赖 | 表达消费另一个操作的输出。 |
+| `COMPARE_DEPENDENCY` | 比较依赖 | 表达比较需要某个操作输出。 |
+
+边使用非空 from_operation_id、to_operation_id 和 type；Schema 不构造专业 DependencyGraph。
+Task 10.5-D PlanValidator 校验端点、输入依赖与图环；OperationInputReference 独立表达操作输出或版本输入。
+
+## 28. ResolutionConfidence（解析置信程度）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `HIGH` | 高置信解析 | 解析方声明信息较明确，不等于执行授权。 |
+| `MEDIUM` | 中等置信解析 | 解析方声明仍有不确定性。 |
+| `LOW` | 低置信解析 | 解析方声明信息不可靠或不足。 |
+
+## 29. ResolutionOutcome（解析结果）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `EXECUTABLE` | 可执行 | 未来解析 / 验证结果声明可进入写操作处理。 |
+| `READ_ONLY` | 可只读执行 | 未来解析 / 验证结果声明仅执行读取。 |
+| `NEED_CLARIFICATION` | 需要澄清 | 信息不唯一或不足，不能猜测。 |
+| `KNOWN_UNSUPPORTED` | 已识别但当前不支持 | 属于已知领域操作，当前尚不具备能力资格。 |
+| `REJECTED` | 已拒绝 | 请求被明确拒绝。 |
+
+OperationResolution 仅保存 outcome、confidence、plan 和证据等说明。Task 10.5-D 的
+PlanValidationResult 复用上述结果枚举，提供整个计划的纯规划裁决，未接入 InteractionDecision。
+EXECUTABLE 不是数据库授权，进入 Tool 前仍须通过 B 的引用解析和既有 Application 校验。
+
+## 30. OperationCapabilityStatus（操作能力状态）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `ENABLED` | 已启用 | 业务已确认且当前版本开放；仅具有进入执行层的资格。 |
+| `DISABLED` | 已禁用 | 业务明确禁止或当前不开放；不可执行。 |
+| `UNVERIFIED` | 待业务确认 | 需求或业务规则待确认；默认不可执行。 |
+| `NOT_IMPLEMENTED` | 尚未实现 | 已有需求或底层能力，但独立操作处理尚未完成；不可执行。 |
+
+OperationCatalog 按 ActionType 查询声明。is_executable 仅判断状态，不校验具体计划，
+不检查或调用 handler_name。默认范围、参数和业务限制见
+[Task 10.5-A](tasks/010-5a-operation-models.md)。调整开关不改变 OperationPlan Schema。
+
+## 31. ReferenceAccessMode（引用访问用途，Task 10.5-B）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `READ_ONLY` | 只读引用解析 | 多任务且焦点丢失时，可按旧交互约定选择最近绑定任务。 |
+| `WRITE` | 写操作引用解析 | 多任务且焦点丢失时必须报告歧义；解析过程本身仍然只读。 |
+
+这是引用安全策略，不是 InteractionDecision 或 ResolutionOutcome 的替代品。
+
+## 32. TaskResolutionSource（任务解析来源）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `ACTIVE` | 当前操作焦点 | 使用当前 Session 内有效的 active_task_id。 |
+| `ONLY_TASK` | 会话唯一任务 | 焦点失效时，会话仅有一个可用的授权任务。 |
+| `LATEST_BOUND` | 最近绑定任务 | 只读解析在多个候选任务中使用最后绑定的任务。 |
+| `EXPLICIT_WELL` | 显式井号 | 按指定井号找到唯一匹配任务。 |
+| `EXPLICIT_TASK` | 显式任务标识 | 指定 Task ID 已通过当前 Session Binding 核验。 |
+| `PREVIOUS_BOUND` | 上一绑定任务 | 在明确 current anchor 之前的相邻绑定任务。 |
+
+同井多任务只读选择最近绑定项时，match_count 记录匹配数；写操作只允许选匹配井的有效焦点。
+ResolvedExecutionReference 的 resolution_source 复用第 23 节 ExecutionReferenceKind；
+ResolvedScope 的 resolution_source 复用第 21 节 OperationScopeKind，没有新增平行选择器。
+
+## 33. IntervalIdentitySource（版本内层段身份来源）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `NATIVE` | 原生层段标识 | 原始行已有有效 interval_id，用该值构造带 Execution 限定的身份。 |
+| `EXECUTION_ORDINAL` | 版本内顺序派生标识 | 原始行没有 interval_id，用终态快照中从 1 开始的位置派生身份。 |
+
+当前 Fixture 没有原生层段标识。两种身份均绑定 Execution；原生字符串另外保存在 native_interval_id。
+生成的 interval_id 不写回历史 State，不是数据库主键，不表示跨版本同一地质层。
+运行中快照尚未固定时，不生成此身份。
+
+## 34. Operation Reference Resolver 稳定错误码
+
+| 错误码 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `AMBIGUOUS_TASK_REFERENCE` | 任务引用存在歧义 | 多任务写请求缺少明确焦点，或同井多任务无法唯一选择。 |
+| `AMBIGUOUS_EXECUTION_REFERENCE` | 执行版本引用存在歧义 | 候选 Execution 存在重复序号，无法唯一选择。 |
+| `INTERVAL_NOT_FOUND` | 当前版本不存在目标层段 | 序号或 ID 无匹配，或 ID 来自另一版本。 |
+| `DEPTH_REFERENCE_UNAVAILABLE` | 深度基准不可用 | 当前版本缺少原始深度数据，或请求基准与真实数据不一致。 |
+| `DEPTH_OUT_OF_RANGE` | 深度超出数据覆盖 | 点或区间超出当前 Execution 原始数据边界，不静默裁剪。 |
+| `FILTER_SET_UNRESOLVED` | 条件筛选集合尚未冻结 | resolved_ids 为 null，不能作为已解析集合使用。 |
+| `STALE_CONTEXT_REFERENCE` | 上下文引用失效 | 显式工作基线丢失、不存在或跨任务，或层段快照仍可能变化。 |
+| `AMBIGUOUS_SCOPE` | 操作范围无法可靠确定 | 层段行、顶底深度或原生 ID 无效，或原生 ID 重复；不能跳过坏行重新编号。 |
+
+复用 `TASK_NOT_FOUND`（任务不存在或未授权）、`PREVIOUS_TASK_NOT_FOUND`（无上一绑定任务）、
+`SESSION_WELL_NOT_FOUND`（会话内无指定井）和 `EXECUTION_NOT_FOUND`（当前任务无指定版本）。
+显式 Task / Execution ID 不能越过 Session Binding 或 Task 归属检查；错误不暴露其他会话事实。
+Resolver 只抛出项目现有 DataError，不负责映射成澄清对话或执行计划。
+
+## 35. ClarificationSlot（通用澄清槽位，Task 10.5-D）
+
+| 代码值 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `TASK` | 任务对象 | 任务缺失或复合写的任务归属尚未明确。 |
+| `EXECUTION` | 版本对象 | 尚需用户明确工作版本。 |
+| `SCOPE` | 作用范围 | 需要明确局部操作范围。 |
+| `TARGET` | 操作目标 | 操作已知，但目标未明确。 |
+| `VALUE` | 修改值 | 结果或参数缺少正式 ValueSpec。 |
+| `METHOD` | 方法或模型 | 由动作区分缺 method_id 或 model_id，不增加重复 MODEL 枚举。 |
+| `COMPARE_TARGET` | 比较对象 | 需要至少两个明确输入；不自动猜上一版。 |
+| `PERSIST_MODE` | 保存方式 | 需要明确预览还是创建正式版本。 |
+| `CONFLICT_RESOLUTION` | 冲突选择 | 无法映射到单一字段的约束冲突需用户重新描述；已知任务或版本冲突分别使用 TASK / EXECUTION。 |
+
+ClarificationIssue 同时保存可选 operation_id、slot、error_code、中文 message 和可选 evidence。
+通用澄清仍复用 `CLARIFICATION_REPLY`（澄清回复）和 `CORRECTION`（修正上一输入），
+没有新增平行意图或执行状态。普通回复只能补对应节点的待缺槽位；修正只操作尚未执行的 Partial Plan。
+
+## 36. Operation Planning 稳定错误码（Task 10.5-D）
+
+| 错误码 | 中文名称 | 中文语义 |
+| --- | --- | --- |
+| `MULTI_OPERATION_CONFLICT` | 复合操作存在冲突 | 保存/预览约束、禁止全量重跑或已确定全部被排除的限定范围冲突；需澄清整个计划。 |
+| `CONDITIONAL_EXECUTION_UNSUPPORTED` | 条件式自动执行当前不支持 | 条件结构可保存和校验，但不求值、不循环、不执行任意节点。 |
+| `CROSS_TASK_WRITE_UNSUPPORTED` | 跨任务复合写当前不支持 | 多个写节点指向不同明确 Task，整个计划不执行。 |
+| `COMPARE_TARGET_REQUIRED` | 比较对象不足 | 少于两个不同的结构化输入，需补比较对象。 |
+| `VIEW_ACTIVE_CONTEXT_CONFLICT` | 查看与操作上下文冲突 | 跨任务双焦点返回 TASK 槽位；同任务历史 View 且无工作基线返回 EXECUTION 槽位，普通澄清可以补齐。 |
+| `INVALID_OPERATION_PLAN` | 操作计划结构非法 | 重复节点、无效端点/输入/条件/输出引用、自环或依赖环；也拒绝未经合并的交互回复直接执行。 |
+| `CLARIFICATION_SLOT_INVALID` | 澄清槽位修补非法 | 没有有效 Pending、修补节点不明确、越权补槽或普通回复试图修改锁定引用。 |
+
+复用 `CLARIFICATION_REQUIRED`（需要补充澄清）、`UNSUPPORTED_OPERATION`（当前操作能力不支持）
+以及 `OUT_OF_DOMAIN`（领域外请求）。能力事实保留第 30 节全部状态；非 ENABLED 状态不合并丢失。
+条件式和跨任务复合写返回 KNOWN_UNSUPPORTED（已识别但当前不支持）；缺槽和可澄清冲突返回
+NEED_CLARIFICATION（需要澄清）；非法图返回 REJECTED（已拒绝）。
+CAPABILITY_QUERY（能力询问）对合法结构始终返回 READ_ONLY（可只读执行），不提供写执行计划。
+
+## 37. Operation Execution Bridge 结果与稳定代码（Task 10.5-E1）
+
+OperationBridgeResult 的 `SUCCESS`（命令成功）仅表示只读命令完成或后台写命令已提交，
+不表示 Workflow 已完成；执行终态仍看 TaskCommandResult.execution_status。
+能力询问返回 `READ_ONLY`（只读能力说明），不调用业务命令。失败复用
+`REJECTED`（已拒绝）、`NEED_CLARIFICATION`（需要澄清）、
+`KNOWN_UNSUPPORTED`（已识别但当前不支持），另保留完整 PlanValidationResult。
+
+| 稳定代码 | 中文名称 | 边界 |
+| --- | --- | --- |
+| `INITIAL_INPUT_ROUTE_REQUIRED` | 首次解释需要输入资料入口 | generic Bridge 不创建空 Task/InputVersion/Execution；已有上传和 Fixture 入口继续支持首次解释。 |
+| `OPERATION_SESSION_IDENTITY_REQUIRED` | 操作需要会话身份 | runner 缺少服务端 Session Identity 时关闭执行入口，不用聊天或 Active 冒充授权。 |
+| `HISTORICAL_BASE_WRITE_UNSUPPORTED` | 历史基线写入当前不支持 | 写操作选中版本与 Task 当前版本不同，不把历史写转换成当前写。 |
+| `COMPOUND_EXECUTION_UNSUPPORTED` | 当前执行桥不支持该复合执行 | 除同任务同版本参数聚合和纯读以外的多节点执行，以及无法消费的数据/比较依赖，均不部分执行。 |
+| `STATUS_EXECUTION_SELECTION_UNSUPPORTED` | 状态查询暂不支持历史版本选择 | STATUS 只接受当前版本语义，不忽略明确历史选择。 |
+| `UNSUPPORTED_VALUE_MODE` | 当前不支持该值变更模式 | 只支持 ABSOLUTE（绝对值），不自动换算增量或比例变化。 |
+
+复用既有 INVALID_OPERATION_PLAN（操作计划结构非法）、MULTI_OPERATION_CONFLICT（复合操作存在冲突）、
+UNSUPPORTED_OPERATION（当前操作能力不支持）、UNSUPPORTED_PARAMETER（当前参数不支持）、
+STALE_CONTEXT_REFERENCE（上下文引用失效）、STALE_EXECUTION_PLAN（执行计划已失效）、
+TASK_EXECUTION_ACTIVE（任务仍有活跃执行）及 B Resolver / Application 的既有错误。
+参数名与目标不一致拒绝；重复参数同值去重、异值整体冲突。并发版本前置条件不提供历史分支功能。
+
+
+## 38. Operation Tool 交互模式与未解析层号（Task 10.5-E2）
+
+| 代码值 | 中文含义 | 边界 |
+| --- | --- | --- |
+| `PLAN` | 提交新计划 | 严格 PartialOperationPlan；新请求清除旧 Pending。 |
+| `CLARIFICATION_REPLY` | 补齐待澄清计划 | ClarificationPatch；普通补齐只能修改允许槽位。 |
+| `CANCEL` | 取消待澄清请求 | 不取消后台 Execution；清 Pending 后零业务副作用。 |
+| `SET_ACTIVE_CONTEXT` | 显式切换操作焦点 | WRITE（写安全）引用解析；不创建 Execution，不是业务 Action。 |
+| `INTERVAL_ORDINAL` | 单层号引用 | 一基正整数，仅 Partial / 模型输入层允许。 |
+| `MULTI_INTERVAL_ORDINAL` | 多层号引用 | 非空正整数，稳定去重，必须全部解析成功。 |
+
+复用 CORRECTION（修正上一输入）、INVALID_OPERATION_PLAN（操作结构非法）及既有错误码。
+未新增 Execution、Workflow 或持久化状态。

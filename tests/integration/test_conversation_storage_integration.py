@@ -15,6 +15,21 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from cnlc_agent.demo.demo_agent import MockTaskShellCredential
+from cnlc_agent.demo.interaction_context import (
+    ActiveContext,
+    CompareContext,
+    ContextExecutionReference,
+    InteractionContext,
+    InteractionContextStore,
+    RecentContext,
+    SelectedIntervalReference,
+)
+from cnlc_agent.demo.operation_clarification import (
+    PENDING_OPERATION_KEY,
+    OperationClarificationStore,
+)
+from cnlc_agent.demo.operation_models import IntervalScope
+from cnlc_agent.demo.operation_parser import PartialOperationPlan, finalize_partial_plan
 from cnlc_agent.domain.models import TaskRequest
 from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
 from cnlc_agent.domain.state import InterpretationState
@@ -101,6 +116,29 @@ async def test_real_conversation_survives_cache_loss_and_restart(migrated_conver
                 },
             },
         )
+        runtime = InteractionContextStore(session_state.middle_context)
+        runtime.set_active_base(task_id, "execution-V2", IntervalScope(interval_id="layer-5"))
+        runtime.set_view_context("view-task", "view-V1", IntervalScope(interval_id="layer-3"))
+        runtime.set_recent_context(RecentContext(
+            last_operation_id="op-1",
+            last_scenario_id="scenario-1",
+            last_compare=CompareContext(
+                left=ContextExecutionReference(task_id=task_id, execution_id="execution-V2"),
+                right=ContextExecutionReference(task_id="view-task", execution_id="view-V1"),
+            ),
+            selected_intervals=[SelectedIntervalReference(
+                task_id=task_id, execution_id="execution-V2", interval_id="layer-5"
+            )],
+        ))
+        full_context = runtime.snapshot
+        pending_plan = PartialOperationPlan.model_validate({
+            "input_classification": "EXECUTION_REQUEST", "original_instruction": "改成0.16",
+            "operations": [{"operation_id": "change", "action": "MODIFY_PARAMETER"}],
+        })
+        pending_store = OperationClarificationStore(session_state.middle_context, ttl_seconds=60)
+        operation_pending = pending_store.save(
+            pending_plan, finalize_partial_plan(pending_plan).issues, turn=1
+        )
         async with storage:
             await storage.upsert_session(
                 user_id,
@@ -156,6 +194,25 @@ async def test_real_conversation_survives_cache_loss_and_restart(migrated_conver
             assert archived is not None
             assert archived.state.middle_context["cnlc_active_task_id"] == task_id
             assert "cnlc_pending_clarification" not in archived.state.middle_context
+            assert "cnlc_interaction_context" not in archived.state.middle_context
+            assert PENDING_OPERATION_KEY not in archived.state.middle_context
+            assert InteractionContextStore(session_state.middle_context).snapshot == full_context
+            assert "cnlc_pending_clarification" in session_state.middle_context
+
+            # Redis hit 模拟刷新：新读取对象保留完整 Active / View / Recent。
+            await storage.list_sessions(user_id, agent_id)
+            cached = await storage.get_session(user_id, agent_id, session_id)
+            assert cached is not None
+            assert cached.state.middle_context[PENDING_OPERATION_KEY] == (
+                operation_pending.model_dump(mode="json")
+            )
+            assert InteractionContextStore(cached.state.middle_context).snapshot == full_context
+            await storage.update_session_state(user_id, agent_id, session_id, cached.state)
+            archived = await conversation.get_session(user_id, agent_id, session_id)
+            assert archived is not None
+            assert "cnlc_interaction_context" not in archived.state.middle_context
+            assert PENDING_OPERATION_KEY not in archived.state.middle_context
+            assert "cnlc_pending_clarification" not in archived.state.middle_context
 
             # 同时删除 AgentScope chat cache 和业务运行快照，模拟 Redis flush 的关键部分。
             state_cache = RedisInterpretationStateStore(redis, f"cnlc:test:{token}", 60)
@@ -177,6 +234,11 @@ async def test_real_conversation_survives_cache_loss_and_restart(migrated_conver
             assert restored is not None
             assert restored.state.middle_context["cnlc_active_task_id"] == task_id
             assert "cnlc_pending_clarification" not in restored.state.middle_context
+            assert "cnlc_interaction_context" not in restored.state.middle_context
+            assert PENDING_OPERATION_KEY not in restored.state.middle_context
+            assert InteractionContextStore(restored.state.middle_context).snapshot == (
+                InteractionContext(active=ActiveContext(task_id=task_id))
+            )
             assert [message.id for message in messages] == [
                 "message-user",
                 "message-assistant",

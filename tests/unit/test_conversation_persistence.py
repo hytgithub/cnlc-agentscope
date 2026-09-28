@@ -9,7 +9,20 @@ from fakeredis.aioredis import FakeRedis
 
 from cnlc_agent.config.settings import PersistenceSettings
 from cnlc_agent.demo.demo_agent import MockTaskShellCredential
-from cnlc_agent.infrastructure.conversation import DurableConversationStorage
+from cnlc_agent.demo.interaction_context import (
+    ActiveContext,
+    InteractionContext,
+    InteractionContextStore,
+    RecentContext,
+    SelectedIntervalReference,
+)
+from cnlc_agent.demo.operation_clarification import (
+    PENDING_OPERATION_KEY,
+    OperationClarificationStore,
+)
+from cnlc_agent.demo.operation_models import IntervalScope
+from cnlc_agent.demo.operation_parser import PartialOperationPlan, finalize_partial_plan
+from cnlc_agent.infrastructure.conversation import DurableConversationStorage, _durable_session
 
 
 class MemoryConversationRepository:
@@ -21,8 +34,7 @@ class MemoryConversationRepository:
         self.purge_cutoff: datetime | None = None
 
     async def upsert_session(self, record: SessionRecord) -> SessionRecord:
-        durable = record.model_copy(deep=True)
-        durable.state.middle_context.pop("cnlc_pending_clarification", None)
+        durable = _durable_session(record)
         self.sessions[(record.user_id, record.agent_id, record.id)] = durable
         return durable.model_copy(deep=True)
 
@@ -125,6 +137,25 @@ async def test_durable_cache_ttl_restore_and_credential_isolation():
             "cnlc_pending_clarification": {"unsafe": "old"},
         }
     )
+    runtime = InteractionContextStore(state.middle_context)
+    runtime.set_active_base("task-1", "execution-2", IntervalScope(interval_id="layer-5"))
+    runtime.set_view_context("task-2", "execution-1", IntervalScope(interval_id="layer-3"))
+    runtime.set_recent_context(RecentContext(
+        last_operation_id="op-1",
+        last_scenario_id="scenario-1",
+        selected_intervals=[SelectedIntervalReference(
+            task_id="task-1", execution_id="execution-2", interval_id="layer-5"
+        )],
+    ))
+    full_context = runtime.snapshot
+    pending_plan = PartialOperationPlan.model_validate({
+        "input_classification": "EXECUTION_REQUEST", "original_instruction": "改成0.16",
+        "operations": [{"operation_id": "change", "action": "MODIFY_PARAMETER"}],
+    })
+    pending_store = OperationClarificationStore(state.middle_context, ttl_seconds=60)
+    operation_pending = pending_store.save(
+        pending_plan, finalize_partial_plan(pending_plan).issues, turn=1
+    )
     async with storage:
         record = await storage.upsert_session(
             "user-1",
@@ -157,16 +188,36 @@ async def test_durable_cache_ttl_restore_and_credential_isolation():
         assert archived is not None
         assert archived.state.middle_context["cnlc_active_task_id"] == "task-1"
         assert "cnlc_pending_clarification" not in archived.state.middle_context
+        assert "cnlc_interaction_context" not in archived.state.middle_context
+        assert PENDING_OPERATION_KEY not in archived.state.middle_context
+        # sanitizer 只处理归档副本，不能破坏当前 AgentState 或 Redis 中的短期状态。
+        assert InteractionContextStore(state.middle_context).snapshot == full_context
+        assert "cnlc_pending_clarification" in state.middle_context
         await storage.list_sessions("user-1", "agent-1")
         cached = await storage.get_session("user-1", "agent-1", record.id)
         assert cached is not None
+        assert cached.state.middle_context[PENDING_OPERATION_KEY] == (
+            operation_pending.model_dump(mode="json")
+        )
         assert "cnlc_pending_clarification" in cached.state.middle_context
+        assert InteractionContextStore(cached.state.middle_context).snapshot == full_context
+
+        # 状态更新路径也必须过滤 durable 副本并保留缓存中的完整上下文。
+        await storage.update_session_state("user-1", "agent-1", record.id, cached.state)
+        archived = await repository.get_session("user-1", "agent-1", record.id)
+        assert "cnlc_interaction_context" not in archived.state.middle_context
+        assert PENDING_OPERATION_KEY not in archived.state.middle_context
 
         await redis.delete(session_key, message_key)
         restored = await storage.get_session("user-1", "agent-1", record.id)
         messages, has_more = await storage.list_messages("user-1", record.id)
         assert restored is not None
         assert "cnlc_pending_clarification" not in restored.state.middle_context
+        assert "cnlc_interaction_context" not in restored.state.middle_context
+        assert PENDING_OPERATION_KEY not in restored.state.middle_context
+        assert InteractionContextStore(restored.state.middle_context).snapshot == (
+            InteractionContext(active=ActiveContext(task_id="task-1"))
+        )
         assert [message.id for message in messages] == ["message-1"]
         assert has_more is False
         assert 0 < await redis.ttl(session_key) <= 60

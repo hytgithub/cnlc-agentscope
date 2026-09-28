@@ -1,5 +1,7 @@
 # 交互状态与集中策略（Current Design，Task 10.3）
 
+> E2 当前入口以 [交互设计](08-intent-and-interaction-design.md) 为准。下文 direct Tool 与旧 Pending 表保留为 Task 10.3 兼容行为记录；正式 ReAct 使用统一 Operation Tool、通用 Pending 及 Active/View 分离。
+
 状态、枚举、任务引用和稳定错误码的统一中文释义见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。本文保留英文代码值以便和代码、日志、测试一一对应。
 
 ## 1. 边界

@@ -244,31 +244,32 @@ Orchestrator
 
 ## 7. 任务级 Action Space
 
-纯文本 ReAct 当前只能选择以下任务级 Tool：
+Task 10.5-E2 的正式模型侧只有两个入口：
 
 ```text
-run_well_interpretation
-modify_well_interpretation
-rerun_well_interpretation
-get_interpretation_status
-get_interpretation_report
+run_well_interpretation（已校验上传 / 明确 Fixture 首次解释）
+interpret_interpretation_operation（已有任务操作与交互控制）
 ```
 
 典型链路：
 
 ```text
-“把孔隙度、渗透率改成 0.16”
+AgentScope ReAct / qwen-plus
 ↓
-AgentScope ReAct
+Operation Tool / OperationInteractionController
 ↓
-modify_well_interpretation
+Operation Context / Task、Execution、Scope Resolver / PlanValidator
 ↓
-Pydantic / Session Ownership 校验
+OperationExecutionBridge
 ↓
-DependencyResolver
+Task Commands / Application / DependencyResolver
 ↓
-新 Execution
+新 Execution / W01-W10 Workflow
 ```
+
+旧 direct Tool 和 legacy builder 保留供兼容测试，但不暴露给正式 ReAct。
+Pending 由 Session Runner 持有，读操作更新 View，写操作更新 Active；显式切井不创建 Execution。
+层号仅存在于 Partial 输入，稳定层段 ID 由服务器解析。完整计划先验证，再执行聚合命令。
 
 专业底层 Tool，例如 `calculate_sw`、`identify_lithology`，不暴露给外层 ReAct 直接调用。
 
@@ -623,7 +624,7 @@ AgentScope ReAct
 qwen-plus
 ```
 
-负责语义意图和任务级 Tool 选择。
+负责语义意图和有限 Operation 请求，服务器负责引用解析、整体校验与命令适配。
 
 `MockTaskShellModel` 只用于离线联调，不是生产 IntentClassifier。
 
@@ -824,9 +825,11 @@ LoggingInterpretationDemoAgent
 ↓
 qwen-plus ReAct
 ↓
-modify_well_interpretation
+interpret_interpretation_operation
 ↓
-Pydantic + Session Ownership
+Operation Controller / Resolver / PlanValidator / Execution Bridge
+↓
+Task Commands / Pydantic + Session Ownership
 ↓
 DependencyResolver / ExecutionPlan
 ↓

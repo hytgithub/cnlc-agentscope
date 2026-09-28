@@ -7,6 +7,7 @@ interface HintSource {
 
 const INTERPRETATION_WRITE_TOOLS = new Set([
 	'run_well_interpretation',
+	'interpret_interpretation_operation',
 	'modify_well_interpretation',
 	'rerun_well_interpretation',
 ]);

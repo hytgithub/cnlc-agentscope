@@ -11,6 +11,7 @@ from agentscope.tool import Toolkit
 
 from cnlc_agent.config.settings import AppSettings, PersistenceSettings
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent, MockTaskShellModel
+from cnlc_agent.demo.operation_tool import build_agent_task_tools
 from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import ApplicationError, ToolError
@@ -36,7 +37,7 @@ def make_agent(data_dir, provider="fixture", mode="demo"):
         name="demo",
         system_prompt="",
         model=MockTaskShellModel(),
-        toolkit=Toolkit(tools=build_task_tools(runner)),
+        toolkit=Toolkit(tools=build_agent_task_tools(runner)),
         stream_step_delay_seconds=0,
         stream_report_chunk_delay_seconds=0,
     )
@@ -68,7 +69,7 @@ async def test_no_task_does_not_create_or_guess(data_dir, instruction):
     assert len(results) == 1 and results[0].metadata["error_code"] == "TASK_NOT_FOUND"
     assert "请先上传" in reply
     assert runner.observed_task_ids == set()
-    assert runner.pending_clarification() is None
+    assert runner.pending_operation_clarification() is None
     await runner.dispatcher.shutdown()
 
 
@@ -79,7 +80,12 @@ async def test_clarification_completes_once_after_compression(data_dir):
         results, reply, _ = await ask(agent, "改成0.16")
         assert results[0].metadata["error_code"] == "CLARIFICATION_REQUIRED"
         assert "请明确" in reply
-        assert runner.pending_clarification().known_value == 0.16
+        assert (
+            runner.pending_operation_clarification()
+            .partial_plan.operations[0]
+            .parameters.value.value
+            == 0.16
+        )
         assert len(await runner.repository.list_executions(first.task_id)) == 1
         await agent.compress_context(
             context_config=ContextConfig(trigger_ratio=0.01, reserve_ratio=0.005)
@@ -88,7 +94,7 @@ async def test_clarification_completes_once_after_compression(data_dir):
         modified = results[0].metadata["result"]
         assert modified["command"] == "MODIFY" and modified["effective_override"]["por"] == 0.16
         assert modified["task_id"] == first.task_id
-        assert runner.pending_clarification() is None
+        assert runner.pending_operation_clarification() is None
         assert len(await runner.repository.list_executions(first.task_id)) == 2
         report = "".join(event.delta for event in events if isinstance(event, TextBlockDeltaEvent))
         assert report == await runner.repository.get_execution_report(modified["execution_id"])
@@ -105,7 +111,7 @@ async def test_pending_expires_after_unrelated_turn(data_dir, unrelated):
     try:
         await ask(agent, "改成0.16")
         await ask(agent, unrelated)
-        assert runner.pending_clarification() is None
+        assert runner.pending_operation_clarification() is None
         results, reply, _ = await ask(agent, "孔隙度")
         assert not results and "名称和值" in reply
         assert len(await runner.repository.list_executions(first.task_id)) == 1
@@ -153,17 +159,17 @@ async def test_running_rejects_writes_and_reads_live_step(data_dir, monkeypatch)
 @pytest.mark.parametrize(
     "instruction,code",
     [
-        ("上一版报告", "REPORT_NOT_FOUND"),
+        ("上一版报告", "EXECUTION_NOT_FOUND"),
         ("上一口井的报告", "PREVIOUS_TASK_NOT_FOUND"),
         ("WELL_UNKNOWN 的报告", "SESSION_WELL_NOT_FOUND"),
         ("只重新算SW", "UNSUPPORTED_OPERATION"),
         ("重新识别岩性", "UNSUPPORTED_OPERATION"),
         ("只重新划分层段", "UNSUPPORTED_OPERATION"),
-        ("Rw改成0.08", "UNSUPPORTED_PARAMETER"),
-        ("Archie m改成2", "UNSUPPORTED_PARAMETER"),
-        ("含水饱和度改成0.3", "UNSUPPORTED_PARAMETER"),
-        ("把孔隙度改成0.16，然后全部重跑一次", "CLARIFICATION_REQUIRED"),
-        ("修改POR，再重新算SW，再比较上一版", "CLARIFICATION_REQUIRED"),
+        ("Rw改成0.08", "UNSUPPORTED_OPERATION"),
+        ("Archie m改成2", "UNSUPPORTED_OPERATION"),
+        ("含水饱和度改成0.3", "UNSUPPORTED_OPERATION"),
+        ("把孔隙度改成0.16，然后全部重跑一次", "COMPOUND_EXECUTION_UNSUPPORTED"),
+        ("修改POR，再重新算SW，再比较上一版", "UNSUPPORTED_OPERATION"),
         ("为什么2035-2038是水层？", "UNSUPPORTED_OPERATION"),
         ("什么是含水饱和度", "UNSUPPORTED_OPERATION"),
     ],
@@ -292,10 +298,14 @@ async def test_model_batch_conflict_is_rejected_before_any_write(data_dir, monke
             content=[
                 ToolCallBlock(
                     id=uuid4().hex,
-                    name="modify_well_interpretation",
-                    input=json.dumps({"por": 0.16}),
+                    name="interpret_interpretation_operation",
+                    input=json.dumps({"request": {"mode": "CANCEL"}}),
                 ),
-                ToolCallBlock(id=uuid4().hex, name="rerun_well_interpretation", input="{}"),
+                ToolCallBlock(
+                    id=uuid4().hex,
+                    name="interpret_interpretation_operation",
+                    input=json.dumps({"request": {"mode": "CANCEL"}}),
+                ),
             ],
             is_last=True,
         )
@@ -324,8 +334,15 @@ async def test_pending_is_anchored_to_named_well_and_refresh_state(data_dir, fix
     try:
         results, _, _ = await ask(agent, "WELL_MOCK_002 改成0.16")
         assert results[0].metadata["error_code"] == "CLARIFICATION_REQUIRED"
-        assert runner.pending_clarification().task_id == second.task_id
-        assert runner.pending_clarification().known_value == 0.16
+        assert (
+            runner.pending_operation_clarification().locked_references[0].task_id == second.task_id
+        )
+        assert (
+            runner.pending_operation_clarification()
+            .partial_plan.operations[0]
+            .parameters.value.value
+            == 0.16
+        )
         assert runner.active_task_id == first.task_id
         # 模拟 Browser refresh 后 AgentScope 重载同一 Session State，runner 仍属于同 Session。
         restored_state = type(agent.state).model_validate_json(agent.state.model_dump_json())
@@ -334,13 +351,15 @@ async def test_pending_is_anchored_to_named_well_and_refresh_state(data_dir, fix
             system_prompt="",
             model=MockTaskShellModel(),
             state=restored_state,
-            toolkit=Toolkit(tools=build_task_tools(runner)),
+            toolkit=Toolkit(tools=build_agent_task_tools(runner)),
             stream_step_delay_seconds=0,
             stream_report_chunk_delay_seconds=0,
         )
-        tools = {tool.name: tool for tool in build_task_tools(runner)}
-        # 工具未显式给引用时，parameter_name 仍使用服务端固定的 pending 目标。
-        completed = await tools["modify_well_interpretation"].call(parameter_name="por")
+        tools = {tool.name: tool for tool in build_agent_task_tools(runner)}
+        # Patch 使用服务端锁定目标，刷新后不从聊天补旧值。
+        completed = await tools["interpret_interpretation_operation"].call(
+            request={"mode": "CLARIFICATION_REPLY", "patch": {"target": "POROSITY"}}
+        )
         changed = completed.metadata["result"]
         assert changed["task_id"] == second.task_id
         await runner.wait_for_completion(second.task_id, changed["execution_id"])
@@ -365,5 +384,185 @@ async def test_out_of_domain_does_not_call_any_task_tool(data_dir, instruction):
         results, reply, _ = await ask(agent, instruction)
         assert not results and "只处理单井" in reply
         assert len(await runner.repository.list_executions(first.task_id)) == 1
+    finally:
+        await runner.dispatcher.shutdown()
+
+
+@pytest.mark.parametrize("malformed", ["unknown_field", "invalid_schema"])
+async def test_model_invalid_structure_stops_once_and_keeps_safe_output(
+    data_dir, monkeypatch, malformed
+):
+    """框架可能修复 JSON 或先于 on_acting 拒绝，两个出口均须零写入且不重试。"""
+    from uuid import uuid4
+
+    from agentscope.message import ToolCallBlock
+    from agentscope.model import ChatResponse
+
+    agent, runner = make_agent(data_dir)
+    first = await start(runner)
+    calls = 0
+
+    async def invalid(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        node = {
+            "operation_id": "op1",
+            "action": "MODIFY_PARAMETER",
+            "target": "POROSITY",
+            "parameters": {"value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}},
+        }
+        if malformed == "unknown_field":
+            node["scope_typo"] = {"kind": "INTERVAL_ORDINAL", "ordinal": 5}
+        else:
+            node["parameters"]["value"]["value"] = "https://internal.invalid/secret"
+        return ChatResponse(
+            content=[
+                ToolCallBlock(
+                    id=uuid4().hex,
+                    name="interpret_interpretation_operation",
+                    input=json.dumps(
+                        {
+                            "request": {
+                                "mode": "PLAN",
+                                "plan": {
+                                    "input_classification": "EXECUTION_REQUEST",
+                                    "persist_mode": "CREATE_VERSION",
+                                    "original_instruction": "修改",
+                                    "operations": [node],
+                                },
+                            }
+                        }
+                    ),
+                )
+            ],
+            is_last=True,
+        )
+
+    monkeypatch.setattr(agent.model, "_call_api", invalid)
+    try:
+        results, reply, _ = await ask(agent, "修改")
+        assert calls == 1 and len(results) == 1
+        assert results[0].metadata["error_code"] == "INVALID_OPERATION_PLAN"
+        assert "internal.invalid" not in reply
+        assert len(await runner.repository.list_executions(first.task_id)) == 1
+    finally:
+        await runner.dispatcher.shutdown()
+
+
+async def test_cancelled_value_cannot_be_reintroduced_as_new_model_plan(data_dir, monkeypatch):
+    """即使模型从聊天记忆补造旧值，取消后的新 PLAN 仍须以本轮数字为依据。"""
+    from uuid import uuid4
+
+    from agentscope.message import ToolCallBlock
+    from agentscope.model import ChatResponse
+
+    agent, runner = make_agent(data_dir)
+    first = await start(runner)
+    try:
+        await ask(agent, "改成0.16")
+        await ask(agent, "算了")
+        assert runner.pending_operation_clarification() is None
+
+        async def resurrect(*args, **kwargs):
+            return ChatResponse(
+                content=[
+                    ToolCallBlock(
+                        id=uuid4().hex,
+                        name="interpret_interpretation_operation",
+                        input=json.dumps(
+                            {
+                                "request": {
+                                    "mode": "PLAN",
+                                    "plan": {
+                                        "input_classification": "EXECUTION_REQUEST",
+                                        "persist_mode": "CREATE_VERSION",
+                                        "original_instruction": "孔隙度改成0.16",
+                                        "operations": [
+                                            {
+                                                "operation_id": "op1",
+                                                "action": "MODIFY_PARAMETER",
+                                                "target": "POROSITY",
+                                                "parameters": {
+                                                    "value": {
+                                                        "mode": "ABSOLUTE",
+                                                        "value": 0.16,
+                                                        "unit": "1",
+                                                    }
+                                                },
+                                            }
+                                        ],
+                                    },
+                                }
+                            }
+                        ),
+                    )
+                ],
+                is_last=True,
+            )
+
+        monkeypatch.setattr(agent.model, "_call_api", resurrect)
+        result, _, _ = await ask(agent, "孔隙度")
+        assert result[0].metadata["error_code"] == "INVALID_OPERATION_PLAN"
+        assert len(await runner.repository.list_executions(first.task_id)) == 1
+    finally:
+        await runner.dispatcher.shutdown()
+
+
+@pytest.mark.parametrize("failure", ["grounding_mismatch", "malformed_patch"])
+async def test_invalid_clarification_reply_preserves_pending(data_dir, monkeypatch, failure):
+    """模型一次错误抽取或坏 Schema 不得中断用户正在补齐的计划。"""
+    from uuid import uuid4
+
+    from agentscope.message import ToolCallBlock
+    from agentscope.model import ChatResponse
+
+    agent, runner = make_agent(data_dir)
+    first = await start(runner)
+    try:
+        await ask(agent, "帮我改一下")
+        await ask(agent, "孔隙度")
+        before = runner.pending_operation_clarification()
+        assert {issue.slot for issue in before.issues} == {"VALUE"}
+        original = agent.model._call_api
+
+        async def invalid(*args, **kwargs):
+            patch = {
+                "value": {"mode": "ABSOLUTE", "value": 0.18, "unit": "1"}
+            }
+            if failure == "malformed_patch":
+                patch["unknown_field"] = "rejected"
+                patch["value"]["value"] = 0.16
+            return ChatResponse(
+                content=[
+                    ToolCallBlock(
+                        id=uuid4().hex,
+                        name="interpret_interpretation_operation",
+                        input=json.dumps(
+                            {
+                                "request": {
+                                    "mode": "CLARIFICATION_REPLY",
+                                    "patch": patch,
+                                }
+                            }
+                        ),
+                    )
+                ],
+                is_last=True,
+            )
+
+        monkeypatch.setattr(agent.model, "_call_api", invalid)
+        rejected, _, _ = await ask(agent, "0.16")
+        assert rejected[0].metadata["error_code"] == "INVALID_OPERATION_PLAN"
+        retained = runner.pending_operation_clarification()
+        assert retained is not None
+        assert retained.partial_plan == before.partial_plan
+        assert retained.locked_references == before.locked_references
+        assert len(await runner.repository.list_executions(first.task_id)) == 1
+
+        monkeypatch.setattr(agent.model, "_call_api", original)
+        completed, _, _ = await ask(agent, "0.16")
+        assert completed[0].metadata["result"]["effective_override"]["por"] == 0.16
+        assert len(await runner.repository.list_executions(first.task_id)) == 2
+        assert runner.pending_operation_clarification() is None
     finally:
         await runner.dispatcher.shutdown()

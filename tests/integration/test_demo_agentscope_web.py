@@ -23,11 +23,11 @@ from cnlc_agent.demo.agentscope_app import (
     demo_agent_tools,
 )
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
-from cnlc_agent.demo.task_tools import ALLOWED_TASK_TOOLS, build_task_tools
+from cnlc_agent.demo.operation_tool import ALLOWED_AGENT_TASK_TOOLS as ALLOWED_TASK_TOOLS
+from cnlc_agent.demo.operation_tool import build_agent_task_tools as build_task_tools
 from cnlc_agent.demo.tools import (
     RUN_TOOL_NAME,
     InterpretationToolRunner,
-    build_interpretation_tool,
 )
 from cnlc_agent.domain.enums import StepId, StepStatus
 
@@ -72,7 +72,15 @@ async def test_tool_reuses_task_service_and_returns_stable_result(data_dir):
 
 
 async def test_demo_agent_registers_and_calls_only_interpretation_tool(data_dir):
-    tool = build_interpretation_tool(_runner(data_dir))
+    from cnlc_agent.demo.task_tools import TaskCommandRunner
+
+    tools = build_task_tools(
+        TaskCommandRunner(
+            AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),
+            PersistenceSettings(persistence="memory", _env_file=None),
+        )
+    )
+    tool = tools[0]
     model = cast(
         ChatModelBase,
         SimpleNamespace(model="qwen-plus"),
@@ -81,7 +89,7 @@ async def test_demo_agent_registers_and_calls_only_interpretation_tool(data_dir)
         name="ignored",
         system_prompt="ignored",
         model=model,
-        toolkit=Toolkit(tools=[tool, *build_task_tools()[1:]]),
+        toolkit=Toolkit(tools=tools),
     )
     schemas = await agent.toolkit.get_tool_schemas()
     assert {schema["function"]["name"] for schema in schemas} == ALLOWED_TASK_TOOLS
@@ -101,8 +109,10 @@ async def test_demo_agent_registers_and_calls_only_interpretation_tool(data_dir)
     assert isinstance(response, ToolResponse)
     assert isinstance(response.content[0], TextBlock)
     payload = json.loads(response.content[0].text)
-    assert payload["status"] == "SUCCESS"
-    assert list(payload["step_statuses"]) == [step.value for step in StepId]
+    assert payload["execution_status"] == "QUEUED"
+    await tool._runner.wait_for_completion(payload["task_id"], payload["execution_id"])
+    await tool._runner.dispatcher.shutdown()
+    assert payload["command"] == "START"
     assert "report_markdown" in payload
 
 

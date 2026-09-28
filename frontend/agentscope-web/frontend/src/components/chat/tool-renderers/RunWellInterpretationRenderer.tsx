@@ -14,11 +14,13 @@ interface TaskToolResult {
 	current_step?: string | null;
 	effective_override?: Record<string, unknown>;
 	summary?: string;
+	message?: string;
 	report_markdown?: string | null;
 }
 
 const LABELS: Record<string, string> = {
 	run_well_interpretation: '单井测井解释',
+	interpret_interpretation_operation: '测井操作',
 	modify_well_interpretation: '解释参数修改',
 	rerun_well_interpretation: '全流程重跑',
 	get_interpretation_status: '解释执行状态',
@@ -66,6 +68,7 @@ function renderBody(pair: ToolCallWithResult): ReactNode {
 				{payload.current_step && <Badge variant="outline">{payload.current_step}</Badge>}
 			</div>
 			{changed.length > 0 && payload.command === 'MODIFY' && <div>{changed.join(' · ')}</div>}
+			{payload.message && <div>{payload.message}</div>}
 			{payload.summary && <div className="text-muted-foreground">{payload.summary}</div>}
 			{payload.execution_status === 'QUEUED' && <div className="text-muted-foreground">任务已提交</div>}
 			{payload.report_markdown && <Markdown>{payload.report_markdown}</Markdown>}

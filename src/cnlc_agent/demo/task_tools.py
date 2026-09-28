@@ -32,11 +32,24 @@ from cnlc_agent.application.ports import TaskRepository
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
+from cnlc_agent.demo.interaction_context import (
+    InteractionContext,
+    InteractionContextStore,
+    RecentContext,
+)
 from cnlc_agent.demo.interaction_state import (
     InteractionPolicy,
     InteractionSnapshot,
     PendingClarification,
 )
+from cnlc_agent.demo.operation_clarification import (
+    ClarificationPatch,
+    LockedOperationReference,
+    OperationClarificationStore,
+    PendingOperationClarification,
+)
+from cnlc_agent.demo.operation_models import OperationScope
+from cnlc_agent.demo.operation_parser import ClarificationIssue, PartialOperationPlan
 from cnlc_agent.demo.task_context import SessionTaskResolver, TaskReference
 from cnlc_agent.domain.errors import ApplicationError, InfrastructureError
 from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, ExecutionStatus
@@ -84,28 +97,101 @@ class TaskCommandRunner:
         # 仅作为进程内加速缓存；postgres-redis 模式的 canonical source 是绑定表。
         self.observed_task_ids: set[str] = set()
         self._observed_task_order: list[str] = []
-        self.active_task_id: str | None = None
         self._session_runtime_context: dict[str, Any] = {}
+        self._interaction_context_store = InteractionContextStore(self._session_runtime_context)
         self._interaction_owner = uuid4().hex
         self._interaction_turn = 0
+        self._operation_store = OperationClarificationStore(
+            self._session_runtime_context, ttl_seconds=self.settings.clarification_ttl_seconds
+        )
+        # 一个 HTTP 回合最多提交一个高层请求，防止 ReAct 重试重复写入。
+        self.operation_request_used = False
+        self.operation_lock = asyncio.Lock()
 
     def attach_session_runtime_context(self, context: dict[str, Any]) -> None:
-        """将 active task 放入 AgentScope Session State，不污染业务 Task。"""
+        """接入 Session 短期焦点并兼容 legacy hint，不污染业务 Task。"""
 
         self._session_runtime_context = context
         self.pending_clarification()  # 新 runner 丢弃无法证明生命周期的旧 pending。
-        stored = context.get("cnlc_active_task_id")
-        if isinstance(stored, str) and stored:
-            self.active_task_id = stored
-        elif self.active_task_id is not None:
-            context["cnlc_active_task_id"] = self.active_task_id
+        self._interaction_context_store.attach(context)
+        self._operation_store.attach(context)
+        self.pending_operation_clarification()
+
+    def pending_operation_clarification(self) -> PendingOperationClarification | None:
+        """受 owner、TTL 和统一回合窗口保护的短期待澄清计划。"""
+        return self._operation_store.peek(turn=self._interaction_turn)
+
+    def save_operation_clarification(
+        self,
+        plan: PartialOperationPlan,
+        issues: list[ClarificationIssue],
+        locks: list[LockedOperationReference],
+    ) -> PendingOperationClarification:
+        """只由服务端保存已解析锁，模型不可提供 owner 或授权证明。"""
+        return self._operation_store.save(
+            plan, issues, turn=self._interaction_turn, locked_references=locks
+        )
+
+    def apply_operation_clarification(
+        self, patch: ClarificationPatch
+    ) -> PendingOperationClarification:
+        """修补不会延长原始计划的有效窗口。"""
+        return self._operation_store.apply_patch(patch, turn=self._interaction_turn)
+
+    def retain_operation_clarification(self) -> PendingOperationClarification | None:
+        """模型一次无效澄清不破坏用户正在补齐的服务端计划。"""
+
+        return self._operation_store.retain(turn=self._interaction_turn)
+
+    def clear_operation_clarification(self) -> None:
+        """消费、取消或新请求清除 Pending，不修改业务历史。"""
+        self._operation_store.clear()
+
+    @property
+    def active_task_id(self) -> str | None:
+        """保留旧 Tool/snapshot 读取入口，避免维护两份不一致的操作焦点。"""
+
+        return self._interaction_context_store.active_task_id
+
+    @property
+    def interaction_context(self) -> InteractionContext:
+        """返回上下文副本；引用仍须经 Resolver/Binding 校验。"""
+
+        return self._interaction_context_store.snapshot
 
     def set_active_task(self, task_id: str) -> None:
         """仅更新会话交互焦点，不修改 InterpretationTask 业务事实。"""
 
-        self.active_task_id = task_id
-        if self._session_runtime_context is not None:
-            self._session_runtime_context["cnlc_active_task_id"] = task_id
+        self._interaction_context_store.set_active_task(task_id)
+
+    def set_active_base(
+        self, task_id: str, execution_id: str, scope: OperationScope | None = None
+    ) -> None:
+        """记录当前任务的工作基线，不创建执行或修改 Task 当前版本。"""
+
+        self._interaction_context_store.set_active_base(task_id, execution_id, scope)
+
+    def clear_active_base(self) -> None:
+        """清除成功写操作之前的工作基线，避免下一轮误用历史范围。"""
+
+        self._interaction_context_store.clear_active_base()
+
+    def set_view_context(
+        self, task_id: str, execution_id: str | None = None, scope: OperationScope | None = None
+    ) -> None:
+        """只改变查看对象；统一操作路由与旧 Tool 共用同一上下文。"""
+
+        self._interaction_context_store.set_view_context(task_id, execution_id, scope)
+
+    def clear_view_context(self) -> None:
+        """清除查看对象，保留当前操作任务。"""
+
+        self._interaction_context_store.clear_view_context()
+
+    def set_recent_context(self, recent: RecentContext) -> None:
+        """更新近期引用，不改变操作或查看焦点。"""
+
+        self._interaction_context_store.set_recent_context(recent)
 
     def _remember_task(self, task_id: str) -> None:
         """记录无持久化身份的独立测试会话顺序。"""
@@ -158,6 +244,8 @@ class TaskCommandRunner:
         """计数只在请求入口推进，不从聊天摘要猜测。"""
 
         self._interaction_turn += 1
+        self.operation_request_used = False
+        self.pending_operation_clarification()
         self.pending_clarification()
 
     def end_interaction_turn(self) -> None:
@@ -166,6 +254,12 @@ class TaskCommandRunner:
         pending = self.pending_clarification()
         if pending is not None and pending.created_turn < self._interaction_turn:
             self.clear_pending()
+        operation_pending = self.pending_operation_clarification()
+        if (
+            operation_pending is not None
+            and operation_pending.created_turn < self._interaction_turn
+        ):
+            self.clear_operation_clarification()
 
     async def resolve_task_reference(self, reference: TaskReference) -> str:
         """解析只返回受授权目标；成功操作后才切换 active task。"""
@@ -260,6 +354,7 @@ class TaskCommandRunner:
 
         self.clear_pending()
         InteractionPolicy.decide(await self.interaction_snapshot(), "START")
+        self.clear_operation_clarification()
         async with self._lock:
             with TemporaryDirectory(prefix="cnlc-submit-") as directory:
                 root = Path(directory)
@@ -361,6 +456,9 @@ class TaskCommandRunner:
     async def execute(
         self,
         command: GetStatusCommand,
+        *,
+        expected_current_execution_id: str | None = None,
+        before_write: Callable[[], Awaitable[None]] | None = None,
     ) -> TaskCommandResult:
         """修改命令只提交后台任务；状态与报告命令始终查询持久事实。"""
 
@@ -368,14 +466,23 @@ class TaskCommandRunner:
             raise ApplicationError("TASK_NOT_FOUND", "任务不属于当前会话")
 
         async with self._lock:
+            # E1 在取得命令锁后再次授权；旧 Tool 不传钩子，保留原有调用语义。
+            if before_write is not None and isinstance(
+                command, (ModifyInterpretationCommand, FullRerunCommand)
+            ):
+                await before_write()
             with TemporaryDirectory(prefix="cnlc-command-") as directory:
                 root = Path(directory)
                 async with self.context(root) as service:
                     commands = TaskCommands(service)
                     if isinstance(command, ModifyInterpretationCommand):
-                        result = await commands.prepare_modify(command)
+                        result = await commands.prepare_modify(
+                            command, expected_current_execution_id=expected_current_execution_id
+                        )
                     elif isinstance(command, FullRerunCommand):
-                        result = await commands.prepare_full_rerun(command)
+                        result = await commands.prepare_full_rerun(
+                            command, expected_current_execution_id=expected_current_execution_id
+                        )
                     elif isinstance(command, GetReportCommand):
                         return await commands.report(command)
                     else:
@@ -384,12 +491,10 @@ class TaskCommandRunner:
             return result
 
     async def owns_task(self, task_id: str) -> bool:
-        """缓存未命中时只在持久模式查询完整 Session binding。"""
+        """具有 Session Identity 时以 Binding 为准；无身份旧测试保留内存兼容。"""
 
-        if task_id in self.observed_task_ids:
-            return True
-        if self.persistence.persistence != "postgres-redis" or self.session_identity is None:
-            return False
+        if self.session_identity is None:
+            return task_id in self.observed_task_ids
         with TemporaryDirectory(prefix="cnlc-ownership-") as directory:
             async with self.context(Path(directory)) as service:
                 owned = await service.repository.task_belongs_to_session(

@@ -62,14 +62,12 @@ async def test_postgresql_binding_repository_idempotence_isolation_and_cascade(
     try:
         await repository.create_task(InterpretationState(task=first))
         await repository.create_task(InterpretationState(task=second))
-        binding = SessionTaskBinding(
-            **identity.model_dump(mode="python"), task_id=first.task_id
+        binding = SessionTaskBinding(**identity.model_dump(mode="python"), task_id=first.task_id)
+        await repository.bind_task_to_session(binding)
+        await repository.bind_task_to_session(binding)
+        await repository.bind_task_to_session(
+            SessionTaskBinding(**identity.model_dump(mode="python"), task_id=second.task_id)
         )
-        await repository.bind_task_to_session(binding)
-        await repository.bind_task_to_session(binding)
-        await repository.bind_task_to_session(SessionTaskBinding(
-            **identity.model_dump(mode="python"), task_id=second.task_id
-        ))
 
         reopened_engine = create_async_engine(DB_URL)
         reopened = PostgreSQLTaskRepository(reopened_engine)
@@ -123,9 +121,7 @@ async def test_factory_task_tool_and_read_api_restore_after_restart(
     persistence = PersistenceSettings(
         persistence="postgres-redis", redis_prefix=prefix, _env_file=None
     )
-    connections = ConnectionSettings(
-        database_url=DB_URL, redis_url=REDIS_URL, _env_file=None
-    )
+    connections = ConnectionSettings(database_url=DB_URL, redis_url=REDIS_URL, _env_file=None)
     engine = create_async_engine(DB_URL)
     redis = Redis.from_url(REDIS_URL, decode_responses=True)
     task_id = ""
@@ -136,22 +132,20 @@ async def test_factory_task_tool_and_read_api_restore_after_restart(
         first_tools = {
             tool.name: tool for tool in await first_factory("alice", "agent-a", "session-a")
         }
-        started = await first_tools["run_well_interpretation"].call(
-            well_id="WELL_MOCK_001"
-        )
+        started = await first_tools["run_well_interpretation"].call(well_id="WELL_MOCK_001")
         first = started.metadata["result"]
         task_id = first["task_id"]
-        await first_tools["get_interpretation_status"].runner.wait_for_completion(
+        await first_tools["interpret_interpretation_operation"].runner.wait_for_completion(
             task_id, first["execution_id"]
         )
         session_context = {}
-        first_runner = first_tools["get_interpretation_status"].runner
+        first_runner = first_tools["interpret_interpretation_operation"].runner
         first_runner.attach_session_runtime_context(session_context)
-        pending = await first_tools["request_interpretation_clarification"].call(
-            reason="PARAMETER_NAME", known_value=0.16,
+        pending = await first_tools["interpret_interpretation_operation"].call(
+            request=operation_request("MODIFY_PARAMETER", target=None, value=0.16)
         )
-        assert pending.metadata["error_code"] == "CLARIFICATION_REQUIRED"
-        assert "cnlc_pending_clarification" in session_context
+        assert pending.metadata["operation"]["outcome"] == "NEED_CLARIFICATION"
+        assert "cnlc_pending_operation_clarification" in session_context
         await first_factory.shutdown()
 
         restored_factory = SessionTaskToolFactory(
@@ -159,18 +153,26 @@ async def test_factory_task_tool_and_read_api_restore_after_restart(
         )
         assert restored_factory.runners == {}
         restored_tools = {
-            tool.name: tool
-            for tool in await restored_factory("alice", "agent-a", "session-a")
+            tool.name: tool for tool in await restored_factory("alice", "agent-a", "session-a")
         }
-        restored_runner = restored_tools["get_interpretation_status"].runner
+        restored_runner = restored_tools["interpret_interpretation_operation"].runner
         restored_runner.attach_session_runtime_context(session_context)
-        assert restored_runner.pending_clarification() is None
-        assert "cnlc_pending_clarification" not in session_context
+        assert restored_runner.pending_operation_clarification() is None
+        assert "cnlc_pending_operation_clarification" not in session_context
         assert task_id in restored_runner.observed_task_ids
-        status = await restored_tools["get_interpretation_status"].call(task_id=task_id)
+        status = await restored_tools["interpret_interpretation_operation"].call(
+            request=operation_request(
+                "STATUS", task_reference={"kind": "TASK_ID", "value": task_id}
+            )
+        )
         assert status.state == "success"
-        modified = await restored_tools["modify_well_interpretation"].call(
-            task_id=task_id, por=0.17
+        modified = await restored_tools["interpret_interpretation_operation"].call(
+            request=operation_request(
+                "MODIFY_PARAMETER",
+                target="POROSITY",
+                value=0.17,
+                task_reference={"kind": "TASK_ID", "value": task_id},
+            )
         )
         assert modified.state == "success"
         await restored_runner.wait_for_completion(
@@ -185,10 +187,7 @@ async def test_factory_task_tool_and_read_api_restore_after_restart(
         monkeypatch.setenv("REDIS_URL", REDIS_URL)
         app = create_demo_app(connections=connections, workspace_dir=tmp_path / "workspaces")
         assert app.state.cnlc_task_tools.runners == {}
-        path = (
-            "/cnlc/interpretation/agents/agent-a/sessions/session-a/tasks/"
-            f"{task_id}"
-        )
+        path = f"/cnlc/interpretation/agents/agent-a/sessions/session-a/tasks/{task_id}"
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -230,9 +229,7 @@ async def test_multiple_wells_resolve_after_real_backend_restart(
     persistence = PersistenceSettings(
         persistence="postgres-redis", redis_prefix=prefix, _env_file=None
     )
-    connections = ConnectionSettings(
-        database_url=DB_URL, redis_url=REDIS_URL, _env_file=None
-    )
+    connections = ConnectionSettings(database_url=DB_URL, redis_url=REDIS_URL, _env_file=None)
     task_ids: list[str] = []
     first_factory = SessionTaskToolFactory(
         settings=settings, persistence=persistence, connections=connections
@@ -242,7 +239,7 @@ async def test_multiple_wells_resolve_after_real_backend_restart(
         started_a = await tools["run_well_interpretation"].call(well_id="WELL_MOCK_001")
         task_a = started_a.metadata["result"]
         task_ids.append(task_a["task_id"])
-        runner = tools["get_interpretation_status"].runner
+        runner = tools["interpret_interpretation_operation"].runner
         await runner.wait_for_completion(task_a["task_id"], task_a["execution_id"])
 
         fixture_b_data = json.loads(json.dumps(fixture_data))
@@ -261,15 +258,18 @@ async def test_multiple_wells_resolve_after_real_backend_restart(
             settings=settings, persistence=persistence, connections=connections
         )
         restored = {tool.name: tool for tool in await restored_factory(*identity)}
-        restored_runner = restored["get_interpretation_status"].runner
+        restored_runner = restored["interpret_interpretation_operation"].runner
         assert restored_runner.active_task_id is None
-        current = await restored["get_interpretation_status"].call(
-            task_reference={"kind": "CURRENT"}
+        current = await restored["interpret_interpretation_operation"].call(
+            request=operation_request("STATUS", task_reference={"kind": "CURRENT"})
         )
         assert current.metadata["result"]["task_id"] == task_b["task_id"]
-        previous = await restored["get_interpretation_report"].call(
-            task_reference={"kind": "PREVIOUS_TASK"},
-            selector="LATEST_SUCCESSFUL",
+        previous = await restored["interpret_interpretation_operation"].call(
+            request=operation_request(
+                "REPORT",
+                task_reference={"kind": "PREVIOUS_TASK"},
+                execution_reference={"kind": "LATEST_SUCCESSFUL"},
+            )
         )
         assert previous.metadata["result"]["task_id"] == task_a["task_id"]
         await restored_factory.shutdown()
@@ -280,12 +280,26 @@ async def test_multiple_wells_resolve_after_real_backend_restart(
         try:
             if task_ids:
                 async with engine.begin() as connection:
-                    await connection.execute(
-                        delete(TaskRow).where(TaskRow.task_id.in_(task_ids))
-                    )
+                    await connection.execute(delete(TaskRow).where(TaskRow.task_id.in_(task_ids)))
             keys = [key async for key in redis.scan_iter(f"{prefix}*")]
             if keys:
                 await redis.delete(*keys)
         finally:
             await redis.aclose()
             await engine.dispose()
+
+
+def operation_request(action, *, target="WELL", value=None, **fields):
+    """持久化 Factory 回归使用正式模型侧 Operation 契约。"""
+    node = {"operation_id": "op1", "action": action, "target": target, **fields}
+    if value is not None:
+        node["parameters"] = {"value": {"mode": "ABSOLUTE", "value": value, "unit": "1"}}
+    return {
+        "mode": "PLAN",
+        "plan": {
+            "input_classification": "EXECUTION_REQUEST",
+            "persist_mode": "CREATE_VERSION",
+            "original_instruction": "持久化测试",
+            "operations": [node],
+        },
+    }

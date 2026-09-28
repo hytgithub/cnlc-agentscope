@@ -28,6 +28,7 @@ const renderers: Record<string, ToolRenderer> = {
 	TaskCreate: TaskCreateRenderer,
 	// 任务结果使用紧凑卡片；有业务过程的写工具提交快照由聊天展示层省略。
 	run_well_interpretation: RunWellInterpretationRenderer,
+	interpret_interpretation_operation: RunWellInterpretationRenderer,
 	modify_well_interpretation: RunWellInterpretationRenderer,
 	rerun_well_interpretation: RunWellInterpretationRenderer,
 	get_interpretation_status: RunWellInterpretationRenderer,
