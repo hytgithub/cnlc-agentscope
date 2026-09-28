@@ -33,6 +33,9 @@ class TaskRequest(Contract):
     task_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1)
     well_id: WellId
     instruction: str = Field(default="执行单井测井解释骨架演示", min_length=1)
+    # 真实 GDSX 上传的临时路径；不进入聊天内容，仅供 company_real 工具读取。
+    source_type: Literal["JSON", "GDSX"] = "JSON"
+    source_path: str | None = None
 
 
 class Well(Contract):

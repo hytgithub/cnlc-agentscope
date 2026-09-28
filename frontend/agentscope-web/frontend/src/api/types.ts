@@ -275,6 +275,7 @@ export interface InterpretationStepView {
 	output_summary: Record<string, unknown>;
 	evidence: string[];
 	warnings: string[];
+	errors: { code: string; message: string }[];
 }
 
 export interface InterpretationToolRunView {

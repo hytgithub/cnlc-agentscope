@@ -349,7 +349,9 @@ class TaskCommandRunner:
         fixture = await MockWellRepository(self.settings.mock_data_dir).load(well_id)
         return await self.start_uploaded(fixture, instruction)
 
-    async def start_uploaded(self, fixture: MockFixture, instruction: str) -> TaskCommandResult:
+    async def start_uploaded(
+        self, fixture: MockFixture, instruction: str, source_path: str | None = None
+    ) -> TaskCommandResult:
         """提交首轮 QUEUED Execution 并立即返回，实际流程在请求外运行。"""
 
         self.clear_pending()
@@ -360,7 +362,12 @@ class TaskCommandRunner:
                 root = Path(directory)
                 async with self.context(root) as service:
                     execution = await service.prepare_initial_with_input(
-                        TaskRequest(well_id=fixture.well.well_id, instruction=instruction),
+                        TaskRequest(
+                            well_id=fixture.well.well_id,
+                            instruction=instruction,
+                            source_type="GDSX" if source_path else "JSON",
+                            source_path=source_path,
+                        ),
                         fixture,
                     )
                     if self.session_identity is not None:

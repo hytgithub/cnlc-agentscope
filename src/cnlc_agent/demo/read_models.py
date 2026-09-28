@@ -47,6 +47,7 @@ class InterpretationStepView(Contract):
     output_summary: dict[str, object] = Field(default_factory=dict)
     evidence: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    errors: list[dict[str, str]] = Field(default_factory=list)
 
 
 class InterpretationToolRunView(Contract):

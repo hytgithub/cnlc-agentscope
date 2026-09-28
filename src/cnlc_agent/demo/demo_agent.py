@@ -12,7 +12,7 @@ from agentscope.credential import CredentialBase, CredentialFactory
 from agentscope.event import ToolResultEndEvent
 from agentscope.formatter import DashScopeChatFormatter
 from agentscope.message import Msg, TextBlock, ToolCallBlock, ToolResultBlock, ToolResultState
-from agentscope.middleware import MiddlewareBase
+from agentscope.middleware import MiddlewareBase, TracingMiddleware
 from agentscope.model import ChatModelBase, ChatResponse, ModelCard, StructuredResponse
 from agentscope.state import AgentState
 from agentscope.tool import ToolChoice, Toolkit
@@ -732,6 +732,8 @@ class LoggingInterpretationDemoAgent(Agent):
             model=model,
             toolkit=Toolkit(tools=tools),
             middlewares=[
+                # 框架级 Agent / Model / Tool Span 由 AgentScope 原生中间件负责。
+                TracingMiddleware(),
                 InteractionStateMiddleware(runner),
                 UploadInterpretationReply(
                     tool,

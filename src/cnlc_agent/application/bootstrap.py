@@ -10,6 +10,7 @@ from cnlc_agent.application.ports import InterpretationStateStore, ModelGateway,
 from cnlc_agent.application.prediction import MockPredictionProvider
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings
+from cnlc_agent.infrastructure.company_api import CompanyApiClient, CompanyApiSettings
 from cnlc_agent.infrastructure.mock import (
     InMemoryStateStore,
     InMemoryTaskRepository,
@@ -19,7 +20,7 @@ from cnlc_agent.infrastructure.mock import (
 from cnlc_agent.infrastructure.model_gateway import OpenAICompatibleModelGateway
 from cnlc_agent.infrastructure.telemetry import LoggingTelemetry
 from cnlc_agent.reports.assembler import ReportAssembler
-from cnlc_agent.tools.company_batches import build_company_mock_tools
+from cnlc_agent.tools.company_batches import build_company_mock_tools, build_company_real_tools
 from cnlc_agent.tools.contracts import Tool, ToolCaller
 from cnlc_agent.tools.mock import GetWellDataTool, MockResultTool
 from cnlc_agent.workflows.interpretation_workflow import InterpretationWorkflow
@@ -38,7 +39,16 @@ def build_application(
     repository = MockWellRepository(settings.mock_data_dir)
     telemetry = LoggingTelemetry()
     active_tasks = task_repository if task_repository is not None else InMemoryTaskRepository()
-    caller = ToolCaller(telemetry, settings.tool_timeout_seconds, active_tasks)
+    # 公司预处理/预测接口可能是同步长任务；ToolCaller 的外层超时不能
+    # 比公司客户端超时更短，否则请求会在 HTTP 客户端返回前被误判为 TOOL_TIMEOUT。
+    company_settings = (
+        CompanyApiSettings() if settings.professional_provider == "company_real" else None
+    )
+    caller_timeout = max(
+        settings.tool_timeout_seconds,
+        company_settings.timeout_seconds if company_settings is not None else 0,
+    )
+    caller = ToolCaller(telemetry, caller_timeout, active_tasks)
     tools: dict[str, Tool] = {"get_well_data": GetWellDataTool(repository)}
     prediction = MockPredictionProvider()
     for name, key in {
@@ -52,6 +62,14 @@ def build_application(
     if settings.professional_provider == "company_mock":
         tools = dict(build_company_mock_tools(repository, caller))
     close_callbacks: list[Callable[[], Awaitable[None]]] = []
+    if settings.professional_provider == "company_real":
+        assert company_settings is not None
+        company_client = CompanyApiClient(company_settings)
+        real_tools, real_provider = build_company_real_tools(
+            company_client, company_settings, settings.output_dir, caller
+        )
+        tools = dict(real_tools)
+        close_callbacks.append(real_provider.close)
     gateway: ModelGateway
     if settings.model_provider == "mock":
         gateway = MockModelGateway(repository)
@@ -70,7 +88,7 @@ def build_application(
             interpretation,
             validation,
             demo_mode=settings.mode == "demo",
-            company_batches=settings.professional_provider == "company_mock",
+            company_batches=settings.professional_provider in {"company_mock", "company_real"},
         ),
         (
             state_store

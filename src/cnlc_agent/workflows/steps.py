@@ -4,7 +4,7 @@ from cnlc_agent.agents.interpretation_agent import InterpretationAgent
 from cnlc_agent.agents.validation_agent import ValidationAgent
 from cnlc_agent.application.ports import ModelRequest
 from cnlc_agent.domain.enums import StepId, StepStatus, ValidationStatus
-from cnlc_agent.domain.models import MissingData, StageResult, ValidationResult, WellData
+from cnlc_agent.domain.models import MissingData, RawData, StageResult, ValidationResult, WellData
 from cnlc_agent.domain.state import InterpretationState, StatePatch, StepOutcome
 from cnlc_agent.tools.contracts import Tool, ToolCaller, ToolInput
 from cnlc_agent.workflows.node import WorkflowNode
@@ -13,12 +13,20 @@ from cnlc_agent.workflows.node import WorkflowNode
 def tool_request(state: InterpretationState, step: StepId) -> ToolInput:
     """从统一状态构造可追踪的 ToolInput。"""
 
+    # 上传文件路径属于任务输入，不在 execution_context 中（后者刻意只携带
+    # 执行元数据和用户覆盖项）。真实公司工具必须拿到这一路径，才能读取
+    # 本次会话上传的 GDSX，而不是回退到固定配置路径。
+    parameters = state.execution_context().model_dump(mode="json")
+    if state.task.source_path and state.task.source_type == "GDSX":
+        parameters["source_path"] = state.task.source_path
+        parameters["source_type"] = state.task.source_type
+
     return ToolInput(
         task_id=state.task.task_id,
         trace_id=state.trace_id,
         well_id=state.task.well_id,
         step_id=step,
-        parameters=state.execution_context().model_dump(mode="json"),
+        parameters=parameters,
     )
 
 
@@ -167,8 +175,15 @@ def build_steps(
         """W03：执行曲线质量检查并形成 processed_data。"""
 
         output = await caller.call(tools["check_curve_quality"], tool_request(state, StepId.W03))
-        result = StageResult.model_validate(output.data)
-        return outcome_for(result, StatePatch(qc_result=result, processed_data=state.raw_data))
+        payload = dict(output.data)
+        processed_payload = payload.pop("processed_data", None)
+        result = StageResult.model_validate(payload)
+        processed_data = (
+            RawData.model_validate(processed_payload)
+            if isinstance(processed_payload, dict)
+            else state.raw_data
+        )
+        return outcome_for(result, StatePatch(qc_result=result, processed_data=processed_data))
 
     async def lithology(state: InterpretationState) -> StepOutcome:
         """W04：调用岩性识别 Tool。"""

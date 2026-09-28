@@ -149,7 +149,13 @@ class ModelGateway(Protocol):
 class Telemetry(Protocol):
     """业务事件和耗时跨度的可观测性端口。"""
 
-    def span(self, name: str, attributes: JsonObject) -> AbstractContextManager[None]: ...
+    def span(
+        self,
+        name: str,
+        attributes: JsonObject,
+        *,
+        new_trace: bool = False,
+    ) -> AbstractContextManager[None]: ...
 
     def event(self, name: str, attributes: JsonObject) -> None: ...
 

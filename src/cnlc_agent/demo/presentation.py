@@ -41,6 +41,7 @@ class DemoStep(BaseModel):
     output_summary: JsonObject = Field(default_factory=dict)
     evidence: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    errors: list[dict[str, str]] = Field(default_factory=list)
 
 
 def _step_statuses(state: InterpretationState) -> dict[StepId, StepStatus]:
@@ -116,6 +117,10 @@ def present_steps(state: InterpretationState) -> list[DemoStep]:
         if execution is not None:
             warnings.extend(execution.warnings)
         evidence = list(getattr(result, "evidence", [])) if result is not None else []
+        errors = [
+            {"code": error.code, "message": error.message}
+            for error in (execution.errors if execution is not None else [])
+        ]
         steps.append(
             DemoStep(
                 id=step_id,
@@ -126,6 +131,7 @@ def present_steps(state: InterpretationState) -> list[DemoStep]:
                 output_summary=_output_summary(state, step_id, result),
                 evidence=evidence,
                 warnings=warnings,
+                errors=errors,
             )
         )
     return steps

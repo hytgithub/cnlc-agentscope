@@ -36,6 +36,7 @@ const jsonSummary = (value: Record<string, unknown>) => (
 
 function ExecutionBody({ execution }: { execution: InterpretationExecutionView }) {
 	const currentStepName = execution.steps.find((step) => step.id === execution.current_step)?.name;
+	const isCompanyApi = execution.steps.some((step) => step.source.includes('公司'));
 	const parameters = [
 		['sampling_interval', execution.effective_override.sampling_interval],
 		['POR', execution.effective_override.por],
@@ -49,7 +50,7 @@ function ExecutionBody({ execution }: { execution: InterpretationExecutionView }
 				<div className="flex flex-wrap items-center gap-2">
 					<span className="font-semibold">Execution #{execution.sequence}</span>
 					<Badge variant="secondary">{execution.execution_status}</Badge>
-					<Badge variant="outline">Demo / Mock</Badge>
+					<Badge variant="outline">{isCompanyApi ? '真实公司 API' : 'Demo / Mock'}</Badge>
 				</div>
 				<div className="text-xs text-muted-foreground">
 					{execution.execution_status === 'QUEUED'
@@ -79,7 +80,9 @@ function ExecutionBody({ execution }: { execution: InterpretationExecutionView }
 			<section className="space-y-1.5">
 				<div className="text-xs font-medium text-muted-foreground">W01–W10</div>
 				{execution.steps.map((step) => (
-					<details key={step.id} className="rounded border bg-background">
+					<details key={step.id} className="rounded border bg-background" open={
+						step.display_status === 'RUNNING' || step.display_status === 'SUCCESS' || step.display_status === 'WARNING'
+					}>
 						<summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 text-xs">
 							<ChevronRight className="size-3 shrink-0 [[open]>&]:rotate-90" />
 							<span className="w-3 text-center">{statusMark(step.display_status)}</span>
@@ -89,10 +92,13 @@ function ExecutionBody({ execution }: { execution: InterpretationExecutionView }
 						</summary>
 						<div className="space-y-2 border-t p-2 text-xs">
 							<div>来源：{step.source}</div>
-							<div><div className="mb-1 text-muted-foreground">输入摘要</div>{jsonSummary(step.input_summary)}</div>
-							<div><div className="mb-1 text-muted-foreground">输出摘要</div>{jsonSummary(step.output_summary)}</div>
+							{Object.keys(step.input_summary).length > 0 && <div><div className="mb-1 text-muted-foreground">输入摘要</div>{jsonSummary(step.input_summary)}</div>}
+							{Object.keys(step.output_summary).length > 0 && <div><div className="mb-1 font-medium text-foreground">本阶段输出</div>{jsonSummary(step.output_summary)}</div>}
 							{step.evidence.length > 0 && <div>证据：{step.evidence.join('；')}</div>}
 							{step.warnings.length > 0 && <div className="text-amber-700 dark:text-amber-300">告警：{step.warnings.join('；')}</div>}
+							{step.errors.map((error) => (
+								<div key={error.code} className="text-destructive">错误：{error.code} — {error.message}</div>
+							))}
 						</div>
 					</details>
 				))}

@@ -219,7 +219,9 @@ class RunWellInterpretationTool(ToolBase):
 
             runner = TaskCommandRunner()
         self._runner = runner
-        self.upload: tuple[MockFixture, str] | None = None
+        # 保留两元组兼容，已有调用方/测试只提供 Fixture 与指令；GDSX 上传时
+        # 额外携带第三项文件路径。
+        self.upload: tuple[MockFixture, str] | tuple[MockFixture, str, str | None] | None = None
 
     async def check_permissions(self, *_args: Any, **_kwargs: Any) -> PermissionDecision:
         """用户主动提交解释请求后，允许执行本地单井解释流程。"""
@@ -270,10 +272,11 @@ class RunWellInterpretationTool(ToolBase):
         well_id = cast(str, kwargs["well_id"])
         if self.upload is not None:
             # upload 只在当前回复期间设置，井号必须与 Tool 参数一致。
-            fixture, instruction = self.upload
+            fixture, instruction, *uploaded_path = self.upload
+            source_path = uploaded_path[0] if uploaded_path else None
             if fixture.well.well_id != well_id:
                 raise ValueError("上传井与任务井标识不一致")
-            result = await self._runner.start_uploaded(fixture, instruction)
+            result = await self._runner.start_uploaded(fixture, instruction, source_path)
             payload = result.model_dump(mode="json")
         else:
             result = await self._runner.run(well_id)

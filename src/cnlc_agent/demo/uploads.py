@@ -4,6 +4,9 @@ import base64
 import binascii
 import hashlib
 import json
+import os
+from pathlib import Path
+from tempfile import mkstemp
 
 from agentscope.message import Base64Source, DataBlock, Msg, TextBlock
 from pydantic import ValidationError
@@ -14,8 +17,60 @@ from cnlc_agent.domain.models import MockFixture
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 
 
+def upload_directory(session_id: str) -> Path:
+    """返回会话隔离的上传目录。"""
+    return Path("outputs") / "uploads" / session_id
+
+
 class UploadError(ValueError):
     """可安全展示给用户的附件错误，不携带解析器堆栈或原始内容。"""
+
+
+def save_gdsx_upload(content: bytes, filename: str, *, directory: Path) -> Path:
+    """将 AgentScope 附件安全落盘，返回当前任务使用的临时 GDSX 路径。"""
+
+    if Path(filename).suffix.lower() != ".gdsx":
+        raise UploadError("真实公司工具需要上传 GDSX 文件。")
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, raw_path = mkstemp(prefix="upload-", suffix=".gdsx", dir=directory)
+    path = Path(raw_path)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def extract_gdsx_upload(messages: list[Msg], *, directory: Path) -> tuple[Path, str]:
+    """提取当前轮 GDSX 附件并落盘；JSON 上传仍走 parse_upload。"""
+
+    attachments: list[tuple[str, bytes]] = []
+    instructions: list[str] = []
+    for message in messages:
+        if message.role != "user":
+            continue
+        for block in message.content:
+            if isinstance(block, DataBlock):
+                if not isinstance(block.source, Base64Source):
+                    raise UploadError("请使用浏览器上传 GDSX 文件。")
+                try:
+                    content = base64.b64decode(block.source.data, validate=True)
+                except (ValueError, binascii.Error):
+                    raise UploadError("附件编码无效，请重新上传 GDSX 文件。") from None
+                attachments.append((block.name or "upload.gdsx", content))
+            elif isinstance(block, TextBlock):
+                if block.text.startswith("[File: ") and "]\n" in block.text:
+                    filename, content = block.text[7:].split("]\n", 1)
+                    attachments.append((filename, content.encode("utf-8")))
+                else:
+                    instructions.append(block.text)
+    if len(attachments) != 1:
+        raise UploadError("请上传一份 GDSX 井资料。")
+    return save_gdsx_upload(attachments[0][1], attachments[0][0], directory=directory), (
+        "\n".join(instructions).strip() or "执行上传 GDSX 井资料的测井解释"
+    )
 
 
 def has_attachment(messages: list[Msg]) -> bool:

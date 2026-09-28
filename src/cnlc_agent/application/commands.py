@@ -66,6 +66,8 @@ class TaskCommandResult(Contract):
     finished_at: datetime | None
     error_code: str | None
     report_ready: bool
+    # 仅来自 Workflow 的受控 ErrorDetail；不暴露工具请求、响应或鉴权信息。
+    error_message: str | None = None
     tool_run_summary: JsonObject
     summary: str
     report_markdown: str | None = None
@@ -223,6 +225,7 @@ class TaskCommands:
             started_at=execution.started_at,
             finished_at=execution.finished_at,
             error_code=execution.error_code or (state.errors[-1].code if state.errors else None),
+            error_message=state.errors[-1].message if state.errors else None,
             failed_step=next(
                 (
                     item.step_id

@@ -45,6 +45,7 @@ from cnlc_agent.demo.read_models import (
 from cnlc_agent.demo.task_tools import TaskCommandRunner
 from cnlc_agent.domain.session_binding import TaskSessionIdentity
 from cnlc_agent.infrastructure.conversation import DurableConversationStorage
+from cnlc_agent.infrastructure.tracing import configure_tracing
 
 BACKEND_MODEL_CREDENTIAL_ID = "cnlc-backend-model"
 BACKEND_MODEL_OWNER_ID = "__cnlc_backend_model__"
@@ -228,6 +229,9 @@ class AgentScopeServiceAdapter(LoggingInterpretationDemoAgent):
         if toolkit and any(group.mcps or group.skills_or_loaders for group in toolkit.tool_groups):
             raise ValueError("Demo Agent 不允许注册 MCP 或技能工具")
         builtins = {
+            # AgentScope 版本在 Windows 工作区注入 PowerShell；它属于
+            # 官方工作区工具，不能暴露给 CNLC 业务 Agent。
+            "PowerShell",
             "Bash",
             "Read",
             "Write",
@@ -262,7 +266,17 @@ class AgentScopeServiceAdapter(LoggingInterpretationDemoAgent):
         # 前端仍使用固定 qwen-plus 标识，专业 Workflow 的模型边界保持不变。
         if AppSettings().model_provider == "mock":
             kwargs["model"] = MockTaskShellModel()
-        super().__init__(toolkit=Toolkit(tools=tools), **kwargs)
+        # AgentScope 会把会话中的 name/system_prompt/model 等参数通过
+        # kwargs 传入。保留原始参数，同时在 Demo Agent 初始化失败时记录
+        # 完整异常；上游默认只返回一个笼统的 setup 错误，前端无法定位问题。
+        try:
+            super().__init__(toolkit=Toolkit(tools=tools), **kwargs)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Failed to initialize CNLC Demo Agent (tools=%s)",
+                [tool.name for tool in tools],
+            )
+            raise
 
 
 def _redis_connection_kwargs(connections: ConnectionSettings) -> dict[str, Any]:
@@ -329,6 +343,7 @@ def create_demo_app(
     settings = AppSettings()
     persistence = PersistenceSettings()
     connections = connections or ConnectionSettings()
+    configure_tracing(connections.otel_exporter_otlp_endpoint)
     workspace_dir = workspace_dir or settings.output_dir / "agentscope_workspaces"
     storage: StorageBase = (
         _conversation_storage(connections, persistence)

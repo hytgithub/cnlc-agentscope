@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import Any
 from uuid import uuid4
@@ -24,15 +25,25 @@ from agentscope.event import (
     ToolResultStartEvent,
     ToolResultTextDeltaEvent,
 )
-from agentscope.message import AssistantMsg, Msg, TextBlock, ToolCallBlock, ToolResultState
+from agentscope.message import AssistantMsg, DataBlock, Msg, TextBlock, ToolCallBlock, ToolResultState
 from agentscope.middleware import MiddlewareBase
 from agentscope.tool import ToolResponse
 from agentscope.types import ReplyFinishedReason
 
 from cnlc_agent.demo.execution_stream import ExecutionReplyStreamer, is_streaming_execution
 from cnlc_agent.demo.tools import RUN_TOOL_NAME, RunWellInterpretationTool
-from cnlc_agent.demo.uploads import UploadError, has_attachment, parse_upload
+from cnlc_agent.demo.uploads import (
+    UploadError,
+    extract_gdsx_upload,
+    has_attachment,
+    parse_upload,
+)
+from cnlc_agent.demo.uploads import upload_directory
+from cnlc_agent.domain.enums import ValidationStatus, StepStatus
+from cnlc_agent.domain.models import MockFixture, StageResult, ValidationResult
+from cnlc_agent.tools.company_real import _well_data
 from cnlc_agent.infrastructure.telemetry import event_observer
+from cnlc_agent.config.settings import AppSettings
 
 
 class UploadInterpretationReply(MiddlewareBase):
@@ -89,8 +100,36 @@ class UploadInterpretationReply(MiddlewareBase):
 
         session_id = agent.state.session_id
         yield ReplyStartEvent(session_id=session_id, reply_id=reply_id, name=agent.name)
+        source_path: str | None = None
         try:
-            fixture, instruction = parse_upload(messages)
+            # GDSX 由真实公司链路读取；JSON 继续走原有 Mock Fixture 校验。
+            is_gdsx = any(
+                isinstance(block, DataBlock)
+                and getattr(block, "name", "").lower().endswith(".gdsx")
+                for message in messages
+                if message.role == "user"
+                for block in message.content
+            )
+            if is_gdsx:
+                path, instruction = extract_gdsx_upload(
+                    messages, directory=upload_directory(agent.state.session_id)
+                )
+                well_data = await asyncio.to_thread(_well_data, path, Path(path).stem)
+                fixture = MockFixture(
+                    well=well_data.well,
+                    raw_data=well_data.raw_data,
+                    requirements=well_data.requirements,
+                    outputs={},
+                    validation=ValidationResult(
+                        status=StepStatus.REVIEW_REQUIRED,
+                        validation_status=ValidationStatus.INSUFFICIENT_EVIDENCE,
+                        is_mock=True,
+                        source="upload:gdsx",
+                    ),
+                )
+                source_path = str(path)
+            else:
+                fixture, instruction = parse_upload(messages)
         except UploadError as exc:
             yield TextBlockStartEvent(reply_id=reply_id, block_id=block_id)
             yield TextBlockDeltaEvent(reply_id=reply_id, block_id=block_id, delta=str(exc))
@@ -99,13 +138,18 @@ class UploadInterpretationReply(MiddlewareBase):
             return
 
         yield ThinkingBlockStartEvent(reply_id=reply_id, block_id=block_id)
+        mode_notice = (
+            "真实公司 API：将调用预处理与预测服务。"
+            if AppSettings().professional_provider == "company_real"
+            else "Demo / Mock：使用上传资料中的预设专业结果，不能作为真实测井解释结论。"
+        )
         yield ThinkingBlockDeltaEvent(
             reply_id=reply_id,
             block_id=block_id,
             delta=f"开始解释井 {fixture.well.well_id}\n\n✓ 上传资料读取与校验完成\n\n"
-            "Demo / Mock：使用上传资料中的预设专业结果，不能作为真实测井解释结论。\n\n",
+            f"{mode_notice}\n\n",
         )
-        self.tool.upload = fixture, instruction
+        self.tool.upload = fixture, instruction, source_path
         call = ToolCallBlock(
             id=uuid4().hex,
             name=RUN_TOOL_NAME,

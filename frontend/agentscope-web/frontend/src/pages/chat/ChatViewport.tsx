@@ -928,10 +928,11 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 										) : null
 									}
 									// 井资料由后端适配器解析，不受模型原生多模态输入类型限制。
-									allowedInputTypes={['.json', '.txt']}
+									allowedInputTypes={['.json', '.txt', '.gdsx']}
 									fileProcessor={async (file) => {
-										// 浏览器先限制体积，后端仍会执行同样的安全校验。
-										if (file.size > 5 * 1024 * 1024) {
+										// JSON 保留 Demo 的 5 MiB 限制；GDSX 由后端/公司服务处理，
+										// 不在前端设置大小上限。
+										if (!file.name.toLowerCase().endsWith('.gdsx') && file.size > 5 * 1024 * 1024) {
 											throw new Error('井资料文件不能超过 5 MiB');
 										}
 										if (file.type === 'text/plain') {

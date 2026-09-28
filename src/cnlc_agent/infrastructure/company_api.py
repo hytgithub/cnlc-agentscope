@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from pydantic import Field, JsonValue, SecretStr, field_validator
+from pydantic import Field, JsonValue, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from cnlc_agent.domain.errors import ToolError
@@ -21,8 +21,21 @@ class CompanyApiSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CNLC_COMPANY_", env_file=".env", extra="ignore")
     preprocessing_url: str
     prediction_url: str
-    token: SecretStr
+    # 可直接提供短期 Token，也可使用 yuce_api.py 同样的登录流程。
+    token: SecretStr | None = None
+    login_url: str | None = None
+    username: str | None = None
+    password: SecretStr | None = None
     timeout_seconds: float = Field(default=660, gt=0, le=3600)
+    # 真实模式先以受控本地文件作为输入，Web GDSX 上传接入后会覆盖这一路径。
+    gdsx_path: Path | None = None
+    service_id: str | None = None
+    create_people: str | None = None
+    preprocess_operations: JsonObject | None = None
+    task_config: JsonObject | None = None
+    # yuce_api.py 始终携带该字段；为空时由预测管理服务选择默认编码服务。
+    encoding_url: str = ""
+    batch_size: int = Field(default=1024, gt=0, le=100000)
 
     @field_validator("preprocessing_url", "prediction_url")
     @classmethod
@@ -39,13 +52,26 @@ class CompanyApiSettings(BaseSettings):
             raise ValueError("需要不含凭据、查询串的 HTTP(S) 服务基址")
         return value.rstrip("/") + "/"
 
-    @field_validator("token")
+    @field_validator("login_url")
     @classmethod
-    def validate_token(cls, value: SecretStr) -> SecretStr:
-        """凭据仅从环境或本地配置读取，不复制参考仓库中的账号信息。"""
-        if not value.get_secret_value().strip():
-            raise ValueError("公司预测服务凭据不能为空")
+    def validate_login_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        url = httpx.URL(value)
+        if url.scheme not in {"http", "https"} or not url.host or url.userinfo or url.query:
+            raise ValueError("登录地址必须是不含凭据和查询串的 HTTP(S) 地址")
         return value
+
+    @model_validator(mode="after")
+    def validate_auth(self) -> "CompanyApiSettings":
+        """认证二选一：已有 Token，或完整的登录配置。"""
+        has_token = self.token is not None and bool(self.token.get_secret_value().strip())
+        has_login = bool(self.login_url and self.username and self.password)
+        if not has_token and not has_login:
+            raise ValueError(
+                "请配置 CNLC_COMPANY_TOKEN，或同时配置 LOGIN_URL、USERNAME、PASSWORD"
+            )
+        return self
 
 
 class CompanyCallResult(Contract):
@@ -76,7 +102,18 @@ def _check_body(response: httpx.Response) -> JsonObject:
     if not isinstance(value, dict):
         raise ToolError("COMPANY_INVALID_RESPONSE", "公司服务返回结构不合法")
     if value.get("success") is False or ("code" in value and value["code"] != 200):
-        raise ToolError("COMPANY_REPORTED_FAILURE", "公司服务未确认业务成功")
+        # 仅呈现服务端的业务码和简短说明，不保存完整响应，避免把内部数据、
+        # 调试栈或鉴权信息带入任务状态和前端。
+        code = value.get("code", "unknown")
+        # 仅接受公司标准响应信封的 msg；message/error 可能来自网关或下游
+        # 原始异常，不进入浏览器可见状态。
+        detail = value.get("msg")
+        if isinstance(detail, str) and detail.strip():
+            detail = " ".join(detail.split())[:240]
+            message = f"公司服务业务失败（code={code}）：{detail}"
+        else:
+            message = f"公司服务业务失败（code={code}），未返回可展示说明"
+        raise ToolError("COMPANY_REPORTED_FAILURE", message)
     if value.get("success") is not True and value.get("code") != 200:
         raise ToolError("COMPANY_UNCONFIRMED_RESPONSE", "公司服务缺少已知的成功标识")
     return value
@@ -94,18 +131,68 @@ class CompanyApiClient:
             follow_redirects=False,
             transport=transport,
         )
+        self._token: str | None = (
+            settings.token.get_secret_value() if settings.token is not None else None
+        )
+        self._auth_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         """释放客户端；不停止任何公司服务。"""
         await self._client.aclose()
 
+    async def _login(self) -> str:
+        """按 yuce_api.py 协议登录；不记录账号、密码或 Token。"""
+        if not (self.settings.login_url and self.settings.username and self.settings.password):
+            raise ToolError("COMPANY_AUTH_CONFIG_MISSING", "公司接口未配置有效认证信息")
+        try:
+            response = await self._client.post(
+                self.settings.login_url,
+                params={
+                    "username": self.settings.username,
+                    "password": self.settings.password.get_secret_value(),
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.TimeoutException:
+            raise ToolError("COMPANY_TIMEOUT", "公司登录接口超时") from None
+        except (httpx.RequestError, httpx.HTTPStatusError, ValueError):
+            raise ToolError("COMPANY_AUTH_FAILED", "公司登录接口请求失败") from None
+        token = payload.get("data", {}).get("token") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("code") != 200
+            or not isinstance(token, str)
+            or not token.strip()
+        ):
+            raise ToolError("COMPANY_AUTH_FAILED", "公司登录失败")
+        return token
+
+    async def _auth_token(self, *, refresh: bool = False) -> str:
+        async with self._auth_lock:
+            if self._token and not refresh:
+                return self._token
+            self._token = await self._login()
+            return self._token
+
     async def _post(
         self, url: str, *, authenticated: bool = False, **kwargs: Any
     ) -> httpx.Response:
-        """失败不自动重试，避免长时预测因超时而重复创建任务。"""
-        headers = {"Authorization": self.settings.token.get_secret_value()} if authenticated else {}
+        """调用 API；认证失败时刷新 Token 后仅重试一次。"""
+        token = await self._auth_token() if authenticated else None
+        headers = {"Authorization": token} if token else {}
         try:
             response = await self._client.post(url, headers=headers, **kwargs)
+            if (
+                authenticated
+                and response.status_code in {401, 403}
+                and self.settings.login_url
+                and self.settings.username
+                and self.settings.password
+            ):
+                token = await self._auth_token(refresh=True)
+                headers["Authorization"] = token
+                response = await self._client.post(url, headers=headers, **kwargs)
             response.raise_for_status()
             return response
         except httpx.TimeoutException:
@@ -197,6 +284,8 @@ class CompanyApiClient:
                 "COMPANY_PREDICT_INPUT_MISSING", "预测缺少井名、服务标识、数据或任务配置"
             )
         started = utc_now()
+        # 公司同步推理协议要求该字段始终存在；留空表示使用服务端默认编码服务。
+        parameters = {**parameters, "encodingUrl": self.settings.encoding_url}
         payload = _check_body(
             await self._post(
                 self.settings.prediction_url + "center/InferenceLog/encodingInferenceBySyn/v1",

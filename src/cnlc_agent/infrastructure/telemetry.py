@@ -6,6 +6,11 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from time import perf_counter
+from uuid import uuid4
+
+from opentelemetry import trace
+from opentelemetry.context import Context
+from opentelemetry.trace import Link, Status, StatusCode
 
 from cnlc_agent.domain.models import JsonObject, utc_now
 
@@ -13,6 +18,7 @@ from cnlc_agent.domain.models import JsonObject, utc_now
 event_observer: ContextVar[Callable[[str, JsonObject], None] | None] = ContextVar(
     "cnlc_event_observer", default=None
 )
+current_span_id: ContextVar[str | None] = ContextVar("cnlc_span_id", default=None)
 
 
 class LoggingTelemetry:
@@ -63,22 +69,67 @@ class LoggingTelemetry:
         return None
 
     @contextmanager
-    def span(self, name: str, attributes: JsonObject) -> Iterator[None]:
-        """记录开始、异常类型和耗时，不泄漏第三方异常原文。"""
+    def span(
+        self,
+        name: str,
+        attributes: JsonObject,
+        *,
+        new_trace: bool = False,
+    ) -> Iterator[None]:
+        """同时生成业务事件和 OTel Span；Execution 可开启新 Trace 并链接提交方。"""
 
         start = perf_counter()
-        self.event(f"{name}.start", attributes)
-        try:
-            yield
-        except Exception as exc:
-            # 只记录异常类型；第三方异常文本可能包含连接串或鉴权信息。
-            self.event(f"{name}.error", {**attributes, "error_type": type(exc).__name__})
-            raise
-        finally:
-            self.event(
-                f"{name}.end",
-                {
-                    **attributes,
-                    "duration_ms": round((perf_counter() - start) * 1000, 3),
-                },
+        parent_span_id = current_span_id.get()
+        active_context = trace.get_current_span().get_span_context()
+        links = [Link(active_context)] if new_trace and active_context.is_valid else None
+        otel_context = Context() if new_trace else None
+        tracer = trace.get_tracer("cnlc_agent.business")
+        safe_attributes = self._otel_attributes(attributes)
+        with tracer.start_as_current_span(
+            f"cnlc.{name}",
+            context=otel_context,
+            links=links,
+            attributes=safe_attributes,
+        ) as otel_span:
+            span_context = otel_span.get_span_context()
+            span_id = (
+                f"{span_context.span_id:016x}" if span_context.is_valid else uuid4().hex[:16]
             )
+            token = current_span_id.set(span_id)
+            correlated = {
+                **attributes,
+                "span_id": span_id,
+                "parent_span_id": parent_span_id,
+            }
+            self.event(f"{name}.start", correlated)
+            try:
+                yield
+            except Exception as exc:
+                # 只记录异常类型；第三方异常文本可能包含连接串或鉴权信息。
+                otel_span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+                self.event(
+                    f"{name}.error",
+                    {**correlated, "error_type": type(exc).__name__},
+                )
+                raise
+            else:
+                otel_span.set_status(Status(StatusCode.OK))
+            finally:
+                self.event(
+                    f"{name}.end",
+                    {
+                        **correlated,
+                        "duration_ms": round((perf_counter() - start) * 1000, 3),
+                    },
+                )
+                current_span_id.reset(token)
+
+    @staticmethod
+    def _otel_attributes(attributes: JsonObject) -> dict[str, str | int | float | bool]:
+        """只把标量安全元数据写入 OTel；业务快照仍由审计边界负责。"""
+
+        return {
+            f"cnlc.{key}": value
+            for key, value in attributes.items()
+            if isinstance(value, (str, int, float, bool))
+        }

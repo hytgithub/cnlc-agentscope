@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import ToolError
 from cnlc_agent.domain.models import JsonObject, StageResult
 from cnlc_agent.domain.tool_run import ToolExecutionMode
+from cnlc_agent.infrastructure.company_api import CompanyApiClient, CompanyApiSettings
 from cnlc_agent.infrastructure.mock import FixtureRepository
 from cnlc_agent.tools.contracts import ToolCaller, ToolInput, ToolOutput
 from cnlc_agent.tools.mock import MockResultTool
@@ -164,15 +166,16 @@ class CompanyResultTool:
             if self.key == "qc":
                 result["operations_applied"] = batch.data.get("operations_applied", False)
             data["result"] = result
+        # W03 需要真实预处理后的曲线；该字段不是 StageResult 的一部分，
+        # 因此作为 ToolOutput 的同级受控载荷转交给 Workflow。
+        if self.key == "qc" and isinstance(batch.data.get("processed_data"), dict):
+            data["processed_data"] = dict(batch.data["processed_data"])
         # 传输成功与子功能成功分开；由 Workflow 消费 StageResult 的业务状态。
         return ToolOutput(status=StepStatus.SUCCESS, data=data, metadata=metadata)
 
 
-def build_company_mock_tools(
-    repository: FixtureRepository, caller: ToolCaller
-) -> dict[str, CompanyResultTool]:
-    """集中装配现有内部功能到四个大步骤的映射。"""
-    batches = CompanyBatchResults(MockCompanyBatchProvider(repository), caller)
+def _build_batch_tools(batches: CompanyBatchResults) -> dict[str, CompanyResultTool]:
+    """集中维护四批次结果到现有 Workflow 工具名的稳定映射。"""
     mapping = {
         "get_well_data": ("analysis", "well_data"),
         "check_curve_quality": ("preprocessing", "qc"),
@@ -188,3 +191,26 @@ def build_company_mock_tools(
     return {
         name: CompanyResultTool(name, stage, key, batches) for name, (stage, key) in mapping.items()
     }
+
+
+def build_company_mock_tools(
+    repository: FixtureRepository, caller: ToolCaller
+) -> dict[str, CompanyResultTool]:
+    """装配不访问网络的四批次演示实现。"""
+
+    return _build_batch_tools(CompanyBatchResults(MockCompanyBatchProvider(repository), caller))
+
+
+def build_company_real_tools(
+    client: CompanyApiClient,
+    settings: CompanyApiSettings,
+    output_dir: Path,
+    caller: ToolCaller,
+) -> tuple[dict[str, CompanyResultTool], object]:
+    """装配真实公司工具；调用者负责在应用关闭时关闭 provider。"""
+
+    # 延迟导入避免 Mock-only 启动时加载 GDSX/Pandas 运行依赖。
+    from cnlc_agent.tools.company_real import RealCompanyBatchProvider
+
+    provider = RealCompanyBatchProvider(client, settings, output_dir)
+    return _build_batch_tools(CompanyBatchResults(provider, caller)), provider

@@ -8,6 +8,7 @@ from typing import cast
 import httpx
 from agentscope.app.storage import RedisStorage
 from agentscope.message import TextBlock, ToolCallBlock
+from agentscope.middleware import TracingMiddleware
 from agentscope.model import ChatModelBase
 from agentscope.tool import Toolkit, ToolResponse
 from fakeredis.aioredis import FakeRedis
@@ -91,6 +92,9 @@ async def test_demo_agent_registers_and_calls_only_interpretation_tool(data_dir)
         model=model,
         toolkit=Toolkit(tools=tools),
     )
+    assert isinstance(agent._reply_middlewares[0], TracingMiddleware)
+    assert isinstance(agent._model_call_middlewares[0], TracingMiddleware)
+    assert isinstance(agent._acting_middlewares[0], TracingMiddleware)
     schemas = await agent.toolkit.get_tool_schemas()
     assert {schema["function"]["name"] for schema in schemas} == ALLOWED_TASK_TOOLS
 

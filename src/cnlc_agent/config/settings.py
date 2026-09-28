@@ -13,8 +13,9 @@ class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CNLC_", env_file=".env", extra="ignore")
 
     mode: Literal["mock", "demo"] = "mock"
-    # company_mock 通过四个大步骤返回既有演示数据，不访问公司内网。
-    professional_provider: Literal["fixture", "company_mock"] = "fixture"
+    # company_mock 通过四个大步骤返回既有演示数据，不访问公司内网；
+    # company_real 使用本地配置的脱敏 GDSX 和公司服务，仍沿用同一 Workflow Contract。
+    professional_provider: Literal["fixture", "company_mock", "company_real"] = "fixture"
     model_provider: Literal["mock", "openai_compatible", "openai-compatible", "real"] = "mock"
     mock_data_dir: Path = Path("mock_data")
     output_dir: Path = Path("outputs")

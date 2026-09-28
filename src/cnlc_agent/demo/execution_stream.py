@@ -262,12 +262,14 @@ class ExecutionReplyStreamer:
                             completion_error = True
                 else:
                     code = completed.error_code or "INTERPRETATION_FAILED"
+                    detail = completed.error_message
+                    detail_text = f"：{detail}" if isinstance(detail, str) and detail else ""
                     yield ThinkingBlockDeltaEvent(
                         reply_id=reply_id,
                         block_id=block_id,
-                        delta=f"\n✗ 解释执行失败（错误代码：{code}）\n",
+                        delta=f"\n✗ 解释执行失败（错误代码：{code}{detail_text}）\n",
                     )
-                    final_text = f"解释执行失败（错误代码：{code}），请查看任务面板。"
+                    final_text = f"解释执行失败（错误代码：{code}{detail_text}）。"
             elif completion_error:
                 yield ThinkingBlockDeltaEvent(
                     reply_id=reply_id,

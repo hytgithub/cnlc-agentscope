@@ -367,11 +367,24 @@ class InterpretationTaskService:
                         "INPUT_MATERIALIZER_REQUIRED", "输入执行需要受控物化适配器"
                     )
                 await materialize(version)
-            state, markdown = await self._run_execution(
-                request,
-                execution.state_snapshot.model_copy(deep=True),
-                start_step=execution.start_step,
-            )
+            with self.telemetry.span(
+                "execution",
+                {
+                    "task_id": request.task_id,
+                    "execution_id": execution.execution_id,
+                    "trace_id": execution.state_snapshot.trace_id,
+                    "worker_id": worker_id,
+                    "start_step": (
+                        execution.start_step.value if execution.start_step is not None else "REPORT"
+                    ),
+                },
+                new_trace=True,
+            ):
+                state, markdown = await self._run_execution(
+                    request,
+                    execution.state_snapshot.model_copy(deep=True),
+                    start_step=execution.start_step,
+                )
             if lease_lost.is_set():
                 raise InfrastructureError("EXECUTION_LEASE_LOST", "执行租约已失效")
             error_code = state.errors[-1].code if state.errors else None

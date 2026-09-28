@@ -53,6 +53,7 @@ async def test_one_prediction_maps_multiple_steps_without_repeating_call():
             request.url.path == "/center-management/center/InferenceLog/encodingInferenceBySyn/v1"
         )
         assert request.headers["Authorization"] == "private-test-token"
+        assert json.loads(request.content)["encodingUrl"] == ""
         return httpx.Response(
             200, json={"code": 200, "data": {"evaluationData": {"resultData": [original]}}}
         )
