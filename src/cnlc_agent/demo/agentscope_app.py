@@ -35,13 +35,14 @@ from cnlc_agent.demo.demo_agent import (
     MockTaskShellCredential,
     MockTaskShellModel,
 )
+from cnlc_agent.demo.operation_tool import build_agent_task_tools
 from cnlc_agent.demo.read_models import (
     InterpretationExecutionView,
     InterpretationTaskView,
     present_execution_view,
     present_task_view,
 )
-from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
+from cnlc_agent.demo.task_tools import TaskCommandRunner
 from cnlc_agent.domain.session_binding import TaskSessionIdentity
 from cnlc_agent.infrastructure.conversation import DurableConversationStorage
 
@@ -87,7 +88,7 @@ async def demo_agent_tools(
 ) -> list[ToolBase]:
     """独立调用时创建一组隔离任务工具；HTTP 使用下方应用级会话工厂。"""
 
-    return build_task_tools(
+    return build_agent_task_tools(
         TaskCommandRunner(
             session_identity=TaskSessionIdentity(
                 user_id=user_id,
@@ -127,7 +128,7 @@ class SessionTaskToolFactory:
                 runner = self._new_runner(user_id, agent_id, session_id)
                 await runner.restore_task_bindings()
                 self.runners[key] = runner
-        return build_task_tools(self.runners[key])
+        return build_agent_task_tools(self.runners[key])
 
     def _new_runner(self, user_id: str, agent_id: str, session_id: str) -> TaskCommandRunner:
         """集中构造携带完整 Session identity 的 runner。"""

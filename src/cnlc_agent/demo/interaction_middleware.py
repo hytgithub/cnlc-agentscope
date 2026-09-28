@@ -1,6 +1,7 @@
 """在 AgentScope 请求生命周期管理短期澄清，不另行调用意图模型。"""
 
 import json
+import re
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 from uuid import uuid4
@@ -17,6 +18,7 @@ from agentscope.event import (
 from agentscope.message import ToolCallBlock, ToolResultState
 from agentscope.middleware import MiddlewareBase
 from agentscope.tool import ToolResponse
+from pydantic import ValidationError
 
 from cnlc_agent.demo.interaction_state import (
     InteractionPolicy,
@@ -49,7 +51,11 @@ class InteractionStateMiddleware(MiddlewareBase):
                 async for event in source:
                     yield event
                     if isinstance(event, ToolResultEndEvent):
+                        operation = event.metadata.get("operation")
                         payload = event.metadata.get("result", event.metadata)
+                        if operation is not None and not operation.get("created_execution_ids"):
+                            intercepted = operation
+                            break
                         if (payload.get("error_code") and payload.get("message")) or payload.get(
                             "command"
                         ) in {
@@ -69,7 +75,7 @@ class InteractionStateMiddleware(MiddlewareBase):
                     TextBlockDeltaEvent(
                         reply_id=reply_id,
                         block_id=block_id,
-                        delta=render_interaction_result(intercepted),
+                        delta=render_operation_result(intercepted),
                     ),
                     TextBlockEndEvent(reply_id=reply_id, block_id=block_id),
                     ReplyEndEvent(session_id=agent.state.session_id, reply_id=reply_id),
@@ -97,6 +103,53 @@ class InteractionStateMiddleware(MiddlewareBase):
             for block in message.content
             if isinstance(block, ToolCallBlock)
         ]
+        # AgentScope 的 Schema 参数清理可能删掉未知字段；先校验原始调用，
+        # 防止局部范围或错误嵌套被静默丢弃后变成另一项合法操作。
+        from cnlc_agent.demo.operation_interaction import PlanRequest
+        from cnlc_agent.demo.operation_tool import OPERATION_TOOL_NAME, OperationToolInput
+
+        try:
+            for call in calls:
+                if call.name == OPERATION_TOOL_NAME:
+                    request = OperationToolInput.model_validate_json(call.input).request
+                    if isinstance(request, PlanRequest):
+                        # 仅验证模型数值来源，不进行意图分类或专业计算。新计划不能从已取消
+                        # 的旧聊天借值；跨轮补齐必须通过有效 Pending 的 CLARIFICATION_REPLY。
+                        user_text = next(
+                            (
+                                msg.get_text_content() or ""
+                                for msg in reversed(agent.state.context)
+                                if msg.role == "user"
+                            ),
+                            "",
+                        )
+                        numbers = {
+                            float(match.group(1)) / (100 if match.group(2) else 1)
+                            for match in re.finditer(
+                                r"(?<![\d.])([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(%)?",
+                                user_text,
+                            )
+                        }
+                        if any(
+                            op.action == "MODIFY_PARAMETER"
+                            and op.parameters.value is not None
+                            and op.parameters.value.mode == "ABSOLUTE"
+                            and op.parameters.value.value not in numbers
+                            for op in request.plan.operations
+                        ):
+                            raise ValueError("new modification value is not grounded in this turn")
+        except (ValidationError, ValueError, TypeError):
+            self.runner.clear_operation_clarification()
+            chunk = interaction_chunk(
+                "INVALID_OPERATION_PLAN", "操作结构无效，请明确任务、目标、范围和修改值。"
+            )
+            yield ToolResponse(
+                id=input_kwargs["tool_call"].id,
+                content=chunk.content,
+                state=ToolResultState.ERROR,
+                metadata=chunk.metadata,
+            )
+            return
         writes = [
             call
             for call in calls
@@ -105,16 +158,23 @@ class InteractionStateMiddleware(MiddlewareBase):
                 "run_well_interpretation",
                 "modify_well_interpretation",
                 "rerun_well_interpretation",
+                "interpret_interpretation_operation",
             }
         ]
-        if len(writes) > 1 or (
-            writes and any(call.name == "request_interpretation_clarification" for call in calls)
+        if (
+            (writes and self.runner.operation_request_used)
+            or len(writes) > 1
+            or (
+                writes
+                and any(call.name == "request_interpretation_clarification" for call in calls)
+            )
         ):
             decision = InteractionPolicy.decide(InteractionSnapshot(), "MODIFY", conflict=True)
             chunk = interaction_chunk(
                 decision.error_code or "CLARIFICATION_REQUIRED", decision.message
             )
             self.runner.clear_pending()
+            self.runner.clear_operation_clarification()
             yield ToolResponse(
                 id=input_kwargs["tool_call"].id,
                 content=chunk.content,
@@ -122,6 +182,8 @@ class InteractionStateMiddleware(MiddlewareBase):
                 metadata=chunk.metadata,
             )
             return
+        if writes:
+            self.runner.operation_request_used = True
         async for event in next_handler(**input_kwargs):
             yield event
 
@@ -129,8 +191,31 @@ class InteractionStateMiddleware(MiddlewareBase):
         """动态快照不是聊天摘要；每次推理仍以仓库状态为准。"""
 
         snapshot = await self.runner.interaction_snapshot()
+        payload = snapshot.model_dump(mode="json", exclude={"pending_clarification"})
+        payload["interaction_context"] = self.runner.interaction_context.model_dump(mode="json")
+        pending = self.runner.pending_operation_clarification()
+        payload["pending_operation_clarification"] = (
+            {
+                "operations": [
+                    {"operation_id": op.operation_id, "action": op.action, "target": op.target}
+                    for op in pending.partial_plan.operations
+                ],
+                "issues": [issue.model_dump(mode="json") for issue in pending.issues],
+            }
+            if pending
+            else None
+        )
         return (
             current_prompt
             + "\n当前可信交互快照（不得由聊天记忆覆盖）：\n"
-            + json.dumps(snapshot.model_dump(mode="json"), ensure_ascii=False)
+            + json.dumps(payload, ensure_ascii=False)
         )
+
+
+def render_operation_result(payload: dict[str, Any]) -> str:
+    """业务读取沿用真实报告/状态 renderer；交互结果只显示服务器安全文案。"""
+    if "task_results" not in payload:
+        return render_interaction_result(payload)
+    if payload["task_results"]:
+        return "\n\n".join(render_interaction_result(item) for item in payload["task_results"])
+    return payload.get("message") or "本次请求没有产生新的执行。"

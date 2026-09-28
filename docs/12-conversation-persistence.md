@@ -117,7 +117,7 @@ AgentScope 删除 Session 时，先删除 PostgreSQL Conversation 和其 Message
 的短 TTL、紧邻轮次与 runner owner 校验；Redis 丢失或 Backend 重建后不会从旧 Message 自动恢复。
 
 Task 10.5-D 的 PendingOperationClarification（通用待澄清计划）使用独立 key
-`cnlc_pending_operation_clarification`，尚未接入 ReAct。活跃 Redis 可以保存其完整结构；
+`cnlc_pending_operation_clarification`，E2 已接入 ReAct 并绑定 Session Runner。活跃 Redis 可以保存其完整结构；
 Store 读取时校验服务端 owner、TTL、本轮或紧邻下一轮，并清除损坏数据。新 Store owner 不复用
 旧 owner，Backend 生命周期丢失后安全失效。PostgreSQL 永久归档不保存它，Redis miss 后不从
 消息或摘要重建；既有 legacy active Task hint 保留规则不变。
@@ -141,8 +141,8 @@ ViewContext（当前查看上下文）和 RecentContext（近期交互上下文�
 Message 推断回来；需要时重新澄清。所有 task / execution / interval 引用仍须在真正执行时经
 OperationReferenceResolver、ScopeResolver 和 Binding 校验。
 
-本次只提供上下文 API 与兼容桥。现有只读 Tool 成功后调用 `set_active_task` 的行为和
-interaction_snapshot 不变；只读到 View、写操作到 Active 的统一路由留待 Task 10.5-E。
+E2 正式路径通过统一 Operation Tool 将只读操作更新到 View、写操作更新到 Active。
+显式切换焦点使用写安全 Resolver；普通刷新保留 Pending owner，Runner 重建时安全丢弃。
 
 完整聊天历史通过 Message 分页恢复给 UI。模型运行上下文仍使用 AgentScope `AgentState.context` 和既有
 context compression；Conversation repository 不把 100/500/1000 条历史一次性塞回模型上下文。

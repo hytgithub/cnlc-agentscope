@@ -5,6 +5,7 @@ import { interpretationApi } from '@/api';
 
 const TASK_TOOLS = new Set([
 	'run_well_interpretation',
+	'interpret_interpretation_operation',
 	'modify_well_interpretation',
 	'rerun_well_interpretation',
 	'get_interpretation_status',

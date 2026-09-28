@@ -17,6 +17,11 @@ from cnlc_agent.demo.operation_models import (
     OperationScope,
     OperationScopeKind,
 )
+from cnlc_agent.demo.operation_parser import (
+    IntervalOrdinalReference,
+    MultiIntervalOrdinalReference,
+    PartialScope,
+)
 from cnlc_agent.demo.reference_resolver import OperationReferenceResolver
 from cnlc_agent.domain.errors import DataError
 from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, Execution
@@ -202,6 +207,21 @@ class ScopeResolver:
             depth_coverage=coverage,
             resolution_source=scope.kind,
         )
+
+    async def resolve_reference(
+        self, task_id: str, execution_id: str, scope: PartialScope
+    ) -> ResolvedScope:
+        """在已选版本内原子规范化层号；任一层不存在则整个范围失败。"""
+        if isinstance(scope, IntervalOrdinalReference):
+            item = await self.resolve_interval_ordinal(task_id, execution_id, scope.ordinal)
+            scope = IntervalScope(interval_id=item.interval_id)
+        elif isinstance(scope, MultiIntervalOrdinalReference):
+            items = [
+                await self.resolve_interval_ordinal(task_id, execution_id, ordinal)
+                for ordinal in scope.ordinals
+            ]
+            scope = MultiIntervalScope(interval_ids=[item.interval_id for item in items])
+        return await self.resolve(task_id, execution_id, scope)
 
     async def resolve_interval_ordinal(
         self, task_id: str, execution_id: str, ordinal: int

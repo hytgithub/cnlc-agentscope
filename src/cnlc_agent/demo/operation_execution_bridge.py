@@ -29,7 +29,11 @@ from cnlc_agent.demo.operation_models import (
     ResolutionOutcome,
     WholeWellScope,
 )
-from cnlc_agent.demo.operation_parser import ClarificationIssue, PartialOperationPlan
+from cnlc_agent.demo.operation_parser import (
+    ClarificationIssue,
+    ClarificationSlot,
+    PartialOperationPlan,
+)
 from cnlc_agent.demo.plan_validator import PlanIssue, PlanValidationResult, PlanValidator
 from cnlc_agent.demo.reference_resolver import (
     OperationReferenceResolver,
@@ -38,6 +42,7 @@ from cnlc_agent.demo.reference_resolver import (
     ResolvedTaskReference,
 )
 from cnlc_agent.demo.scope_resolver import ResolvedScope, ScopeResolver
+from cnlc_agent.demo.task_context import TaskReference
 from cnlc_agent.demo.task_tools import TaskCommandRunner
 from cnlc_agent.domain.errors import ApplicationError, DataError
 from cnlc_agent.domain.models import Contract
@@ -117,6 +122,20 @@ class OperationExecutionBridge:
                     )
                     scopes = ScopeResolver(service.repository, self.runner.session_identity)
                     for op in plan.operations:
+                        if (
+                            op.task_reference is None
+                            and context.active
+                            and any(
+                                issue.operation_id == op.operation_id
+                                and issue.error_code == "VIEW_ACTIVE_CONTEXT_CONFLICT"
+                                and issue.slot == ClarificationSlot.EXECUTION
+                                for issue in resolved.issues
+                            )
+                        ):
+                            # 同任务的版本冲突可先核验 current；跨任务冲突绝不填默认目标。
+                            op.task_reference = TaskReference(
+                                kind="TASK_ID", value=context.active.task_id
+                            )
                         if op.action in TASK_CREATION_ACTIONS or op.task_reference is None:
                             continue
                         task = await references.resolve_task(
@@ -164,9 +183,26 @@ class OperationExecutionBridge:
                         )
                         result.resolved_executions[op.operation_id] = execution
                         op.scope = op.scope or WholeWellScope()
-                        result.resolved_scopes[op.operation_id] = await scopes.resolve(
+                        result.resolved_scopes[op.operation_id] = await scopes.resolve_reference(
                             task.task_id, execution.execution_id, op.scope
                         )
+                        op.scope = result.resolved_scopes[op.operation_id].scope
+                    # C 的纯上下文阶段不知道 View 是否仍是 current；仅用 B 的真实事实消除误报。
+                    view = context.view
+                    if view is not None:
+                        resolved.issues = [
+                            issue
+                            for issue in resolved.issues
+                            if not (
+                                issue.error_code == "VIEW_ACTIVE_CONTEXT_CONFLICT"
+                                and issue.slot == ClarificationSlot.EXECUTION
+                                and issue.operation_id in result.resolved_tasks
+                                and result.resolved_tasks[issue.operation_id].task_id
+                                == view.task_id
+                                and result.resolved_tasks[issue.operation_id].current_execution_id
+                                == view.execution_id
+                            )
+                        ]
                     result.validation = self.validator.validate(
                         resolved, resolved_task_references=result.resolved_tasks
                     )

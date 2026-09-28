@@ -1,7 +1,7 @@
 """严格结构化输入与不完整计划；不识别自然语言，不调用模型或业务执行层。"""
 
 from enum import StrEnum
-from typing import Self
+from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
@@ -12,7 +12,6 @@ from cnlc_agent.demo.operation_models import (
     NonBlank,
     OperationCondition,
     OperationConstraint,
-    OperationContext,
     OperationEdge,
     OperationInputReference,
     OperationNode,
@@ -51,16 +50,55 @@ class ClarificationIssue(Contract):
     evidence: JsonObject = Field(default_factory=dict)
 
 
+class IntervalOrdinalReference(Contract):
+    """模型只表达一基层号，稳定层段身份由目标版本的 Resolver 生成。"""
+
+    kind: Literal["INTERVAL_ORDINAL"] = "INTERVAL_ORDINAL"
+    ordinal: int = Field(ge=1, strict=True)
+
+
+class MultiIntervalOrdinalReference(Contract):
+    """多个层号按输入顺序去重，解析时必须全部存在。"""
+
+    kind: Literal["MULTI_INTERVAL_ORDINAL"] = "MULTI_INTERVAL_ORDINAL"
+    ordinals: list[Annotated[int, Field(ge=1, strict=True)]] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def unique_ordinals(self) -> Self:
+        """稳定去重，不排序或丢弃无效层号。"""
+        object.__setattr__(self, "ordinals", list(dict.fromkeys(self.ordinals)))
+        return self
+
+
+PartialScope = OperationScope | IntervalOrdinalReference | MultiIntervalOrdinalReference
+
+
+class PartialOperationContext(Contract):
+    """仅中间计划允许未解析层号；完整 OperationContext 的契约保持不变。"""
+
+    task_reference: TaskReference | None = None
+    execution_reference: ExecutionReference | None = None
+    scope: PartialScope | None = None
+
+
 class PartialOperationNode(Contract):
     """动作已知但目标等槽位可以缺失的中间节点，不能直接传入业务 Tool。"""
 
     operation_id: NonBlank
     action: ActionType
     target: TargetType | None = None
-    task_reference: TaskReference | None = None
-    execution_reference: ExecutionReference | None = None
-    scope: OperationScope | None = None
-    parameters: OperationParameters = Field(default_factory=OperationParameters)
+    task_reference: TaskReference | None = Field(default=None, description="节点直接字段：任务引用")
+    execution_reference: ExecutionReference | None = Field(
+        default=None,
+        description="节点直接字段：版本引用；上一版为 kind=PREVIOUS，不放在 parameters 内",
+    )
+    scope: PartialScope | None = Field(
+        default=None, description="节点直接字段：操作范围或未解析层号"
+    )
+    parameters: OperationParameters = Field(
+        default_factory=OperationParameters,
+        description="数值修改使用 parameters.value；禁止把 task/execution 引用或 scope 放在这里",
+    )
     constraints: list[OperationConstraint] = Field(default_factory=list)
     input_refs: list[OperationInputReference] = Field(default_factory=list)
     output_alias: NonBlank | None = None
@@ -78,7 +116,7 @@ class PartialOperationPlan(Contract):
     """解析和澄清中间态；完整计划的 persist_mode 仍然必填。"""
 
     input_classification: InputClassification
-    shared_context: OperationContext = Field(default_factory=OperationContext)
+    shared_context: PartialOperationContext = Field(default_factory=PartialOperationContext)
     operations: list[PartialOperationNode] = Field(default_factory=list)
     edges: list[OperationEdge] = Field(default_factory=list)
     conditions: list[OperationCondition] = Field(default_factory=list)
@@ -150,6 +188,13 @@ def missing_plan_slots(plan: PartialOperationPlan) -> list[ClarificationIssue]:
         )
     for op in plan.operations:
         missing: list[tuple[ClarificationSlot, str, str]] = []
+        if isinstance(
+            op.scope or plan.shared_context.scope,
+            (IntervalOrdinalReference, MultiIntervalOrdinalReference),
+        ):
+            missing.append(
+                (ClarificationSlot.SCOPE, "CLARIFICATION_REQUIRED", "层号需要在目标版本内解析")
+            )
         if op.target is None:
             missing.append((ClarificationSlot.TARGET, "CLARIFICATION_REQUIRED", "请明确操作目标"))
         if op.action in {ActionType.MODIFY_RESULT, ActionType.MODIFY_PARAMETER}:

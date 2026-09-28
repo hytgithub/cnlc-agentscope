@@ -1,4 +1,4 @@
-"""通用澄清的纯计划修补与 Session 生命周期；不接入旧 ReAct/澄清路径。"""
+"""通用澄清的纯计划修补与 Session 生命周期，由统一操作交互层调用。"""
 
 from collections.abc import Callable
 from time import time
@@ -22,6 +22,7 @@ from cnlc_agent.demo.operation_parser import (
     ClarificationIssue,
     ClarificationSlot,
     PartialOperationPlan,
+    PartialScope,
     missing_plan_slots,
 )
 from cnlc_agent.demo.reference_resolver import ResolvedExecutionReference, ResolvedTaskReference
@@ -56,7 +57,7 @@ class LockedOperationReference(Contract):
         execution: ResolvedExecutionReference | None = None,
         scope: ResolvedScope | None = None,
     ) -> Self:
-        """供未来 E 在 B 校验成功后使用；不接受用户 JSON 自称 trusted/locked。"""
+        """供统一交互层在解析校验成功后使用；不接受用户 JSON 自称 trusted/locked。"""
 
         if execution is not None and execution.task_id != task.task_id:
             raise ValueError("resolved execution belongs to a different task")
@@ -125,7 +126,7 @@ class ClarificationPatch(Contract):
     operation_id: NonBlank | None = None
     task_reference: TaskReference | None = None
     execution_reference: ExecutionReference | None = None
-    scope: OperationScope | None = None
+    scope: PartialScope | None = None
     target: TargetType | None = None
     value: ValueSpec | None = None
     method_id: NonBlank | None = None
@@ -273,6 +274,11 @@ class OperationClarificationStore:
         self._owner = uuid4().hex
         self._ttl = ttl_seconds
         self._clock = clock
+
+    def attach(self, context: dict[str, Any]) -> None:
+        """每轮更换 Session runtime 引用，保留同一 Runner 的 owner。"""
+
+        self._context = context
 
     def save(
         self,

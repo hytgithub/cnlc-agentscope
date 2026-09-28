@@ -34,6 +34,7 @@ from cnlc_agent.demo.operation_parser import (
     ClarificationIssue,
     ClarificationSlot,
     PartialOperationPlan,
+    PartialScope,
     finalize_partial_plan,
 )
 from cnlc_agent.demo.reference_resolver import ResolvedTaskReference
@@ -82,9 +83,22 @@ def _interval_ids(scope: OperationScope) -> set[str] | None:
     return None
 
 
-def _fully_excluded(scope: OperationScope, exclusions: list[OperationScope]) -> bool | None:
+def _fully_excluded(scope: PartialScope, exclusions: list[OperationScope]) -> bool | None:
     """仅处理能由显式集合/同基准几何证明的覆盖，无法判定时返回 None。"""
 
+    # 未解析层号没有稳定层段身份，不能在此宣称完全覆盖。
+    if not isinstance(
+        scope,
+        (
+            WholeWellScope,
+            IntervalScope,
+            MultiIntervalScope,
+            DepthRangeScope,
+            DepthPointScope,
+            FilterSetScope,
+        ),
+    ):
+        return None
     if any(isinstance(item, WholeWellScope) or item == scope for item in exclusions):
         return True
     ids = _interval_ids(scope)

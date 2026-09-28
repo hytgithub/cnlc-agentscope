@@ -42,7 +42,14 @@ from cnlc_agent.demo.interaction_state import (
     InteractionSnapshot,
     PendingClarification,
 )
+from cnlc_agent.demo.operation_clarification import (
+    ClarificationPatch,
+    LockedOperationReference,
+    OperationClarificationStore,
+    PendingOperationClarification,
+)
 from cnlc_agent.demo.operation_models import OperationScope
+from cnlc_agent.demo.operation_parser import ClarificationIssue, PartialOperationPlan
 from cnlc_agent.demo.task_context import SessionTaskResolver, TaskReference
 from cnlc_agent.domain.errors import ApplicationError, InfrastructureError
 from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, ExecutionStatus
@@ -94,6 +101,12 @@ class TaskCommandRunner:
         self._interaction_context_store = InteractionContextStore(self._session_runtime_context)
         self._interaction_owner = uuid4().hex
         self._interaction_turn = 0
+        self._operation_store = OperationClarificationStore(
+            self._session_runtime_context, ttl_seconds=self.settings.clarification_ttl_seconds
+        )
+        # 一个 HTTP 回合最多提交一个高层请求，防止 ReAct 重试重复写入。
+        self.operation_request_used = False
+        self.operation_lock = asyncio.Lock()
 
     def attach_session_runtime_context(self, context: dict[str, Any]) -> None:
         """接入 Session 短期焦点并兼容 legacy hint，不污染业务 Task。"""
@@ -101,6 +114,33 @@ class TaskCommandRunner:
         self._session_runtime_context = context
         self.pending_clarification()  # 新 runner 丢弃无法证明生命周期的旧 pending。
         self._interaction_context_store.attach(context)
+        self._operation_store.attach(context)
+        self.pending_operation_clarification()
+
+    def pending_operation_clarification(self) -> PendingOperationClarification | None:
+        """受 owner、TTL 和统一回合窗口保护的短期待澄清计划。"""
+        return self._operation_store.peek(turn=self._interaction_turn)
+
+    def save_operation_clarification(
+        self,
+        plan: PartialOperationPlan,
+        issues: list[ClarificationIssue],
+        locks: list[LockedOperationReference],
+    ) -> PendingOperationClarification:
+        """只由服务端保存已解析锁，模型不可提供 owner 或授权证明。"""
+        return self._operation_store.save(
+            plan, issues, turn=self._interaction_turn, locked_references=locks
+        )
+
+    def apply_operation_clarification(
+        self, patch: ClarificationPatch
+    ) -> PendingOperationClarification:
+        """修补不会延长原始计划的有效窗口。"""
+        return self._operation_store.apply_patch(patch, turn=self._interaction_turn)
+
+    def clear_operation_clarification(self) -> None:
+        """消费、取消或新请求清除 Pending，不修改业务历史。"""
+        self._operation_store.clear()
 
     @property
     def active_task_id(self) -> str | None:
@@ -134,7 +174,7 @@ class TaskCommandRunner:
     def set_view_context(
         self, task_id: str, execution_id: str | None = None, scope: OperationScope | None = None
     ) -> None:
-        """只改变查看对象；现有只读 Tool 的统一路由留待 10.5-E 接入。"""
+        """只改变查看对象；统一操作路由与旧 Tool 共用同一上下文。"""
 
         self._interaction_context_store.set_view_context(task_id, execution_id, scope)
 
@@ -199,6 +239,8 @@ class TaskCommandRunner:
         """计数只在请求入口推进，不从聊天摘要猜测。"""
 
         self._interaction_turn += 1
+        self.operation_request_used = False
+        self.pending_operation_clarification()
         self.pending_clarification()
 
     def end_interaction_turn(self) -> None:
@@ -207,6 +249,12 @@ class TaskCommandRunner:
         pending = self.pending_clarification()
         if pending is not None and pending.created_turn < self._interaction_turn:
             self.clear_pending()
+        operation_pending = self.pending_operation_clarification()
+        if (
+            operation_pending is not None
+            and operation_pending.created_turn < self._interaction_turn
+        ):
+            self.clear_operation_clarification()
 
     async def resolve_task_reference(self, reference: TaskReference) -> str:
         """解析只返回受授权目标；成功操作后才切换 active task。"""
@@ -301,6 +349,7 @@ class TaskCommandRunner:
 
         self.clear_pending()
         InteractionPolicy.decide(await self.interaction_snapshot(), "START")
+        self.clear_operation_clarification()
         async with self._lock:
             with TemporaryDirectory(prefix="cnlc-submit-") as directory:
                 root = Path(directory)

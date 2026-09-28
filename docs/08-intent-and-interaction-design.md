@@ -1,156 +1,114 @@
-# 测井解释智能体意图识别与交互设计
+# 测井解释智能体意图识别与交互设计（Current Design）
 
-本文描述当前已实现的自然语言入口。系统没有独立 `IntentClassifier`。状态、枚举、任务引用和报告 selector 的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。真实模式由 AgentScope ReAct Agent 使用 `qwen-plus`，结合固定系统提示、五个业务任务级 Tool 与一个纯交互 Tool 的描述和 JSON Schema 选择动作；业务参数随后由 Pydantic Command 校验，局部重跑由确定性的 `DependencyResolver` 决定。
+Task 10.5-E2 已将 Operation 语义层接入 AgentScope ReAct / qwen-plus。系统没有独立
+自然语言关键词分类器；MockTaskShellModel 仅是离线测试桩。稳定代码中文含义见
+[11-status-enum-glossary.md](11-status-enum-glossary.md)。
 
-## 1. 四层边界
+## 1. 正式入口与职责
 
 ```mermaid
 flowchart TD
-    R[请求路由] -->|含附件| U[UploadInterpretationReply]
-    R -->|纯文本| I[ReAct 语义意图]
-    U --> A1[run_well_interpretation]
-    I --> A[五个 Task-level Tools]
-    A --> C[Pydantic Command]
-    C --> D[TaskCommands / Application Service]
-    D --> P[DependencyResolver / ExecutionPlan]
-    P --> W[MainAgent / W01-W10 Workflow]
+    R[用户请求] -->|附件| U[UploadInterpretationReply]
+    R -->|纯文本| A[qwen-plus ReAct]
+    U --> S[已校验资料首次解释]
+    A -->|明确 Fixture 井号首次解释| S
+    A --> O[interpret_interpretation_operation]
+    O --> C[OperationInteractionController]
+    C --> B[Context / Reference / Scope Resolver / PlanValidator]
+    B --> E[OperationExecutionBridge]
+    E --> T[Task Commands / Application]
+    S --> T
+    T --> D[DependencyResolver / ExecutionPlan]
+    D --> W[MainAgent / W01-W10 Workflow]
 ```
 
-四层分别是：
+正式模型只看到 `run_well_interpretation` 与 `interpret_interpretation_operation`。
+旧五个后续操作 Tool 和 `build_task_tools()` 保留供兼容调用与低层回归；生产
+SessionTaskToolFactory 使用 `build_agent_task_tools()`，Agent 严格验证工具名称、实现与共享 Runner。
+专业 Tool、文件系统、MCP、Skills 和任意 AgentScope 内置工具不进入这个 Toolkit。
 
-1. **Request Route**：根据当前轮是否有附件做确定性分流。
-2. **Semantic Intent**：纯文本由 ReAct 理解用户想启动、修改、重跑、查状态还是读报告。
-3. **Action**：五个业务任务级 Tool 与一个纯交互澄清 Tool；InteractionPolicy 集中裁决状态可用性。
-4. **Validation and Planning**：Pydantic、Command 和 DependencyResolver 校验参数、归属、并发和依赖；LLM 不能指定 Workflow 起点。
+附件仍由 UploadInterpretationReply 校验并调用 start_uploaded，不先让模型创建空任务。
+无附件且无明确 Fixture 井号时提示上传资料。首次解释创建 Task / InputVersion / Execution。
 
-## 2. 附件路由
+## 2. 统一 Operation Tool Contract
 
-附件请求不发送二进制给 qwen-plus。`UploadInterpretationReply` 调用 `parse_upload`，限制一份 JSON、大小和编码，校验并规范化为 `MockFixture`，再直接调用 `run_well_interpretation`。上传失败返回确定性错误；成功后创建 InputVersion 和 `QUEUED` Execution，并进入首次解释流式回复。
+| 项目 | 定义 |
+| --- | --- |
+| Name | interpret_interpretation_operation |
+| Responsibility | 接收有限结构化语义，调用交互 Controller 与唯一执行桥。 |
+| Input | 严格判别联合 OperationRequest；顶层只有 request，未知字段拒绝。 |
+| Output | outcome、error_code、message、task_results、created_execution_ids、capability_facts。 |
+| Error | 既有解析、规划、澄清及命令错误码；不回传原始异常或内部配置。 |
+| Timeout | 复用 Repository/Redis 的基础设施超时与应用后台执行策略；不新增外部调用。 |
+| Status | 命令成功不等于后台完成，执行终态读取 TaskCommandResult。 |
+| Mock | MockTaskShellModel 产生同一 Schema 的调用，专业执行仍经过正式 Runner。 |
+| Test | Tool 单测、脚本模型 ReAct、真实 qwen-plus、HTTP/SSE、PG/Redis 与页面验收。 |
 
-这条路由保证附件内容不会膨胀模型上下文，也避免模型从二进制中猜测井号。附件仍由 AgentScope 消息存储保存，但专业执行只读取已校验的 InputVersion。
+| mode | 中文含义 | 输入和副作用 |
+| --- | --- | --- |
+| `PLAN` | 提交计划 | PartialOperationPlan；所有意图放入同一 operations，完整校验后才可能提交命令。 |
+| `CLARIFICATION_REPLY` | 澄清补齐 | ClarificationPatch，仅修补允许槽位；完成后重新解析并执行一次。 |
+| `CANCEL` | 取消待澄清计划 | 清除 Pending，零业务执行；不取消已运行的后台任务。 |
+| `SET_ACTIVE_CONTEXT` | 显式切换操作焦点 | WRITE（写安全）规则解析 Task，可指定版本/范围；不创建 Execution。 |
 
-## 3. 纯文本 ReAct 路由
+AgentScope 2.0.8 会修复部分 JSON 并移除未知字段，因此 on_acting 先对原始 ToolCall 再做
+Pydantic 校验。框架早于 on_acting 的 Schema 错误出口由项目 Agent 子类投影为安全固定错误，
+终止本轮；不让模型绕过拒绝继续重试，也不显示框架原始异常。
 
-没有附件时，`LoggingInterpretationDemoAgent` 是 AgentScope ReAct Agent。真实模式固定使用 `qwen-plus`，允许模型读取对话语义并按 Tool 描述与 JSON Schema 形成调用。Task 10.3 在每次推理前注入仓库派生的 InteractionSnapshot；模型可见 Schema 只使用 task_reference，旧 Python task_id 调用保持 adapter 兼容。Tool 结果中的 `task_id` / `execution_id` 才是可信标识；模型输出本身不构成任务归属或执行事实。
+## 3. 有限语义示例
 
-| Intent | Task-level Tool | Required Context | 参数 | 只读 | 创建新 Execution |
-| --- | --- | --- | --- | --- | --- |
-| START（开始解释） | `run_well_interpretation` | 已校验上传或 fixture | `well_id` | 否 | 是，同时创建 Task / InputVersion |
-| MODIFY（修改参数并重跑） | `modify_well_interpretation` | 当前会话拥有的 Task | `task_id`、变化字段 | 否 | 是 |
-| FULL_RERUN（全量重跑） | `rerun_well_interpretation` | 当前会话拥有的 Task | `task_id` | 否 | 是，从 W01 开始 |
-| STATUS（查询状态） | `get_interpretation_status` | 当前会话拥有的 Task | `task_id` | 是 | 否 |
-| GET_REPORT（查询报告） | `get_interpretation_report` | 当前会话拥有的 Task | `task_id`、selector 或可信 execution_id | 是 | 否 |
+| 用户输入 | 语义 | 当前结果 |
+| --- | --- | --- |
+| 孔隙度改成0.16 | MODIFY_PARAMETER（修改参数）、POROSITY（孔隙度） | 新版本，应用层决定复用范围。 |
+| 孔隙度、渗透率都改成0.16 | 同一计划两个参数节点 | 聚合为一个命令、一个 Execution。 |
+| 改成0.17 → 孔隙度 | 缺 TARGET（目标）→ 补齐 | 第一轮零执行，第二轮恰好一次。 |
+| 全部重跑 | FULL_RERUN（全量重跑） | 保留有效参数，从 W01 开始。 |
+| 当前报告 / 上一版报告 | REPORT（报告查询）、TASK_CURRENT（当前版本）/ PREVIOUS（上一版本） | 只更新 View，不改变当前版本或写焦点。 |
+| 现在到哪一步 | STATUS（查询状态） | 读取当前 Execution 持久事实。 |
+| 你能只重新算Sw吗 | CAPABILITY_QUERY（能力询问）、RECALCULATE（重新计算） | 返回真实能力目录，零执行。 |
+| 第5层孔隙度改成0.16 | INTERVAL_ORDINAL（单层号引用） | 解析目标版本第5层后安全拒绝局部写；层号不存在则明确失败。 |
+| 如果Sw大于60%就改成水层 | conditions（条件）+ MODIFY_RESULT（修改派生结果） | 条件执行未开放，整个计划零副作用。 |
+| 算了 | CANCEL | 不让后续参数名恢复旧值。 |
+| 不对，是第6层 | CORRECTION（修正） | 仅修正未执行 Pending，撤销相关旧锁并重新解析。 |
+| 切到WELL_A继续处理 | SET_ACTIVE_CONTEXT | 显式改变 Active，清除旧 View（包括同井历史锚点）。 |
+| 天气怎么样 | OUT_OF_DOMAIN（领域外请求） | 不调用业务 Tool。 |
 
-报告 selector 支持 `CURRENT`（当前版本报告）、`PREVIOUS`（当前井上一版报告，不跨 Task）、`LATEST_SUCCESSFUL`（当前井最近成功报告）。显式 `execution_id` 仍需验证属于该 Task。
+数值位于 `operations[].parameters.value`，不能放在节点顶层。16% 的绝对孔隙度可表达为
+ABSOLUTE（绝对设置）0.16 / unit=1；提高2% 使用 PERCENT_CHANGE（比例变化），当前安全拒绝，
+不猜测成绝对值。非数值的分类要求保留在 original_instruction，不放入数值 ValueSpec。
 
-START、MODIFY 和 FULL_RERUN 的 Task Tool 返回 `QUEUED/RUNNING` 与可信
-`task_id + execution_id` 后，统一进入 `ExecutionReplyStreamer`。ReAct 只负责选择动作；
-W01～W10、专业 Tool、RUN/REUSE 和报告均来自该 Execution 的持久事实与 Telemetry，
-不会再次经过 qwen-plus 生成。STATUS 与 GET_REPORT 是只读动作，调用 Tool 后按受控读模型直接生成回复。澄清／稳定拒绝也直接输出固定文案，不让模型重复重试或改写。
+## 4. Pending 生命周期
 
-### 3.1 意图矩阵
+TaskCommandRunner 持有一个 OperationClarificationStore，owner token 与该会话 Runner 同寿命。
+每轮 attach 新 middle_context 只更换引用，不重建 owner。Pending 使用独立 key
+`cnlc_pending_operation_clarification`，沿用 begin/end_interaction_turn 的回合计数与配置 TTL。
 
-| 用户表达 | Intent | Tool | 结果 |
-| --- | --- | --- | --- |
-| 帮我解释这口井 + 文件 | START | `run_well_interpretation` | Execution #1 |
-| 把孔隙度改成 0.16 | MODIFY | `modify_well_interpretation` | 新 Execution |
-| 把 POR/PERM 改成 0.16 | MODIFY | `modify_well_interpretation` | 新 Execution |
-| 全部重新跑 | FULL_RERUN | `rerun_well_interpretation` | 全流程新 Execution |
-| 现在处理到哪里了 | STATUS | `get_interpretation_status` | 读取真实状态 |
-| 现在执行到哪里了 / 处理到什么地方了 / 现在到哪一步了 | STATUS | `get_interpretation_status` | 读取当前 Execution |
-| 给我上一版报告 | GET_REPORT | `get_interpretation_report(PREVIOUS)` | 历史报告 |
-| 给我当前报告 | GET_REPORT | `get_interpretation_report(CURRENT)` | 当前报告 |
-| 最近成功报告 | GET_REPORT | `get_interpretation_report(LATEST_SUCCESSFUL)` | 最近成功版本 |
-| 帮我看看天气 | OUT_OF_DOMAIN（领域外请求） | none | 不调用测井 Tool |
+首轮缺槽时保存完整 Partial Plan，只锁定 Resolver 成功授权的 Task / Execution / Scope。
+普通补齐不得改变锁定对象；修正可撤销相关锁，但必须再次校验。执行前消费 Pending，成功、
+失败均不重放。新计划、取消、无关下一轮、TTL 到期、owner 改变和 Redis miss 均清除旧 Pending。
+普通浏览器刷新保留同进程 Runner + Redis 状态；PostgreSQL 不持久化 Pending，不从聊天恢复它。
 
-## 4. 参数理解和校验
+## 5. 任务、版本与层段引用
 
-当前 `InterpretationOverride` 只支持：
+SessionTaskBinding 是唯一授权来源。Active 是后续操作焦点，View 是刚查看的结果，Recent 是短期引用。
+读取其他井或历史报告不能切换 Active；隐式写遇到 Active/View 冲突须澄清，不新建 Execution。
+显式切井使用 WRITE 解析：同井多个 Task 且无唯一当前目标时拒绝猜测。切井成功后清除旧 View，
+Recent 不变；未指定版本只设置 Active Task，不自动创建工作基线。
 
-- `sampling_interval`：正浮点数；
-- `por`：0～1；
-- `perm`：非负数，正式单位和专业规则待确认；
-- `prediction_model`：受限标识字符串。
+PREVIOUS 优先相对同 Task 的 View 版本，再按 Active Base / Task current 解析；例如 current=V4、
+View=V3 时返回 V2。历史版本读取不改变 Task.current_execution_id；历史基线写仍未开放。
 
-自然语言中的百分数必须先转成比例，例如“孔隙度 16%”进入 Command 时是 `por=0.16`。孤立的“0.16”若无法确定指 POR、PERM 还是采样间隔，模型必须调用纯交互工具保存完整 PendingClarification，不能猜测；紧邻下一轮参数名可通过 modify 的 parameter_name 补齐。空修改、类型错误、越界值和没有实际变化都会由确定性校验拒绝。
+模型只可表达 INTERVAL_ORDINAL 或 MULTI_INTERVAL_ORDINAL（多个层号引用，正整数且稳定去重）。
+ScopeResolver 从已授权 Task + Execution 快照解析成稳定 interval identity；完整 OperationPlan
+不接收 ordinal。模型输入 Schema 隐藏且运行时拒绝 interval_id、interval_ids、resolved_ids。
+局部范围不允许静默退化成整井，多个层号必须全部存在。
 
-当前不支持并不得补造以下业务规则：
+## 6. 流式展示和边界
 
-- `Rw`、Archie `m/n` 等尚未进入 Override 契约的参数；
-- 用户直接设置或估算 `Sw`；
-- 只执行 W06 或 SW-only 的细粒度重跑；
-- 用户或 LLM 直接指定 `start_step`；
-- 未确认的阈值、单位或公式。
+创建型 Operation 结果兼容既有唯一 TaskCommandResult，继续由 ExecutionStreamingMiddleware 展示
+W01-W10、专业 Tool、RUN（执行）/ REUSE（复用）、最终真实报告及版本历史。读取结果和澄清直接使用
+安全服务端文案，助手正文不倾倒内部 Operation JSON。曲线图和右侧面板继续读取持久业务事实。
 
-## 5. 标识、归属和越界请求
-
-同一 Session 是 `1:N InterpretationTask`。`active_task_id` 保存在 AgentScope
-Session State 的 `middle_context` 中，只表示对话焦点，不进入
-InterpretationTask 或数据库列。`SessionTaskResolver` 从 SessionTaskBinding
-的稳定排序构建 Task Summary，支持：
-
-- `CURRENT`（当前井/当前任务）：active task；状态丢失时 fallback 到当前 Session 最近绑定的 Task；
-- `PREVIOUS_TASK`（上一口井/上一个任务）：active task 之前绑定的 Task；
-- `WELL_ID`（按井号指定）：当前 Session 内同井号最近创建的 Task；
-- `TASK_ID`（按可信任务号指定）：只有四元组 Binding 验证通过才可用。
-
-“上一版”是 active task 的上一个 Execution，不跨井；“上一口井”是
-`PREVIOUS_TASK`，报告默认取 `LATEST_SUCCESSFUL`。明确访问某井成功后，
-该 Task 成为 active task，后续未指定井的修改作用于它。
-
-首次 ToolResult 返回的 `task_id` 和 `execution_id` 会进入会话上下文，
-但不再用“最近 ToolResult”代替任务解析。服务端以
-`(user_id, agent_id, session_id)` 查询 SessionTaskBinding。内存集合
-`observed_task_ids` 只加速命中，不能授权。错误 user、agent、session 或
-Task 统一按不存在处理。
-
-天气、股票、写故事、通用代码等与单井常规测井解释和任务操作无关的请求不调用业务 Tool，由 Agent 返回受限领域说明。ReAct 不能直接调用 `identify_lithology`、`calculate_sw` 等专业底层 Tool，也不能修改 W01～W10 顺序。
-
-## 6. MockTaskShellModel 与真实模型
-
-`MockTaskShellModel._command()` 是没有公网模型凭证时使用的本地确定性联调桩。状态查询使用小型确定性模式匹配，覆盖“执行到哪里”“处理到什么地方”“现在到哪一步”“当前进度/状态”等自然表达。它不代表生产意图识别架构，也不是独立 IntentClassifier。
-
-真实路径是 `qwen-plus` ReAct：系统提示约束领域和 Tool 边界，Tool description 告诉模型动作语义，JSON Schema 约束参数形状，Pydantic 和应用层再次校验。专业 Workflow 内的模型访问仍走统一 ModelGateway，和外层任务意图模型承担不同职责。
-
-## 7. Operation 基础设施与后续集成边界
-
-Task 10.5-A～E1 已实现 Operation Schema / Catalog、任务版本与范围 Resolver、
-Active/View/Recent Context、结构化 Parser、PlanValidator、通用澄清和 OperationExecutionBridge。
-E1 接收程序化的 PartialOperationPlan / OperationPlan，完整解析、校验、适配后调用现有 TaskCommands。
-这些能力尚未接入 qwen-plus ReAct 和用户页面；本文第 2～6 节仍描述现有 Tool 入口。
-
-`FULL_RERUN`（全量重跑已有任务）新增为独立已启用动作，只支持整井并继承现有有效参数。
-`REINTERPRET`（按目标和范围重新解释）仍未实现，不能替换为全量重跑。
-`FULL_INTERPRET`（首次解释）仍已启用，但通用已有任务 Bridge 返回
-`INITIAL_INPUT_ROUTE_REQUIRED`（首次解释需要输入资料入口）；上传和 Fixture 继续走原链。
-
-E1 的参数修改只接受既有 por、perm、sampling_interval 和 prediction_model 的绝对设置，
-同任务同当前版本可聚合成一次命令；历史基线写、混合读写及其他复合写在提交前整体拒绝。
-报告先由 B Resolver 固定 execution_id，读成功只更新 View；写成功更新 Active 并清空旧 base/scope。
-旧 TaskCommandTool 成功后切换 Active 的行为尚未迁移。详见
-[E1 执行桥记录](tasks/010-5e1-operation-execution-bridge.md)。
-
-E2 负责 ReAct、模型结构化输出、会话澄清生命周期和真实 Web 验收。
-未来的细粒度 DependencyGraph、ImpactAnalyzer、局部重跑、Compare、Scenario 和历史分支写仍未实现。
-专业执行范围继续由现有 Application DependencyResolver 决定，Bridge 不规划 W01～W10。
-
-## 8. Task 10.3 交互状态控制
-
-正式状态矩阵、策略、纯交互工具 Contract 和 pending 生命周期见
-[10-interaction-state-machine.md](10-interaction-state-machine.md)。
-InteractionSnapshot 是 Binding/Task/Execution/Session State 的派生读模型；没有新表或 migration。
-运行中写操作在交互层返回包含 Execution 版本与步骤的 TASK_EXECUTION_ACTIVE，底层原子保护仍保留。
-澄清只保留紧邻下一轮、最长 10 分钟；无关操作、断流、格式不完整或新 runner 后安全清除。
-Context compression 保留完整 Session State，不从摘要恢复数值。
-
-Task 10.4 后，Session / Message 历史由 PostgreSQL Conversation 表长期保存，Redis 只保留活跃缓存。
-缓存丢失后恢复的 Session State 不包含 PendingClarification；active_task_id 无法使用时仍从
-SessionTaskBinding fallback。历史消息分页服务 UI，模型 Context 继续由 AgentScope compression 和
-Session State 控制，不把完整长期历史一次性注入模型。详见
-[12-conversation-persistence.md](12-conversation-persistence.md)。
-
-TaskReference 解析不改变焦点，成功操作才切 active；上一版与上一口井仍严格分离。
-模型一次提出多个写操作时，在执行前拒绝整批，不部分完成后声称全部满足。
-FAILED/BLOCKED/REVIEW_REQUIRED/WARNING 查询输出持久的安全诊断字段。
-专业概念、局部重算和细层段证据查询属于测井领域的未开放能力，不降级为 OUT_OF_DOMAIN。
-同井重新上传仍沿用创建新 Task 的行为；不实现同 Task InputVersion 替换。
+COMPARE（比较）、SCENARIO（试算）、任意局部重算、历史版本分支写、层段编辑、人工结果覆盖、
+条件链执行与 Task11 依赖图仍未开放。W01-W10、三核心 Agent、DB Schema 与 migration 未改变。
+详细验收见 [E2 执行记录](tasks/010-5e2-react-operation-integration.md)。

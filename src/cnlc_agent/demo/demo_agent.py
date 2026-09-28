@@ -3,13 +3,15 @@
 import builtins
 import json
 import re
+from collections.abc import AsyncGenerator
 from typing import Any, Literal
 from uuid import uuid4
 
 from agentscope.agent import Agent, ContextConfig, ModelConfig, ReActConfig
 from agentscope.credential import CredentialBase, CredentialFactory
+from agentscope.event import ToolResultEndEvent
 from agentscope.formatter import DashScopeChatFormatter
-from agentscope.message import Msg, TextBlock, ToolCallBlock, ToolResultBlock
+from agentscope.message import Msg, TextBlock, ToolCallBlock, ToolResultBlock, ToolResultState
 from agentscope.middleware import MiddlewareBase
 from agentscope.model import ChatModelBase, ChatResponse, ModelCard, StructuredResponse
 from agentscope.state import AgentState
@@ -47,35 +49,104 @@ _SUMMARY_FIELDS = {
     "context_to_preserve",
 }
 
-DEMO_SYSTEM_PROMPT = """你是单井常规测井解释交互入口。ReAct 理解用户意图，Workflow 执行专业步骤。
-必须实际调用工具执行任务操作，不得只输出调用计划、伪造成功或根据聊天记忆回答。
-模型只可使用注册的五个业务工具与一个纯交互工具；不调用内部专业 Tool，不计算专业参数，
-不决定 W01-W10、执行起点或 RUN/REUSE。专业结果只来自 Workflow。
-任务统一用 task_reference；不要传 task_id。默认 CURRENT；上一口井 PREVIOUS_TASK；
-明确井号 WELL_ID；不得构造 UUID，也不得把最近 ToolResult 当当前任务。
-CURRENT/PREVIOUS_TASK 的 value 必须省略；WELL_ID/TASK_ID 必须带非空 value。
-上传由接入层处理；明确 Fixture 井号时可 run_well_interpretation。
-修改用 modify_well_interpretation，仅支持 sampling_interval、por、perm、prediction_model。
-孔隙度16%可转 por=0.16；PERM 单位不擅自换算；prediction_model 不改变 qwen-plus。
-“改成0.16”必须调用 request_interpretation_clarification(reason=PARAMETER_NAME, known_value=0.16)。
-不猜参数。下一轮“孔隙度”且可信快照有 pending 时，必须实际调用
-modify_well_interpretation(parameter_name="por")，省略 por 和其它值；工具从 pending 补齐。
-没有 pending 时，只给参数名必须询问完整名称和值，不从旧聊天取值。
-完整参数修改并要报告是一个 MODIFY。明确全部重跑用 rerun_well_interpretation。
-同一句 MODIFY+FULL_RERUN 或混合不支持的操作，必须调用交互工具 reason=CONFLICT，不部分执行。
-Rw、Archie m/n、Sw 等不支持参数必须调用交互工具 reason=UNSUPPORTED_PARAMETER。
-重新计算含水饱和度、Sw-only、岩性-only、层段-only 必须调用交互工具 reason=UNSUPPORTED_OPERATION。
-细层段原因、证据查询或专业概念问答用 reason=DOMAIN_QUERY；当前未开放完整专业问答。
-这些都是测井领域请求，不能当 OUT_OF_DOMAIN，也不能自动 FULL_RERUN 或自己算 Sw。
-查询进度、现在呢、为什么失败、缺什么，每轮必须调用 get_interpretation_status。
-报告必须调用 get_interpretation_report。“上一版”是当前 Task 的 PREVIOUS Execution，不跨井；
-“上一口井报告”是 PREVIOUS_TASK + LATEST_SUCCESSFUL；当前版 CURRENT，最近成功版 LATEST_SUCCESSFUL。
-即使快照显示无任务、无上一版或无上一口井，也必须调用对应工具，由工具返回稳定错误。
-工具返回澄清或拒绝后结束本轮，不重复尝试，不用旧报告冒充当前报告。
-FAILED/BLOCKED/REVIEW_REQUIRED/WARNING 按持久事实解释，不自动改结论或继续步骤。
-开始/修改/重跑成功后由系统流式返回过程和本轮报告。报告完整展示，不改写专业结论。
-领域外的天气、通用编程、笑话不调用测井 Tool，只说明当前 Agent 的单井测井解释边界。
-任何回复不暴露原始异常、API Key、内部 URL、数据库配置或本地路径。
+DEMO_SYSTEM_PROMPT = """你是单井常规测井解释交互入口。
+AgentScope ReAct 只理解用户意图，服务器解析、校验和执行。
+
+只有两个工具：run_well_interpretation 用于明确的 Fixture 井号首次解释；
+已有任务所有后续操作
+必须使用 interpret_interpretation_operation。
+上传文件由 Upload Middleware 处理，无附件且无明确井号时请用户上传资料。
+
+每轮只提交一个 Tool Call；
+多个意图必须放在同一 PLAN 的 operations，先整体校验再执行。
+
+不得直接回答专业结果，不计算专业参数，不决定 W01-W10、start_step 或 RUN/REUSE。
+
+不要编造 task_id、execution_id、interval_id，不从聊天记忆猜当前井。
+省略引用由服务器处理；
+
+明确井号用 WELL_ID，上一口井用 PREVIOUS_TASK，上一版用 PREVIOUS，明确当前版本用 TASK_CURRENT。
+
+查看报告只更新 View，不切 Active。
+显式切井用 SET_ACTIVE_CONTEXT；
+查看后隐式写冲突必须澄清。
+
+PLAN 接受 PartialOperationPlan。
+明确执行用 EXECUTION_REQUEST，查询用 READ_REQUEST，
+问能力用 CAPABILITY_QUERY；
+通常 persist_mode=CREATE_VERSION。
+缺目标或值必须保留缺槽，不猜。
+
+“孔隙度改成0.16” -> MODIFY_PARAMETER / POROSITY / ABSOLUTE 0.16 / unit=1。
+PLAN 节点的数值必须放在 parameters.value，不能放在节点顶层。
+例如 request={"mode":"PLAN","plan":{"input_classification":"EXECUTION_REQUEST",
+"persist_mode":"CREATE_VERSION","original_instruction":"孔隙度改成0.16",
+"operations":[{"operation_id":"op1","action":"MODIFY_PARAMETER","target":"POROSITY",
+"parameters":{"value":{"mode":"ABSOLUTE","value":0.16,"unit":"1"}}}]}}。
+
+“孔隙度改成16%” -> ABSOLUTE 0.16 / unit=1；
+“孔隙度提高2%” -> PERCENT_CHANGE 2 / unit=%，不转绝对值。
+
+“孔隙度、渗透率都改成0.16” -> 同一 PLAN 两节点 POROSITY、PERMEABILITY，不能拆成两个 Tool Call。
+
+“改成0.17” -> MODIFY_PARAMETER、value=0.17、target=null；
+服务器保存澄清。
+
+下一轮“孔隙度”且可信快照有 pending_operation_clarification，
+使用 CLARIFICATION_REPLY patch target=POROSITY。
+
+没有 Pending 不从旧聊天恢复修改值。
+“不对，是第6层”且有 Pending -> CLARIFICATION_REPLY，
+patch input_classification=CORRECTION、scope={kind:INTERVAL_ORDINAL,ordinal:6}；
+已执行则提交新的 PLAN。
+
+“算了” -> CANCEL；
+“切到WELL_A” -> SET_ACTIVE_CONTEXT、task_reference WELL_ID。
+
+“第5层孔隙度改成0.16” -> INTERVAL_ORDINAL ordinal=5；
+“第3、5、7层” -> MULTI_INTERVAL_ORDINAL ordinals=[3,5,7]。
+
+不得忽略局部范围，不能提供 interval_id。
+当前不支持局部执行，由服务器安全拒绝。
+
+“上一版报告” -> REPORT / REPORT / PREVIOUS；
+“当前报告” -> REPORT / TASK_CURRENT；
+状态 -> STATUS / WELL / TASK_CURRENT。
+
+“全部重跑” -> FULL_RERUN / WELL；
+“只重新算Sw” -> RECALCULATE / WATER_SATURATION，不能替换为全量重跑。
+
+“你能只算Sw吗” -> CAPABILITY_QUERY，不能执行。
+conditions 是 plan 顶层列表，每项只含 expression 和 operation_ids。
+例如 conditions=[{"expression":"Sw大于60%","operation_ids":["op1"]}]；
+对应 op1 使用 MODIFY_RESULT / ZONE_CLASSIFICATION；“水层”等非数值要求保留在
+original_instruction，不能放入只接受数字的 parameters.value。该条件计划由服务器整体拒绝。
+完整条件请求示例：{"request":{"mode":"PLAN","plan":{
+"input_classification":"EXECUTION_REQUEST","persist_mode":"CREATE_VERSION",
+"original_instruction":"如果Sw大于60%就改成水层",
+"operations":[{"operation_id":"op1","action":"MODIFY_RESULT",
+"target":"ZONE_CLASSIFICATION"}],
+"conditions":[{"expression":"Sw大于60%","operation_ids":["op1"]}]}}}。
+Tool 参数顶层只能有 request，不能添加 tool_call_id 等字段。
+task_reference、execution_reference、scope 都是 operations[] 节点的直接字段，
+与 action、target、parameters 同级；parameters 里不能放任何 reference 或 scope。
+上一版报告完整示例：{"request":{"mode":"PLAN","plan":{
+"input_classification":"READ_REQUEST","persist_mode":"CREATE_VERSION",
+"original_instruction":"给我上一版报告","operations":[{"operation_id":"op1",
+"action":"REPORT","target":"REPORT","execution_reference":{"kind":"PREVIOUS"}}]}}}。
+“如果Sw大于60%就改成水层” -> conditions 加 MODIFY_RESULT / ZONE_CLASSIFICATION，不能忽略条件。
+
+修改参数后要报告不另加 REPORT 节点，已有流式过程会返回该次报告。
+修改加全量重跑等真实复合动作必须全部表达。
+
+工具返回澄清、能力事实、拒绝或读取结果后结束本轮，禁止重试或改用其他工具。
+
+开始、修改、重跑后的 W01-W10 和报告由服务器流式展示，不自己复述或编造专业结论。
+
+天气、通用编程、笑话不调用工具，只简短说明当前 Agent 只处理单井常规测井解释业务。
+
+不要泄露原始异常、凭据、内部 URL、数据库配置或本地路径。
+
 """
 
 
@@ -212,40 +283,54 @@ class MockTaskShellModel(ChatModelBase):
                 content=[TextBlock(text=self._render_result(current_results[-1]))],
                 is_last=True,
             )
+        snapshot = {}
+        for message in messages:
+            marker = "当前可信交互快照（不得由聊天记忆覆盖）：\n"
+            text = message.get_text_content() or ""
+            if message.role == "system" and marker in text:
+                snapshot = json.loads(text.split(marker, 1)[1])
         name, parameters = self._command(instruction)
-        if name is None:
-            # Mock 桩只解析紧邻轮次的受控快照，不从聊天记忆找旧值。
-            names = {
-                "孔隙度": "por",
-                "por": "por",
-                "渗透率": "perm",
-                "perm": "perm",
-                "采样间隔": "sampling_interval",
-            }
-            parameter = names.get(instruction.strip().lower())
-            if parameter:
-                pending = None
-                for message in messages:
-                    text = message.get_text_content() or ""
-                    marker = "当前可信交互快照（不得由聊天记忆覆盖）：\n"
-                    if message.role == "system" and marker in text:
-                        snapshot = json.loads(text.split(marker, 1)[1])
-                        pending = snapshot.get("pending_clarification")
-                if pending:
-                    name = "modify_well_interpretation"
-                    parameters = {
-                        "task_reference": {"kind": "TASK_ID", "value": pending["task_id"]},
-                        "parameter_name": parameter,
-                    }
-                else:
-                    return ChatResponse(
-                        content=[TextBlock(text="请明确要修改的参数名称和值。")], is_last=True
-                    )
-            else:
-                return ChatResponse(
-                    content=[TextBlock(text="当前 Agent 只处理单井常规测井解释及相关任务操作。")],
-                    is_last=True,
+        pending = snapshot.get("pending_operation_clarification")
+        target = {
+            "孔隙度": "POROSITY",
+            "por": "POROSITY",
+            "渗透率": "PERMEABILITY",
+            "perm": "PERMEABILITY",
+        }.get(instruction.strip().lower())
+        if pending and target:
+            name, parameters = (
+                "interpret_interpretation_operation",
+                {"request": {"mode": "CLARIFICATION_REPLY", "patch": {"target": target}}},
+            )
+        elif pending and "不对" in instruction:
+            ordinal = re.search(r"第(\d+)层", instruction)
+            if ordinal:
+                name, parameters = (
+                    "interpret_interpretation_operation",
+                    {
+                        "request": {
+                            "mode": "CLARIFICATION_REPLY",
+                            "patch": {
+                                "input_classification": "CORRECTION",
+                                "scope": {
+                                    "kind": "INTERVAL_ORDINAL",
+                                    "ordinal": int(ordinal.group(1)),
+                                },
+                            },
+                        }
+                    },
                 )
+        if name is None:
+            return ChatResponse(
+                content=[
+                    TextBlock(
+                        text="请明确要修改的参数名称和值。"
+                        if target
+                        else "当前 Agent 只处理单井常规测井解释业务。"
+                    )
+                ],
+                is_last=True,
+            )
         return ChatResponse(
             content=[
                 ToolCallBlock(
@@ -354,90 +439,142 @@ class MockTaskShellModel(ChatModelBase):
 
     @staticmethod
     def _command(instruction: str) -> tuple[str | None, dict[str, Any]]:
-        """把 Mock 联调指令映射到现有五个任务级 Tool。"""
-
-        well_match = _WELL_ID_PATTERN.search(instruction)
-        reference: dict[str, Any] = {"kind": "CURRENT"}
-        if any(phrase in instruction for phrase in _PREVIOUS_TASK_PHRASES):
-            reference = {"kind": "PREVIOUS_TASK"}
-        elif well_match:
-            reference = {"kind": "WELL_ID", "value": well_match.group(1)}
-        task_reference = {"task_reference": reference}
+        """仅 Mock 联调桩生成统一 Tool 请求；生产由 qwen-plus 读取同一 Schema。"""
+        tool = "interpret_interpretation_operation"
         lower = instruction.lower()
-        modify = any(word in lower for word in ("修改", "改成", "改为", "修改为"))
-        full = any(word in lower for word in ("全部重跑", "全部重新跑", "全量重跑", "全流程重跑"))
-        rerun = any(
-            word in lower
-            for word in ("重新计算", "重新算", "重算", "重新识别", "重新划分", "只重新算", "重跑")
-        )
-        granular = (
-            not full
-            and rerun
-            and any(word in lower for word in ("sw", "含水饱和度", "岩性", "层段"))
-        )
-        interaction = "request_interpretation_clarification"
-        if modify and (full or granular or "比较" in lower):
-            return interaction, {"reason": "CONFLICT"}
-        if modify and any(word in lower for word in ("rw", "archie", "含水饱和度", "sw")):
-            return interaction, {"reason": "UNSUPPORTED_PARAMETER"}
-        if granular or "比较上一版" in lower:
-            return interaction, {"reason": "UNSUPPORTED_OPERATION"}
-        if any(word in lower for word in ("什么是", "为什么这层", "为什么这段")) or (
-            "为什么" in lower and any(word in lower for word in ("水层", "油层", "油水同层"))
-        ):
-            return interaction, {"reason": "DOMAIN_QUERY"}
-        if any(
-            word in lower for word in ("现在呢", "为什么失败", "为什么停", "现在怎么了", "缺什么")
-        ):
-            return "get_interpretation_status", task_reference
-        if full or any(word in lower for word in ("再重新解释一次", "重新解释一次")):
-            return "rerun_well_interpretation", task_reference
-        if modify or "重新解释" in lower:
-            changes: dict[str, Any] = {}
-            numeric_instruction = (
-                instruction.replace(well_match.group(1), "") if well_match else instruction
-            )
-            value = re.search(r"(?:\d*\.\d+|\d+(?:\.\d+)?%?)", numeric_instruction)
-            if value:
-                raw = value.group(0)
-                number = float(raw.rstrip("%")) / (100 if raw.endswith("%") else 1)
-                for words, parameter in (
-                    (("孔隙度", "por"), "por"),
-                    (("渗透率", "perm"), "perm"),
-                    (("采样间隔", "sampling_interval"), "sampling_interval"),
-                ):
-                    if any(word in lower for word in words):
-                        changes[parameter] = number
-                if changes:
-                    return "modify_well_interpretation", {**task_reference, **changes}
-                return interaction, {
-                    **task_reference,
-                    "reason": "PARAMETER_NAME",
-                    "known_value": number,
-                }
-            return interaction, {"reason": "CONFLICT"}
+        well = _WELL_ID_PATTERN.search(instruction)
+        ref = None
+        if any(word in instruction for word in _PREVIOUS_TASK_PHRASES):
+            ref = {"kind": "PREVIOUS_TASK"}
+        elif well:
+            ref = {"kind": "WELL_ID", "value": well.group(1)}
+        if any(word in instruction for word in ("算了", "取消")):
+            return tool, {"request": {"mode": "CANCEL"}}
+        if ref and any(word in instruction for word in ("切到", "切回", "接下来处理")):
+            return tool, {"request": {"mode": "SET_ACTIVE_CONTEXT", "task_reference": ref}}
         if (
-            any(phrase in instruction for phrase in _PREVIOUS_TASK_PHRASES)
-            and "报告" in instruction
+            well
+            and any(word in instruction for word in ("开始", "解释"))
+            and not any(word in instruction for word in ("重新", "改", "报告", "层"))
         ):
-            return "get_interpretation_report", {
-                **task_reference,
-                "selector": "LATEST_SUCCESSFUL",
+            return "run_well_interpretation", {"well_id": well.group(1)}
+        plan: dict[str, Any] = {
+            "input_classification": "EXECUTION_REQUEST",
+            "persist_mode": "CREATE_VERSION",
+            "original_instruction": instruction,
+            "operations": [],
+        }
+
+        def add(action: str, target: str | None = "WELL", **fields: Any) -> None:
+            op = {
+                "operation_id": f"op{len(plan['operations']) + 1}",
+                "action": action,
+                "target": target,
+                **fields,
             }
-        if "上一版" in instruction and "报告" in instruction:
-            return "get_interpretation_report", {**task_reference, "selector": "PREVIOUS"}
-        if "报告" in instruction:
-            selector = "LATEST_SUCCESSFUL" if well_match else "CURRENT"
-            return "get_interpretation_report", {**task_reference, "selector": selector}
-        if well_match and "切回" in instruction:
-            return "get_interpretation_status", task_reference
-        if "全部" in instruction and ("重跑" in instruction or "重新跑" in instruction):
-            return "rerun_well_interpretation", task_reference
-        if any(pattern.search(instruction) for pattern in _STATUS_PATTERNS):
-            return "get_interpretation_status", task_reference
-        if well_match and any(word in instruction for word in ("开始", "解释")):
-            return "run_well_interpretation", {"well_id": well_match.group(1)}
-        return None, {}
+            if ref:
+                op["task_reference"] = ref
+            plan["operations"].append(op)
+
+        layer = re.search(r"第([0-9、，,和\s]+)层", instruction)
+        scope: dict[str, Any] = {"kind": "WHOLE_WELL"}
+        if layer:
+            ordinals = [int(n) for n in re.findall(r"\d+", layer.group(1))]
+            scope = (
+                {"kind": "INTERVAL_ORDINAL", "ordinal": ordinals[0]}
+                if len(ordinals) == 1
+                else {"kind": "MULTI_INTERVAL_ORDINAL", "ordinals": ordinals}
+            )
+        modify = any(word in lower for word in ("修改", "改成", "改为", "提高", "降低"))
+        full = any(
+            word in lower
+            for word in ("全部重跑", "全部重新跑", "全量重跑", "全流程重跑", "重新解释一次")
+        )
+        granular = any(
+            word in lower for word in ("sw", "含水饱和度", "岩性", "层段", "第5层")
+        ) and any(word in lower for word in ("算", "重新识别", "重新划分"))
+        if "如果" in instruction:
+            add("MODIFY_RESULT", "ZONE_CLASSIFICATION", scope=scope)
+            plan["conditions"] = [{"expression": instruction, "operation_ids": ["op1"]}]
+        elif granular:
+            target = (
+                "WATER_SATURATION"
+                if "sw" in lower or "含水饱和度" in lower
+                else "LITHOLOGY"
+                if "岩性" in lower
+                else "INTERVAL"
+            )
+            add("RECALCULATE", target, scope=scope)
+            if any(word in lower for word in ("能", "可以")):
+                plan["input_classification"] = "CAPABILITY_QUERY"
+        elif modify:
+            numeric = lower
+            if well:
+                numeric = numeric.replace(well.group(1).lower(), "")
+            if layer:
+                numeric = numeric.replace(layer.group(0).lower(), "")
+            values = re.findall(r"(?:\d*\.\d+|\d+)%?", numeric)
+            raw = values[-1] if values else None
+            relative = any(word in lower for word in ("提高", "降低"))
+            value = (
+                None
+                if raw is None
+                else {
+                    "mode": "PERCENT_CHANGE" if relative else "ABSOLUTE",
+                    "value": float(raw.rstrip("%"))
+                    / (100 if raw.endswith("%") and not relative else 1),
+                    "unit": "%" if relative else "1",
+                }
+            )
+            targets = [
+                (words, target, name)
+                for words, target, name in [
+                    (("孔隙度", "por"), "POROSITY", None),
+                    (("渗透率", "perm"), "PERMEABILITY", None),
+                    (("采样间隔",), "WELL", "sampling_interval"),
+                    (("rw", "archie"), "WELL", "rw"),
+                    (("sw", "含水饱和度"), "WATER_SATURATION", "sw"),
+                ]
+                if any(word in lower for word in words)
+            ]
+            for _, target, name in targets or [((), "", None)]:
+                params: dict[str, Any] = {"value": value}
+                if name:
+                    params["parameter_name"] = name
+                add("MODIFY_PARAMETER", target or None, scope=scope, parameters=params)
+            if full:
+                add("FULL_RERUN")
+            if "比较" in lower:
+                add("COMPARE")
+        elif full:
+            add("FULL_RERUN", scope=scope)
+        elif "报告" in instruction:
+            kind = (
+                "PREVIOUS"
+                if "上一版" in instruction
+                else "LATEST_SUCCESSFUL"
+                if "成功" in instruction or (ref and ref["kind"] == "PREVIOUS_TASK")
+                else "TASK_CURRENT"
+                if "当前" in instruction
+                else None
+            )
+            add("REPORT", "REPORT", **({"execution_reference": {"kind": kind}} if kind else {}))
+            plan["input_classification"] = "READ_REQUEST"
+        elif any(pattern.search(instruction) for pattern in _STATUS_PATTERNS) or any(
+            word in instruction
+            for word in ("现在呢", "为什么失败", "为什么停", "现在怎么了", "缺什么")
+        ):
+            add("STATUS", execution_reference={"kind": "TASK_CURRENT"})
+            plan["input_classification"] = "READ_REQUEST"
+        elif "什么是" in instruction or (
+            "为什么" in instruction and any(word in instruction for word in ("层", "岩性"))
+        ):
+            add("EXPLAIN")
+        elif "解释" in instruction:
+            add("FULL_INTERPRET", scope=scope)
+        else:
+            return None, {}
+        return tool, {"request": {"mode": "PLAN", "plan": plan}}
 
     @classmethod
     def _render_result(cls, block: ToolResultBlock) -> str:
@@ -459,6 +596,28 @@ CredentialFactory.register_credential(MockTaskShellCredential)
 class LoggingInterpretationDemoAgent(Agent):
     """只暴露高层解释 Tool 的 AgentScope Agent，禁止绕过 Workflow 自行解释。"""
 
+    async def _handle_error_tool_call(
+        self, tool_call: ToolCallBlock, message: str, state: ToolResultState
+    ) -> AsyncGenerator[Any, None]:
+        """兼容 AgentScope 2.0.8 的前置校验错误出口，避免原始异常泄露或模型反复重试。
+
+        on_acting 位于框架输入校验之后，无法拦截这一分支；只覆盖项目子类的
+        错误投影，继续由上游保存消息和产生标准事件，不修改框架源码。
+        """
+        del message
+        payload = {
+            "error_code": "INVALID_OPERATION_PLAN",
+            "message": "操作结构无效，请明确任务、目标、范围和修改值。",
+        }
+        async for event in super()._handle_error_tool_call(tool_call, payload["message"], state):
+            if isinstance(event, ToolResultEndEvent):
+                event.metadata.update(payload)
+                for msg in self.state.context[-1:]:
+                    for block in msg.content:
+                        if isinstance(block, ToolResultBlock) and block.id == tool_call.id:
+                            block.metadata.update(payload)
+            yield event
+
     def __init__(
         self,
         name: str,
@@ -479,26 +638,38 @@ class LoggingInterpretationDemoAgent(Agent):
         del name, system_prompt, kwargs
         if model.model != "qwen-plus":
             raise ValueError("AgentScope Demo Agent 只允许使用 qwen-plus")
+        from cnlc_agent.demo.operation_tool import (
+            ALLOWED_AGENT_TASK_TOOLS,
+            InterpretInterpretationOperationTool,
+        )
         from cnlc_agent.demo.task_tools import (
-            ALLOWED_TASK_TOOLS,
             TaskCommandRunner,
-            TaskCommandTool,
         )
 
         if toolkit and any(group.mcps or group.skills_or_loaders for group in toolkit.tool_groups):
             raise ValueError("Demo Agent 不允许注册 MCP 或技能工具")
         tools = [tool for group in (toolkit.tool_groups if toolkit else []) for tool in group.tools]
         names = [tool.name for tool in tools]
-        if set(names) != ALLOWED_TASK_TOOLS or len(names) != len(ALLOWED_TASK_TOOLS):
+        if set(names) != ALLOWED_AGENT_TASK_TOOLS or len(names) != len(ALLOWED_AGENT_TASK_TOOLS):
             raise ValueError("Demo Agent 必须且只能注册预定义的任务级 Tool 集合")
         tool = next(tool for tool in tools if tool.name == RUN_TOOL_NAME)
         if not isinstance(tool, RunWellInterpretationTool) or any(
-            not isinstance(item, TaskCommandTool) for item in tools if item is not tool
+            not isinstance(item, InterpretInterpretationOperationTool)
+            for item in tools
+            if item is not tool
         ):
             raise ValueError("Demo Agent 需要受控任务 Tool 实现")
-        runner = next(item.runner for item in tools if isinstance(item, TaskCommandTool))
-        if not isinstance(runner, TaskCommandRunner) or any(
-            item.runner is not runner for item in tools if isinstance(item, TaskCommandTool)
+        runner = next(
+            item.runner for item in tools if isinstance(item, InterpretInterpretationOperationTool)
+        )
+        if (
+            not isinstance(runner, TaskCommandRunner)
+            or any(
+                item.runner is not runner
+                for item in tools
+                if isinstance(item, InterpretInterpretationOperationTool)
+            )
+            or tool._runner is not runner
         ):
             raise ValueError("Demo Agent 的任务 Tool 必须共享同一 TaskCommandRunner")
         step_delay = (

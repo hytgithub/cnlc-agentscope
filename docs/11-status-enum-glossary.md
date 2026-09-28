@@ -509,3 +509,18 @@ UNSUPPORTED_OPERATION（当前操作能力不支持）、UNSUPPORTED_PARAMETER�
 STALE_CONTEXT_REFERENCE（上下文引用失效）、STALE_EXECUTION_PLAN（执行计划已失效）、
 TASK_EXECUTION_ACTIVE（任务仍有活跃执行）及 B Resolver / Application 的既有错误。
 参数名与目标不一致拒绝；重复参数同值去重、异值整体冲突。并发版本前置条件不提供历史分支功能。
+
+
+## 38. Operation Tool 交互模式与未解析层号（Task 10.5-E2）
+
+| 代码值 | 中文含义 | 边界 |
+| --- | --- | --- |
+| `PLAN` | 提交新计划 | 严格 PartialOperationPlan；新请求清除旧 Pending。 |
+| `CLARIFICATION_REPLY` | 补齐待澄清计划 | ClarificationPatch；普通补齐只能修改允许槽位。 |
+| `CANCEL` | 取消待澄清请求 | 不取消后台 Execution；清 Pending 后零业务副作用。 |
+| `SET_ACTIVE_CONTEXT` | 显式切换操作焦点 | WRITE（写安全）引用解析；不创建 Execution，不是业务 Action。 |
+| `INTERVAL_ORDINAL` | 单层号引用 | 一基正整数，仅 Partial / 模型输入层允许。 |
+| `MULTI_INTERVAL_ORDINAL` | 多层号引用 | 非空正整数，稳定去重，必须全部解析成功。 |
+
+复用 CORRECTION（修正上一输入）、INVALID_OPERATION_PLAN（操作结构非法）及既有错误码。
+未新增 Execution、Workflow 或持久化状态。

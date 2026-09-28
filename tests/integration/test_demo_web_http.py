@@ -188,10 +188,14 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                 assert any((m.get_text_content() or "") == report for m in messages)
                 # 每轮官方服务重新创建 Agent/Tools，内存仓库仍由同一会话 runner 持有。
                 for text, command in [
+                    ("只重新算Sw", None),
                     ("把孔隙度、渗透率改成0.16", "MODIFY"),
                     ("给我上一版报告", "GET_REPORT"),
                     ("现在处理到哪里了？", "STATUS"),
+                    ("改成0.17", None),
+                    ("孔隙度", "MODIFY"),
                 ]:
+                    execution_count = len(await runner.repository.list_executions(first["task_id"]))
                     previous_count = sum(m.role == "assistant" for m in messages)
                     events.clear()
                     finished.clear()
@@ -211,14 +215,31 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                     await asyncio.wait_for(finished.wait(), 10)
                     tool_results = [e for e in events if e["type"] == EventType.TOOL_RESULT_END]
                     assert len(tool_results) == 1
-                    assert tool_results[0]["state"] == "success", tool_results
+                    operation = tool_results[0]["metadata"]["operation"]
+                    # 官方 HTTP 每轮新建 Agent，仍须保留同一 Runner 的 Pending owner。
+                    if command is None:
+                        assert operation["outcome"] == (
+                            "NEED_CLARIFICATION" if text == "改成0.17" else "KNOWN_UNSUPPORTED"
+                        ), operation
+                        assert not operation["created_execution_ids"]
+                        assert (
+                            len(await runner.repository.list_executions(first["task_id"]))
+                            == execution_count
+                        )
+                    else:
+                        assert tool_results[0]["state"] == "success", tool_results
                     payload = tool_results[0]["metadata"]["result"]
-                    assert payload["command"] == command
-                    assert payload["task_id"] == first["task_id"]
+                    if command is not None:
+                        assert payload["command"] == command
+                        assert payload["task_id"] == first["task_id"]
                     if command == "MODIFY":
                         assert payload["reused_steps"] == ["W01", "W02", "W03"]
                         assert payload["execution_status"] == "QUEUED"
                         await runner.wait_for_completion(first["task_id"], payload["execution_id"])
+                        assert (
+                            len(await runner.repository.list_executions(first["task_id"]))
+                            == execution_count + 1
+                        )
                     if command == "GET_REPORT":
                         assert payload["execution_id"] == first["execution_id"]
                         assert payload["report_markdown"] == report

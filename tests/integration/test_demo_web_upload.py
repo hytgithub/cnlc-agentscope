@@ -23,7 +23,8 @@ from agentscope.tool import Toolkit
 from cnlc_agent.application.bootstrap import build_application
 from cnlc_agent.application.commands import GetStatusCommand
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
-from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
+from cnlc_agent.demo.operation_tool import build_agent_task_tools as build_task_tools
+from cnlc_agent.demo.task_tools import TaskCommandRunner
 from cnlc_agent.demo.upload_reply import UploadInterpretationReply
 from cnlc_agent.demo.uploads import MAX_UPLOAD_BYTES, UploadError, parse_upload
 from cnlc_agent.domain.errors import ToolError
@@ -36,6 +37,7 @@ from cnlc_agent.tools.mock import MockResultTool
 @pytest.fixture(autouse=True)
 def offline_environment(monkeypatch):
     monkeypatch.setenv("CNLC_MODEL_PROVIDER", "mock")
+    monkeypatch.setenv("CNLC_PROFESSIONAL_PROVIDER", "fixture")
     monkeypatch.setenv("CNLC_PERSISTENCE", "memory")
 
 
@@ -173,11 +175,7 @@ async def test_upload_paces_each_completed_workflow_step(data_dir):
             event
             async for event in middleware.on_reply(
                 agent,
-                {
-                    "inputs": uploaded_message(
-                        (data_dir / "WELL_MOCK_001.json").read_bytes()
-                    )
-                },
+                {"inputs": uploaded_message((data_dir / "WELL_MOCK_001.json").read_bytes())},
                 unused_next_handler,
             )
         ]
@@ -217,11 +215,7 @@ async def test_upload_paces_each_report_chunk(data_dir):
             event
             async for event in middleware.on_reply(
                 agent,
-                {
-                    "inputs": uploaded_message(
-                        (data_dir / "WELL_MOCK_001.json").read_bytes()
-                    )
-                },
+                {"inputs": uploaded_message((data_dir / "WELL_MOCK_001.json").read_bytes())},
                 unused_next_handler,
             )
         ]

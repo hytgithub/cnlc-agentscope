@@ -12,7 +12,8 @@ from cnlc_agent.application.bootstrap import build_application
 from cnlc_agent.config.settings import AppSettings, PersistenceSettings
 from cnlc_agent.demo.agentscope_app import SessionTaskToolFactory
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent
-from cnlc_agent.demo.task_tools import ALLOWED_TASK_TOOLS, TaskCommandRunner, build_task_tools
+from cnlc_agent.demo.operation_tool import ALLOWED_AGENT_TASK_TOOLS, build_agent_task_tools
+from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
 from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.models import MockFixture
 from cnlc_agent.domain.session_binding import TaskSessionIdentity
@@ -81,7 +82,8 @@ async def test_tools_reject_unknown_and_no_effective_change(data_dir):
     for parameter in ("sw", "rw", "archie_m", "archie_n", "unknown_parameter", "start_step"):
         result = await modify.call(task_id=first["task_id"], **{parameter: 0.16})
         assert result.metadata["error_code"] == (
-            "UNSUPPORTED_PARAMETER" if parameter in {"sw", "rw", "archie_m", "archie_n"}
+            "UNSUPPORTED_PARAMETER"
+            if parameter in {"sw", "rw", "archie_m", "archie_n"}
             else "INVALID_COMMAND"
         )
     assert (await modify.call(task_id=first["task_id"])).metadata["error_code"] == "EMPTY_OVERRIDE"
@@ -112,9 +114,7 @@ async def test_binding_failure_does_not_submit_background_execution(data_dir, mo
     submit = AsyncMock()
     monkeypatch.setattr(session.repository, "bind_task_to_session", fail_binding)
     monkeypatch.setattr(session.dispatcher, "submit", submit)
-    tool = {item.name: item for item in build_task_tools(session)}[
-        "run_well_interpretation"
-    ]
+    tool = {item.name: item for item in build_task_tools(session)}["run_well_interpretation"]
     result = await tool.call(well_id="WELL_MOCK_001")
     assert result.metadata["error_code"] == "SESSION_TASK_BINDING_FAILED"
     assert "secret" not in result.metadata["message"]
@@ -131,8 +131,11 @@ async def test_session_factory_keeps_same_session_and_separates_identity(monkeyp
     assert factory.get_existing_runner("user", "agent", "session") is first[1].runner
     again = await factory("user", "agent", "session")
     assert first[1].runner is again[1].runner
-    for identity in [("other", "agent", "session"), ("user", "other", "session"),
-                     ("user", "agent", "other")]:
+    for identity in [
+        ("other", "agent", "session"),
+        ("user", "other", "session"),
+        ("user", "agent", "other"),
+    ]:
         other = await factory(*identity)
         assert first[1].runner.repository is not other[1].runner.repository
 
@@ -182,8 +185,11 @@ async def test_postgres_factory_restores_binding_for_status_and_modify(data_dir,
     )
     persistence = PersistenceSettings(persistence="postgres-redis", _env_file=None)
     first_factory = SessionTaskToolFactory(settings=settings, persistence=persistence)
+    first_tools = {tool.name: tool for tool in await first_factory("alice", "agent-a", "session-a")}
+    assert set(first_tools) == ALLOWED_AGENT_TASK_TOOLS
     first_tools = {
-        tool.name: tool for tool in await first_factory("alice", "agent-a", "session-a")
+        t.name: t
+        for t in build_task_tools(first_tools["interpret_interpretation_operation"].runner)
     }
     started = await first_tools["run_well_interpretation"].call(well_id="WELL_MOCK_001")
     first = started.metadata["result"]
@@ -196,6 +202,11 @@ async def test_postgres_factory_restores_binding_for_status_and_modify(data_dir,
     assert restored_factory.runners == {}
     restored_tools = {
         tool.name: tool for tool in await restored_factory("alice", "agent-a", "session-a")
+    }
+    assert set(restored_tools) == ALLOWED_AGENT_TASK_TOOLS
+    restored_tools = {
+        t.name: t
+        for t in build_task_tools(restored_tools["interpret_interpretation_operation"].runner)
     }
     restored_runner = restored_tools["get_interpretation_status"].runner
     assert first["task_id"] in restored_runner.observed_task_ids
@@ -210,15 +221,9 @@ async def test_postgres_factory_restores_binding_for_status_and_modify(data_dir,
     await restored_runner.wait_for_completion(
         first["task_id"], modified.metadata["result"]["execution_id"]
     )
-    assert await restored_factory.get_or_restore_runner(
-        "bob", "agent-a", "session-a"
-    ) is None
-    assert await restored_factory.get_or_restore_runner(
-        "alice", "agent-b", "session-a"
-    ) is None
-    assert await restored_factory.get_or_restore_runner(
-        "alice", "agent-a", "session-b"
-    ) is None
+    assert await restored_factory.get_or_restore_runner("bob", "agent-a", "session-a") is None
+    assert await restored_factory.get_or_restore_runner("alice", "agent-b", "session-a") is None
+    assert await restored_factory.get_or_restore_runner("alice", "agent-a", "session-b") is None
     await restored_factory.shutdown()
 
 
@@ -247,9 +252,12 @@ async def test_factory_restart_restores_multiple_tasks_and_previous_well(
 
     first_factory = SessionTaskToolFactory(settings=settings, persistence=persistence)
     first_tools = {tool.name: tool for tool in await first_factory(*identity)}
-    started_a = await first_tools["run_well_interpretation"].call(
-        well_id="WELL_MOCK_001"
-    )
+    assert set(first_tools) == ALLOWED_AGENT_TASK_TOOLS
+    first_tools = {
+        t.name: t
+        for t in build_task_tools(first_tools["interpret_interpretation_operation"].runner)
+    }
+    started_a = await first_tools["run_well_interpretation"].call(well_id="WELL_MOCK_001")
     task_a = started_a.metadata["result"]
     runner_a = first_tools["get_interpretation_status"].runner
     await runner_a.wait_for_completion(task_a["task_id"], task_a["execution_id"])
@@ -267,6 +275,11 @@ async def test_factory_restart_restores_multiple_tasks_and_previous_well(
 
     restored_factory = SessionTaskToolFactory(settings=settings, persistence=persistence)
     restored_tools = {tool.name: tool for tool in await restored_factory(*identity)}
+    assert set(restored_tools) == ALLOWED_AGENT_TASK_TOOLS
+    restored_tools = {
+        t.name: t
+        for t in build_task_tools(restored_tools["interpret_interpretation_operation"].runner)
+    }
     restored_runner = restored_tools["get_interpretation_status"].runner
     assert restored_runner.active_task_id is None
     current = await restored_tools["get_interpretation_status"].call(
@@ -283,16 +296,20 @@ async def test_factory_restart_restores_multiple_tasks_and_previous_well(
 
 
 def test_agent_rejects_every_unapproved_tool(data_dir):
-    tools = build_task_tools(configured_runner(data_dir))
+    tools = build_agent_task_tools(configured_runner(data_dir))
     for name in ("calculate_sw", "identify_lithology", "evaluate_petrophysics", "unknown"):
         with pytest.raises(ValueError, match="任务级 Tool"):
             LoggingInterpretationDemoAgent(
-                name="test", system_prompt="", model=SimpleNamespace(model="qwen-plus"),
+                name="test",
+                system_prompt="",
+                model=SimpleNamespace(model="qwen-plus"),
                 toolkit=Toolkit(tools=[*tools, SimpleNamespace(name=name)]),
             )
     agent = LoggingInterpretationDemoAgent(
-        name="test", system_prompt="", model=SimpleNamespace(model="qwen-plus"),
+        name="test",
+        system_prompt="",
+        model=SimpleNamespace(model="qwen-plus"),
         toolkit=Toolkit(tools=tools),
     )
     names = {t.name for group in agent.toolkit.tool_groups for t in group.tools}
-    assert names == ALLOWED_TASK_TOOLS
+    assert names == ALLOWED_AGENT_TASK_TOOLS
