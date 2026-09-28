@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "DatasetCurvePatchRequest": {
+      "additionalProperties": false,
+      "description": "一条曲线的外部修改请求。",
+      "properties": {
+        "curve_code": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Curve Code",
+          "type": "string"
+        },
+        "samples": {
+          "items": {
+            "$ref": "#/$defs/DatasetPatchSampleRequest"
+          },
+          "minItems": 1,
+          "title": "Samples",
+          "type": "array"
+        },
+        "unit": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "curve_code",
+        "unit",
+        "samples"
+      ],
+      "title": "DatasetCurvePatchRequest",
+      "type": "object"
+    },
+    "DatasetPatchSampleRequest": {
+      "additionalProperties": false,
+      "description": "调用方只提供真实深度和目标值，不提供可信索引或原值。",
+      "properties": {
+        "depth_m": {
+          "title": "Depth M",
+          "type": "number"
+        },
+        "new_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "New Value"
+        }
+      },
+      "required": [
+        "depth_m",
+        "new_value"
+      ],
+      "title": "DatasetPatchSampleRequest",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "一次显式基线 Patch 请求，可同时修改多条曲线。",
+  "properties": {
+    "curves": {
+      "items": {
+        "$ref": "#/$defs/DatasetCurvePatchRequest"
+      },
+      "minItems": 1,
+      "title": "Curves",
+      "type": "array"
+    },
+    "depth_reference": {
+      "const": "MD",
+      "default": "MD",
+      "title": "Depth Reference",
+      "type": "string"
+    },
+    "depth_unit": {
+      "const": "m",
+      "default": "m",
+      "title": "Depth Unit",
+      "type": "string"
+    }
+  },
+  "required": [
+    "curves"
+  ],
+  "title": "DatasetPatchRequest",
+  "type": "object"
+}

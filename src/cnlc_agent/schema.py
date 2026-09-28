@@ -7,6 +7,11 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from cnlc_agent.domain.dataset_revision import (
+    DatasetChangeSet,
+    DatasetPatchRequest,
+    DatasetRevision,
+)
 from cnlc_agent.domain.models import (
     Contract,
     MockFixture,
@@ -25,6 +30,9 @@ CONTRACTS: dict[str, type[Contract]] = {
     "stage-result": StageResult,
     "validation-result": ValidationResult,
     "interpretation-state": InterpretationState,
+    "dataset-patch-request": DatasetPatchRequest,
+    "dataset-change-set": DatasetChangeSet,
+    "dataset-revision": DatasetRevision,
     "tool-input": ToolInput,
     "tool-output": ToolOutput,
 }

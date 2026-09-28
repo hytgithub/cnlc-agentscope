@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "不可变 Dataset lineage 节点；不携带 RawData 或完整曲线。",
+  "properties": {
+    "change_set_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Change Set Id"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "created_from_execution_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created From Execution Id"
+    },
+    "dataset_revision_id": {
+      "minLength": 1,
+      "title": "Dataset Revision Id",
+      "type": "string"
+    },
+    "lineage_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Lineage Sha256",
+      "type": "string"
+    },
+    "parent_revision_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Revision Id"
+    },
+    "root_input_version_id": {
+      "minLength": 1,
+      "title": "Root Input Version Id",
+      "type": "string"
+    },
+    "sequence": {
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    },
+    "well_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+      "title": "Well Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "well_id",
+    "sequence",
+    "root_input_version_id",
+    "lineage_sha256"
+  ],
+  "title": "DatasetRevision",
+  "type": "object"
+}

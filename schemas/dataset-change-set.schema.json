@@ -1,0 +1,188 @@
+{
+  "$defs": {
+    "DatasetChangeType": {
+      "description": "当前唯一开放的数据修改类型。",
+      "enum": [
+        "CURVE_SAMPLE_PATCH"
+      ],
+      "title": "DatasetChangeType",
+      "type": "string"
+    },
+    "DatasetCurveChange": {
+      "additionalProperties": false,
+      "description": "ChangeSet 中一条曲线的稀疏变化。",
+      "properties": {
+        "curve_code": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Curve Code",
+          "type": "string"
+        },
+        "samples": {
+          "items": {
+            "$ref": "#/$defs/DatasetSampleChange"
+          },
+          "minItems": 1,
+          "title": "Samples",
+          "type": "array"
+        },
+        "unit": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "curve_code",
+        "unit",
+        "samples"
+      ],
+      "title": "DatasetCurveChange",
+      "type": "object"
+    },
+    "DatasetSampleChange": {
+      "additionalProperties": false,
+      "description": "服务端解析后的单点变化，before_value 来自可信基线。",
+      "properties": {
+        "after_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "After Value"
+        },
+        "before_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Before Value"
+        },
+        "depth_m": {
+          "title": "Depth M",
+          "type": "number"
+        },
+        "sample_index": {
+          "minimum": 0,
+          "title": "Sample Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_index",
+        "depth_m",
+        "before_value",
+        "after_value"
+      ],
+      "title": "DatasetSampleChange",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "不可变的增量事实；curve_changes 只包含被修改的采样点。",
+  "properties": {
+    "base_revision_id": {
+      "minLength": 1,
+      "title": "Base Revision Id",
+      "type": "string"
+    },
+    "change_set_id": {
+      "minLength": 1,
+      "title": "Change Set Id",
+      "type": "string"
+    },
+    "change_type": {
+      "$ref": "#/$defs/DatasetChangeType",
+      "default": "CURVE_SAMPLE_PATCH"
+    },
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "created_by": {
+      "minLength": 1,
+      "title": "Created By",
+      "type": "string"
+    },
+    "curve_changes": {
+      "items": {
+        "$ref": "#/$defs/DatasetCurveChange"
+      },
+      "minItems": 1,
+      "title": "Curve Changes",
+      "type": "array"
+    },
+    "original_instruction": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Original Instruction"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "source_execution_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Execution Id"
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    },
+    "well_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+      "title": "Well Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "well_id",
+    "base_revision_id",
+    "curve_changes",
+    "content_sha256",
+    "created_by"
+  ],
+  "title": "DatasetChangeSet",
+  "type": "object"
+}

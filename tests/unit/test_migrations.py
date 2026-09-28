@@ -46,6 +46,11 @@ def test_initial_migration_generates_postgresql_sql():
     assert "uq_conversation_message_session_sequence" in result.stdout
     assert "ix_conversation_session_last_active" in result.stdout
     assert "ix_conversation_message_session_sequence" in result.stdout
+    assert "CREATE TABLE interpretation_dataset_revision" in result.stdout
+    assert "CREATE TABLE interpretation_dataset_change_set" in result.stdout
+    assert "uq_dataset_revision_task_sequence" in result.stdout
+    assert "uq_dataset_revision_change_set_id" in result.stdout
+    assert "fk_dataset_revision_change_set" in result.stdout
     assert (
         "FOREIGN KEY(execution_id) REFERENCES interpretation_execution "
         "(execution_id) ON DELETE CASCADE"
@@ -185,3 +190,35 @@ def test_conversation_migration_round_trip_sql():
     assert downgrade.returncode == 0, downgrade.stderr
     assert "DROP TABLE conversation_message" in downgrade.stdout
     assert "DROP TABLE conversation_session" in downgrade.stdout
+
+
+def test_dataset_revision_migration_round_trip_sql():
+    """0008 创建受限 lineage 外键，并按循环依赖的逆序回退。"""
+
+    upgrade = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "0007:0008", "--sql"],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "DATABASE_URL": "postgresql+asyncpg://localhost/cnlc"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert "CREATE TABLE interpretation_dataset_revision" in upgrade.stdout
+    assert "CREATE TABLE interpretation_dataset_change_set" in upgrade.stdout
+    assert "ON DELETE RESTRICT" in upgrade.stdout
+    assert "fk_dataset_revision_change_set" in upgrade.stdout
+    assert "uq_dataset_revision_change_set_id" in upgrade.stdout
+
+    downgrade = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "0008:0007", "--sql"],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "DATABASE_URL": "postgresql+asyncpg://localhost/cnlc"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert "DROP CONSTRAINT fk_dataset_revision_change_set" in downgrade.stdout
+    assert "DROP TABLE interpretation_dataset_change_set" in downgrade.stdout
+    assert "DROP TABLE interpretation_dataset_revision" in downgrade.stdout

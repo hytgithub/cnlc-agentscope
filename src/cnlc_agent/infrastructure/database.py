@@ -10,6 +10,15 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from cnlc_agent.domain.dataset_revision import (
+    DatasetChangeSet,
+    DatasetChangeType,
+    DatasetCurveChange,
+    DatasetRevision,
+    change_set_digest,
+    child_lineage,
+    root_lineage,
+)
 from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.execution import (
@@ -100,6 +109,80 @@ class InputVersionRow(Base):
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[JsonObject] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DatasetRevisionRow(Base):
+    """不可变 Dataset lineage metadata；不保存物化 RawData。"""
+
+    __tablename__ = "interpretation_dataset_revision"
+    __table_args__ = (
+        UniqueConstraint("task_id", "sequence", name="uq_dataset_revision_task_sequence"),
+        UniqueConstraint("change_set_id", name="uq_dataset_revision_change_set_id"),
+    )
+
+    dataset_revision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("interpretation_task.task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    well_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    sequence: Mapped[int] = mapped_column(nullable=False)
+    root_input_version_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("interpretation_input_version.input_version_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    parent_revision_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("interpretation_dataset_revision.dataset_revision_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    change_set_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("interpretation_dataset_change_set.change_set_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    lineage_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_from_execution_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("interpretation_execution.execution_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DatasetChangeSetRow(Base):
+    """稀疏曲线修改；payload 只保存 DatasetCurveChange 列表。"""
+
+    __tablename__ = "interpretation_dataset_change_set"
+
+    change_set_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("interpretation_task.task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    well_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_revision_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("interpretation_dataset_revision.dataset_revision_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    change_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[list[JsonObject]] = mapped_column(JSONB, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    source_execution_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("interpretation_execution.execution_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    original_instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -229,6 +312,42 @@ def _as_input_version(row: InputVersionRow) -> InterpretationInputVersion:
         source_type=row.source_type,  # type: ignore[arg-type]
         content_sha256=row.content_sha256,
         payload=MockFixture.model_validate(row.payload),
+        created_at=row.created_at,
+    )
+
+
+def _as_dataset_revision(row: DatasetRevisionRow) -> DatasetRevision:
+    """读回 DatasetRevision metadata，不触发物化。"""
+
+    return DatasetRevision(
+        dataset_revision_id=row.dataset_revision_id,
+        task_id=row.task_id,
+        well_id=row.well_id,
+        sequence=row.sequence,
+        root_input_version_id=row.root_input_version_id,
+        parent_revision_id=row.parent_revision_id,
+        change_set_id=row.change_set_id,
+        lineage_sha256=row.lineage_sha256,
+        created_from_execution_id=row.created_from_execution_id,
+        created_at=row.created_at,
+    )
+
+
+def _as_dataset_change_set(row: DatasetChangeSetRow) -> DatasetChangeSet:
+    """读回并验证稀疏 ChangeSet。"""
+
+    return DatasetChangeSet(
+        change_set_id=row.change_set_id,
+        task_id=row.task_id,
+        well_id=row.well_id,
+        base_revision_id=row.base_revision_id,
+        change_type=DatasetChangeType(row.change_type),
+        curve_changes=[DatasetCurveChange.model_validate(item) for item in row.payload],
+        content_sha256=row.content_sha256,
+        created_by=row.created_by,
+        source_execution_id=row.source_execution_id,
+        reason=row.reason,
+        original_instruction=row.original_instruction,
         created_at=row.created_at,
     )
 
@@ -548,6 +667,226 @@ class PostgreSQLTaskRepository:
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError(
                 "DATABASE_READ_FAILED", "数据库输入版本列表读取失败"
+            ) from None
+
+    async def create_root_dataset_revision(self, revision: DatasetRevision) -> DatasetRevision:
+        """任务锁内创建 metadata-only 根版本。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                task = await session.scalar(
+                    select(TaskRow).where(TaskRow.task_id == revision.task_id).with_for_update()
+                )
+                input_row = await session.get(InputVersionRow, revision.root_input_version_id)
+                existing = await session.scalar(
+                    select(DatasetRevisionRow.dataset_revision_id).where(
+                        DatasetRevisionRow.task_id == revision.task_id
+                    )
+                )
+                if task is None or input_row is None:
+                    raise InfrastructureError(
+                        "DATASET_REVISION_TASK_MISMATCH", "根版本归属无效"
+                    )
+                if (
+                    input_row.task_id != revision.task_id
+                    or input_row.well_id != revision.well_id
+                    or task.well_id != revision.well_id
+                ):
+                    raise InfrastructureError(
+                        "DATASET_REVISION_TASK_MISMATCH", "根输入不属于任务或井"
+                    )
+                if existing is not None:
+                    raise InfrastructureError("DATASET_ROOT_EXISTS", "任务已存在根数据集版本")
+                if revision.parent_revision_id is not None or revision.change_set_id is not None:
+                    raise InfrastructureError("INVALID_DATASET_REVISION_CHAIN", "根版本引用无效")
+                if revision.sequence != 1 or revision.lineage_sha256 != root_lineage(
+                    input_row.content_sha256
+                ):
+                    raise InfrastructureError(
+                        "INVALID_DATASET_REVISION_CHAIN", "根版本摘要或序号无效"
+                    )
+                if revision.created_from_execution_id is not None:
+                    execution = await session.get(
+                        ExecutionRow, revision.created_from_execution_id
+                    )
+                    if execution is None or execution.task_id != revision.task_id:
+                        raise InfrastructureError(
+                            "EXECUTION_TASK_MISMATCH", "来源执行不属于当前任务"
+                        )
+                session.add(
+                    DatasetRevisionRow(
+                        dataset_revision_id=revision.dataset_revision_id,
+                        task_id=revision.task_id,
+                        well_id=revision.well_id,
+                        sequence=1,
+                        root_input_version_id=revision.root_input_version_id,
+                        lineage_sha256=revision.lineage_sha256,
+                        created_from_execution_id=revision.created_from_execution_id,
+                        created_at=revision.created_at,
+                    )
+                )
+            return revision.model_copy(update={"sequence": 1}, deep=True)
+        except IntegrityError:
+            raise InfrastructureError("DATASET_ROOT_EXISTS", "根数据集版本已存在") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库根版本创建失败") from None
+
+    async def create_revision_with_change_set(
+        self, revision: DatasetRevision, change_set: DatasetChangeSet
+    ) -> tuple[DatasetRevision, DatasetChangeSet]:
+        """一个事务创建稀疏 ChangeSet 和 Child Revision，禁止 orphan。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                task = await session.scalar(
+                    select(TaskRow).where(TaskRow.task_id == revision.task_id).with_for_update()
+                )
+                parent = await session.get(DatasetRevisionRow, revision.parent_revision_id)
+                if task is None or parent is None or parent.task_id != revision.task_id:
+                    raise InfrastructureError(
+                        "DATASET_REVISION_TASK_MISMATCH", "父版本归属无效"
+                    )
+                if (
+                    task.well_id != revision.well_id
+                    or parent.well_id != revision.well_id
+                    or change_set.task_id != revision.task_id
+                    or change_set.well_id != revision.well_id
+                ):
+                    raise InfrastructureError(
+                        "DATASET_REVISION_TASK_MISMATCH", "版本或 ChangeSet 归属无效"
+                    )
+                if (
+                    revision.parent_revision_id != change_set.base_revision_id
+                    or revision.change_set_id != change_set.change_set_id
+                    or revision.root_input_version_id != parent.root_input_version_id
+                ):
+                    raise InfrastructureError(
+                        "INVALID_DATASET_REVISION_CHAIN", "版本 lineage 引用不一致"
+                    )
+                if change_set.content_sha256 != change_set_digest(change_set.curve_changes):
+                    raise InfrastructureError(
+                        "INVALID_CHANGE_SET_DIGEST", "ChangeSet 摘要无效"
+                    )
+                if revision.lineage_sha256 != child_lineage(
+                    parent.lineage_sha256, change_set.content_sha256
+                ):
+                    raise InfrastructureError(
+                        "INVALID_DATASET_REVISION_CHAIN", "子版本摘要无效"
+                    )
+                for execution_id in (
+                    revision.created_from_execution_id,
+                    change_set.source_execution_id,
+                ):
+                    if execution_id is not None:
+                        execution = await session.get(ExecutionRow, execution_id)
+                        if execution is None or execution.task_id != revision.task_id:
+                            raise InfrastructureError(
+                                "EXECUTION_TASK_MISMATCH", "来源执行不属于当前任务"
+                            )
+                last_sequence = await session.scalar(
+                    select(func.max(DatasetRevisionRow.sequence)).where(
+                        DatasetRevisionRow.task_id == revision.task_id
+                    )
+                )
+                revision = DatasetRevision.model_validate(
+                    {
+                        **revision.model_dump(mode="python"),
+                        "sequence": (last_sequence or 0) + 1,
+                    }
+                )
+                session.add(
+                    DatasetChangeSetRow(
+                        change_set_id=change_set.change_set_id,
+                        task_id=change_set.task_id,
+                        well_id=change_set.well_id,
+                        base_revision_id=change_set.base_revision_id,
+                        change_type=change_set.change_type.value,
+                        payload=[
+                            item.model_dump(mode="json") for item in change_set.curve_changes
+                        ],
+                        content_sha256=change_set.content_sha256,
+                        created_by=change_set.created_by,
+                        source_execution_id=change_set.source_execution_id,
+                        reason=change_set.reason,
+                        original_instruction=change_set.original_instruction,
+                        created_at=change_set.created_at,
+                    )
+                )
+                await session.flush()
+                session.add(
+                    DatasetRevisionRow(
+                        dataset_revision_id=revision.dataset_revision_id,
+                        task_id=revision.task_id,
+                        well_id=revision.well_id,
+                        sequence=revision.sequence,
+                        root_input_version_id=revision.root_input_version_id,
+                        parent_revision_id=revision.parent_revision_id,
+                        change_set_id=revision.change_set_id,
+                        lineage_sha256=revision.lineage_sha256,
+                        created_from_execution_id=revision.created_from_execution_id,
+                        created_at=revision.created_at,
+                    )
+                )
+            return revision.model_copy(deep=True), change_set.model_copy(deep=True)
+        except IntegrityError:
+            raise InfrastructureError(
+                "DATASET_REVISION_CONFLICT", "数据集版本或 ChangeSet 冲突"
+            ) from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库数据集版本创建失败") from None
+
+    async def get_dataset_revision(self, revision_id: str) -> DatasetRevision | None:
+        try:
+            async with self.sessions() as session:
+                row = await session.get(DatasetRevisionRow, revision_id)
+                return _as_dataset_revision(row) if row is not None else None
+        except (ValidationError, ValueError):
+            raise InfrastructureError("INVALID_STORED_DATASET_REVISION", "数据集版本无效") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_READ_FAILED", "数据库版本读取失败") from None
+
+    async def list_dataset_revisions(self, task_id: str) -> list[DatasetRevision]:
+        try:
+            async with self.sessions() as session:
+                rows = (
+                    await session.scalars(
+                        select(DatasetRevisionRow)
+                        .where(DatasetRevisionRow.task_id == task_id)
+                        .order_by(DatasetRevisionRow.sequence)
+                    )
+                ).all()
+                return [_as_dataset_revision(row) for row in rows]
+        except (ValidationError, ValueError):
+            raise InfrastructureError("INVALID_STORED_DATASET_REVISION", "数据集版本无效") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_READ_FAILED", "数据库版本列表读取失败") from None
+
+    async def get_dataset_change_set(self, change_set_id: str) -> DatasetChangeSet | None:
+        try:
+            async with self.sessions() as session:
+                row = await session.get(DatasetChangeSetRow, change_set_id)
+                return _as_dataset_change_set(row) if row is not None else None
+        except (ValidationError, ValueError):
+            raise InfrastructureError("INVALID_STORED_CHANGE_SET", "ChangeSet 结构无效") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_READ_FAILED", "数据库 ChangeSet 读取失败") from None
+
+    async def list_dataset_change_sets(self, task_id: str) -> list[DatasetChangeSet]:
+        try:
+            async with self.sessions() as session:
+                rows = (
+                    await session.scalars(
+                        select(DatasetChangeSetRow)
+                        .where(DatasetChangeSetRow.task_id == task_id)
+                        .order_by(DatasetChangeSetRow.created_at, DatasetChangeSetRow.change_set_id)
+                    )
+                ).all()
+                return [_as_dataset_change_set(row) for row in rows]
+        except (ValidationError, ValueError):
+            raise InfrastructureError("INVALID_STORED_CHANGE_SET", "ChangeSet 结构无效") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError(
+                "DATABASE_READ_FAILED", "数据库 ChangeSet 列表读取失败"
             ) from None
 
     async def create_execution(

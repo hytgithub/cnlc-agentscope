@@ -5,6 +5,7 @@ from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Protocol
 
+from cnlc_agent.domain.dataset_revision import DatasetChangeSet, DatasetRevision
 from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.execution import (
     Execution,
@@ -51,6 +52,20 @@ class TaskRepository(Protocol):
     ) -> InterpretationInputVersion | None: ...
 
     async def list_input_versions(self, task_id: str) -> list[InterpretationInputVersion]: ...
+
+    async def create_root_dataset_revision(self, revision: DatasetRevision) -> DatasetRevision: ...
+
+    async def create_revision_with_change_set(
+        self, revision: DatasetRevision, change_set: DatasetChangeSet
+    ) -> tuple[DatasetRevision, DatasetChangeSet]: ...
+
+    async def get_dataset_revision(self, revision_id: str) -> DatasetRevision | None: ...
+
+    async def list_dataset_revisions(self, task_id: str) -> list[DatasetRevision]: ...
+
+    async def get_dataset_change_set(self, change_set_id: str) -> DatasetChangeSet | None: ...
+
+    async def list_dataset_change_sets(self, task_id: str) -> list[DatasetChangeSet]: ...
 
     async def create_execution(
         self,

@@ -200,6 +200,25 @@ Execution 没有 `PENDING` 和 `SKIPPED`；这两个值属于 Workflow 步骤状
 3. 新增或修改枚举时，同步更新本文。
 4. 历史 Task 记录可以保留当时原始代码值，但新增加的说明必须引用本文；Current Design 文档不得只列英文枚举而不解释。
 
+### 17.1 DatasetChangeType 与 Task 11B 稳定错误码
+
+| 代码值 | 中文名称 | 含义 |
+| --- | --- | --- |
+| `CURVE_SAMPLE_PATCH` | 曲线采样点修改 | 按可信 Base Dataset Revision 修改一个或多个真实 MD 采样点。 |
+
+| 错误码 | 中文含义 |
+| --- | --- |
+| `DATASET_REVISION_TASK_MISMATCH` | Dataset Revision 不属于请求 Task。 |
+| `DATASET_CURVE_NOT_FOUND` | Base Revision 中不存在请求曲线。 |
+| `DATASET_CURVE_UNIT_MISMATCH` | 请求曲线单位与可信基线不一致。 |
+| `PATCH_DEPTH_NOT_FOUND` | 请求 MD 深度未精确命中真实采样轴。 |
+| `DUPLICATE_PATCH_CURVE` | 同一请求重复声明曲线。 |
+| `DUPLICATE_PATCH_SAMPLE` | 同一曲线重复修改相同采样点。 |
+| `NO_EFFECTIVE_DATASET_CHANGE` | 所有目标值均与前值相同，没有有效修改。 |
+| `INVALID_DATASET_REVISION_CHAIN` | 父版本、ChangeSet、Root 或 lineage 关系无效。 |
+| `DATASET_REVISION_CHAIN_TOO_DEEP` | lineage 超过安全物化深度。 |
+| `INVALID_CHANGE_SET_DIGEST` | ChangeSet 摘要与稀疏内容不一致。 |
+
 ## 18. InputClassification（输入性质，Task 10.5-A）
 
 以下语义契约仅建模，尚未接入 ReAct、解析器或执行层。输入性质不等于业务动作。

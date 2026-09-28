@@ -1,6 +1,6 @@
 # 测井解释智能体数据库设计
 
-本文记录 migration `0001`～`0007` 已实现的数据库事实。设计原则是 **Versioned、Append-oriented、Traceable、Recoverable**：输入、执行和工具调用以新版本追加，Task 只维护当前指针和兼容视图，运行失败也必须留下可查询事实。状态、枚举和规划原因的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
+本文记录 migration `0001`～`0008` 已实现的数据库事实。设计原则是 **Versioned、Append-oriented、Traceable、Recoverable**：输入、数据集修改、执行和工具调用以新版本追加，Task 只维护当前指针和兼容视图，运行失败也必须留下可查询事实。状态、枚举和规划原因的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
 
 ## 1. 实体关系
 
@@ -8,9 +8,15 @@
 erDiagram
     INTERPRETATION_TASK ||--o{ INTERPRETATION_INPUT_VERSION : owns
     INTERPRETATION_TASK ||--o{ INTERPRETATION_EXECUTION : owns
+    INTERPRETATION_TASK ||--o{ INTERPRETATION_DATASET_REVISION : owns
+    INTERPRETATION_TASK ||--o{ INTERPRETATION_DATASET_CHANGE_SET : owns
     INTERPRETATION_TASK ||--o{ INTERPRETATION_TOOL_RUN : traces
     INTERPRETATION_TASK ||--o{ INTERPRETATION_SESSION_TASK_BINDING : bound_by
     INTERPRETATION_INPUT_VERSION ||--o{ INTERPRETATION_EXECUTION : selected_by
+    INTERPRETATION_INPUT_VERSION ||--o{ INTERPRETATION_DATASET_REVISION : roots
+    INTERPRETATION_DATASET_REVISION ||--o{ INTERPRETATION_DATASET_REVISION : parent_of
+    INTERPRETATION_DATASET_REVISION ||--o{ INTERPRETATION_DATASET_CHANGE_SET : base_of
+    INTERPRETATION_DATASET_CHANGE_SET o|--|| INTERPRETATION_DATASET_REVISION : creates
     INTERPRETATION_EXECUTION ||--o{ INTERPRETATION_TOOL_RUN : contains
 
     INTERPRETATION_TASK {
@@ -55,6 +61,32 @@ erDiagram
         varchar error_code
         timestamptz created_at
         timestamptz updated_at
+    }
+    INTERPRETATION_DATASET_REVISION {
+        text dataset_revision_id PK
+        text task_id FK
+        varchar well_id
+        int sequence
+        text root_input_version_id FK
+        text parent_revision_id FK
+        text change_set_id FK
+        char64 lineage_sha256
+        text created_from_execution_id FK
+        timestamptz created_at
+    }
+    INTERPRETATION_DATASET_CHANGE_SET {
+        text change_set_id PK
+        text task_id FK
+        varchar well_id
+        text base_revision_id FK
+        varchar change_type
+        jsonb payload
+        char64 content_sha256
+        text created_by
+        text source_execution_id FK
+        text reason
+        text original_instruction
+        timestamptz created_at
     }
     INTERPRETATION_TOOL_RUN {
         text tool_run_id PK
@@ -104,7 +136,7 @@ erDiagram
     }
 ```
 
-图只画真实外键。`interpretation_execution.source_execution_id` 是来源引用，但 migration `0005` 没有为其创建数据库外键；Task 的三个当前指针同样由应用层保持一致。`(task_id, sequence)` 在 InputVersion 和 Execution 上分别唯一。
+图只画真实外键。`interpretation_execution.source_execution_id` 是来源引用，但 migration `0005` 没有为其创建数据库外键；Task 的三个当前指针同样由应用层保持一致。`(task_id, sequence)` 在 InputVersion、DatasetRevision 和 Execution 上分别唯一。
 
 ## 2. Task 与版本化输入
 
@@ -113,6 +145,11 @@ erDiagram
 `current_execution_id` 指向当前选中的最新 Execution，因此可对应 `QUEUED`（排队等待）、`RUNNING`（正在执行）、失败类终态或成功类终态。`latest_successful_execution_id` 只在 Execution 进入 `SUCCESS` 或 `WARNING` 且形成可用报告时更新，用于寻找最近可靠的复用和历史报告基线。
 
 InputVersion 的 `source_type` 当前只允许 `UPLOAD`（用户上传）或 `FIXTURE`（演示/测试夹具）。上传内容先经过确定性解析和 `MockFixture` Schema 校验，再按字段排序序列化并计算 `content_sha256`；`payload` 保存规范化 JSON，不保存原附件名、二进制或临时路径。Worker 执行时从所选 InputVersion 重新物化临时文件，因此重启后不依赖旧临时目录。
+
+DatasetRevision 以 InputVersion 为 Root，只保存 lineage metadata。后续局部修改由
+DatasetChangeSet 的 JSONB 稀疏 payload 保存，并与 Child Revision 在同一事务创建；不会把
+完整 `RawData` 复制到 Revision 表。详细契约见
+[Dataset Revision & ChangeSet](architecture/dataset-revision-change-set.md)。
 
 ```mermaid
 flowchart LR
@@ -214,7 +251,7 @@ Worker 以原子 `claim_execution` 把 `QUEUED` 改为 `RUNNING`，写入 owner 
 
 | 存储 | 当前职责 | 丢失后的含义 |
 | --- | --- | --- |
-| PostgreSQL | Task、InputVersion、Execution、ToolRun、SessionTaskBinding、报告、Conversation、租约和审计事实 | 长期事实丢失，不允许伪装成功或自动降级到内存 |
+| PostgreSQL | Task、InputVersion、DatasetRevision / ChangeSet、Execution、ToolRun、SessionTaskBinding、报告、Conversation、租约和审计事实 | 长期事实丢失，不允许伪装成功或自动降级到内存 |
 | Redis | 可丢弃的 `InterpretationState` 运行检查点；有 TTL 的 AgentScope 活跃 Session / Message cache；无 Session TTL 的服务凭证等资源 | Conversation 和业务读取可分别由 PostgreSQL 恢复；实时流事件可能丢失 |
 
 PostgreSQL 是 canonical source。Redis 写入使用带 TTL 的 SET，Key 中的 Task ID 被 SHA-256 散列；Redis 可过期或清空，PostgreSQL 的版本、归属和报告不应因此消失。
@@ -230,5 +267,6 @@ PostgreSQL 是 canonical source。Redis 写入使用带 TTL 的 SET，Key 中的
 | `0005` | Execution 起点、来源、规划原因、时间、租约和错误码；旧活跃状态迁移为失败 |
 | `0006` | durable Session ↔ Task binding |
 | `0007` | durable Conversation Session / Message、ownership、消息顺序与幂等键 |
+| `0008` | metadata-only DatasetRevision、稀疏 DatasetChangeSet、lineage 与受限外键 |
 
 Migration 必须显式执行，应用启动不自动改表。正式井数据字段仍为 **Pending final well-data schema**。

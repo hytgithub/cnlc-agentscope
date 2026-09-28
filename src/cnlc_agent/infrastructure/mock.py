@@ -9,6 +9,13 @@ from typing import Protocol
 from pydantic import ValidationError as SchemaError
 
 from cnlc_agent.application.ports import ModelRequest
+from cnlc_agent.domain.dataset_revision import (
+    DatasetChangeSet,
+    DatasetRevision,
+    change_set_digest,
+    child_lineage,
+    root_lineage,
+)
 from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.errors import DataError, InfrastructureError, ModelError
 from cnlc_agent.domain.execution import (
@@ -111,6 +118,9 @@ class InMemoryTaskRepository:
         self._tool_runs: dict[str, ToolRun] = {}
         self._execution_tool_runs: dict[str, list[str]] = {}
         self._task_inputs: dict[str, list[str]] = {}
+        self._dataset_revisions: dict[str, DatasetRevision] = {}
+        self._dataset_change_sets: dict[str, DatasetChangeSet] = {}
+        self._task_dataset_revisions: dict[str, list[str]] = {}
         self._states: dict[str, InterpretationState] = {}
         self.reports: dict[str, str] = {}
         self._session_task_bindings: dict[
@@ -134,6 +144,7 @@ class InMemoryTaskRepository:
             self.reports[task_id] = ""
             self._task_executions[task_id] = []
             self._task_inputs[task_id] = []
+            self._task_dataset_revisions[task_id] = []
 
     async def get_task(self, task_id: str) -> InterpretationTask | None:
         task = self._tasks.get(task_id)
@@ -224,6 +235,129 @@ class InMemoryTaskRepository:
 
         return [
             self._inputs[item].model_copy(deep=True) for item in self._task_inputs.get(task_id, [])
+        ]
+
+    async def create_root_dataset_revision(self, revision: DatasetRevision) -> DatasetRevision:
+        """创建只引用 InputVersion 的根版本；不复制 payload。"""
+
+        async with self._lock:
+            task = self._tasks.get(revision.task_id)
+            input_version = self._inputs.get(revision.root_input_version_id)
+            if task is None or input_version is None:
+                raise InfrastructureError("DATASET_REVISION_TASK_MISMATCH", "根版本归属无效")
+            if (
+                input_version.task_id != revision.task_id
+                or input_version.well_id != revision.well_id
+            ):
+                raise InfrastructureError(
+                    "DATASET_REVISION_TASK_MISMATCH", "根输入不属于任务或井"
+                )
+            if revision.parent_revision_id is not None or revision.change_set_id is not None:
+                raise InfrastructureError("INVALID_DATASET_REVISION_CHAIN", "根版本引用无效")
+            if revision.sequence != 1 or revision.lineage_sha256 != root_lineage(
+                input_version.content_sha256
+            ):
+                raise InfrastructureError("INVALID_DATASET_REVISION_CHAIN", "根版本摘要或序号无效")
+            if revision.created_from_execution_id is not None:
+                execution = self._executions.get(revision.created_from_execution_id)
+                if execution is None or execution.task_id != revision.task_id:
+                    raise InfrastructureError(
+                        "EXECUTION_TASK_MISMATCH", "来源执行不属于当前任务"
+                    )
+            if self._task_dataset_revisions[revision.task_id]:
+                raise InfrastructureError("DATASET_ROOT_EXISTS", "任务已存在根数据集版本")
+            self._dataset_revisions[revision.dataset_revision_id] = revision.model_copy(deep=True)
+            self._task_dataset_revisions[revision.task_id].append(revision.dataset_revision_id)
+            return revision.model_copy(deep=True)
+
+    async def create_revision_with_change_set(
+        self, revision: DatasetRevision, change_set: DatasetChangeSet
+    ) -> tuple[DatasetRevision, DatasetChangeSet]:
+        """同一进程锁内原子创建 ChangeSet 与 Child Revision。"""
+
+        async with self._lock:
+            parent = self._dataset_revisions.get(revision.parent_revision_id or "")
+            task = self._tasks.get(revision.task_id)
+            if task is None or parent is None or parent.task_id != revision.task_id:
+                raise InfrastructureError("DATASET_REVISION_TASK_MISMATCH", "父版本归属无效")
+            if (
+                parent.well_id != revision.well_id
+                or change_set.task_id != revision.task_id
+                or change_set.well_id != revision.well_id
+            ):
+                raise InfrastructureError(
+                    "DATASET_REVISION_TASK_MISMATCH", "版本或 ChangeSet 归属无效"
+                )
+            if (
+                revision.parent_revision_id != change_set.base_revision_id
+                or revision.change_set_id != change_set.change_set_id
+                or revision.root_input_version_id != parent.root_input_version_id
+            ):
+                raise InfrastructureError(
+                    "INVALID_DATASET_REVISION_CHAIN", "版本 lineage 引用不一致"
+                )
+            if change_set.content_sha256 != change_set_digest(change_set.curve_changes):
+                raise InfrastructureError("INVALID_CHANGE_SET_DIGEST", "ChangeSet 摘要无效")
+            if revision.lineage_sha256 != child_lineage(
+                parent.lineage_sha256, change_set.content_sha256
+            ):
+                raise InfrastructureError("INVALID_DATASET_REVISION_CHAIN", "子版本摘要无效")
+            if any(
+                item.change_set_id == change_set.change_set_id
+                for item in self._dataset_revisions.values()
+            ):
+                raise InfrastructureError(
+                    "DATASET_CHANGE_SET_ALREADY_USED", "ChangeSet 已用于其他数据集版本"
+                )
+            for execution_id in (
+                revision.created_from_execution_id,
+                change_set.source_execution_id,
+            ):
+                if execution_id is not None:
+                    execution = self._executions.get(execution_id)
+                    if execution is None or execution.task_id != revision.task_id:
+                        raise InfrastructureError(
+                            "EXECUTION_TASK_MISMATCH", "来源执行不属于当前任务"
+                        )
+            sequences = {
+                item.sequence
+                for item in self._dataset_revisions.values()
+                if item.task_id == revision.task_id
+            }
+            revision = DatasetRevision.model_validate(
+                {**revision.model_dump(mode="python"), "sequence": max(sequences) + 1}
+            )
+            if (
+                revision.dataset_revision_id in self._dataset_revisions
+                or change_set.change_set_id in self._dataset_change_sets
+            ):
+                raise InfrastructureError(
+                    "DATASET_REVISION_EXISTS", "数据集版本或 ChangeSet 已存在"
+                )
+            self._dataset_change_sets[change_set.change_set_id] = change_set.model_copy(deep=True)
+            self._dataset_revisions[revision.dataset_revision_id] = revision.model_copy(deep=True)
+            self._task_dataset_revisions[revision.task_id].append(revision.dataset_revision_id)
+            return revision.model_copy(deep=True), change_set.model_copy(deep=True)
+
+    async def get_dataset_revision(self, revision_id: str) -> DatasetRevision | None:
+        revision = self._dataset_revisions.get(revision_id)
+        return revision.model_copy(deep=True) if revision is not None else None
+
+    async def list_dataset_revisions(self, task_id: str) -> list[DatasetRevision]:
+        return [
+            self._dataset_revisions[item].model_copy(deep=True)
+            for item in self._task_dataset_revisions.get(task_id, [])
+        ]
+
+    async def get_dataset_change_set(self, change_set_id: str) -> DatasetChangeSet | None:
+        change_set = self._dataset_change_sets.get(change_set_id)
+        return change_set.model_copy(deep=True) if change_set is not None else None
+
+    async def list_dataset_change_sets(self, task_id: str) -> list[DatasetChangeSet]:
+        return [
+            item.model_copy(deep=True)
+            for item in self._dataset_change_sets.values()
+            if item.task_id == task_id
         ]
 
     async def create_execution(

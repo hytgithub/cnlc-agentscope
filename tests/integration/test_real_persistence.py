@@ -10,11 +10,24 @@ from uuid import uuid4
 
 import pytest
 from redis.asyncio import Redis
-from sqlalchemy import delete
+from sqlalchemy import delete, insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from cnlc_agent.application.dataset_revision_service import DatasetRevisionService
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
+from cnlc_agent.domain.dataset_revision import (
+    DatasetChangeSet,
+    DatasetCurveChange,
+    DatasetCurvePatchRequest,
+    DatasetPatchRequest,
+    DatasetPatchSampleRequest,
+    DatasetRevision,
+    DatasetSampleChange,
+    change_set_digest,
+    child_lineage,
+)
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.execution import ExecutionStatus
@@ -24,6 +37,7 @@ from cnlc_agent.domain.stages import STAGE_ORDER, StageRunStatus
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolExecutionMode, ToolRun, ToolRunStatus
 from cnlc_agent.infrastructure.database import (
+    DatasetRevisionRow,
     ExecutionRow,
     InputVersionRow,
     PostgreSQLTaskRepository,
@@ -434,3 +448,138 @@ async def test_postgresql_input_version_and_override_survive_new_repository(migr
                 delete(TaskRow).where(TaskRow.task_id.in_([request.task_id, other_request.task_id]))
             )
         await engine.dispose()
+
+
+async def test_postgresql_dataset_revision_survives_repository_restart(migrated):
+    """真实 PostgreSQL 原子保存稀疏 ChangeSet，并能跨连接重新物化。"""
+
+    fixture = MockFixture.model_validate_json((ROOT / "mock_data/WELL_MOCK_001.json").read_text())
+    request = TaskRequest(well_id=fixture.well.well_id)
+    engine = create_async_engine(DB_URL)
+    reopened_engine = create_async_engine(DB_URL)
+    try:
+        repository = PostgreSQLTaskRepository(engine)
+        await repository.create_task(InterpretationState(task=request))
+        input_version = await repository.create_input_version(request.task_id, fixture)
+        service = DatasetRevisionService(repository)
+        root = await service.create_root_revision(
+            request.task_id, input_version.input_version_id
+        )
+        child, change_set = await service.apply_patch(
+            request.task_id,
+            root.dataset_revision_id,
+            DatasetPatchRequest(
+                curves=[
+                    DatasetCurvePatchRequest(
+                        curve_code="GR",
+                        unit="API",
+                        samples=[
+                            DatasetPatchSampleRequest(depth_m=2000.0, new_value=82.0)
+                        ],
+                    )
+                ]
+            ),
+            actor="integration-test",
+        )
+        await engine.dispose()
+
+        reopened = PostgreSQLTaskRepository(reopened_engine)
+        restored = await DatasetRevisionService(reopened).materialize(
+            request.task_id, child.dataset_revision_id
+        )
+        assert restored.curves["GR"].values == [82.0, 48.0, 46.0]
+        assert (await reopened.get_dataset_revision(root.dataset_revision_id)) == root
+        assert (await reopened.get_dataset_change_set(change_set.change_set_id)) == change_set
+        assert len((await reopened.list_dataset_change_sets(request.task_id))[0].curve_changes) == 1
+        assert len(
+            (await reopened.list_dataset_change_sets(request.task_id))[0]
+            .curve_changes[0]
+            .samples
+        ) == 1
+
+        concurrent = await asyncio.gather(
+            *(
+                DatasetRevisionService(reopened).apply_patch(
+                    request.task_id,
+                    root.dataset_revision_id,
+                    DatasetPatchRequest(
+                        curves=[
+                            DatasetCurvePatchRequest(
+                                curve_code="GR",
+                                unit="API",
+                                samples=[
+                                    DatasetPatchSampleRequest(
+                                        depth_m=2000.5, new_value=value
+                                    )
+                                ],
+                            )
+                        ]
+                    ),
+                    actor="concurrency-test",
+                )
+                for value in (81.0, 82.0, 83.0)
+            )
+        )
+        assert sorted(item[0].sequence for item in concurrent) == [3, 4, 5]
+
+        # 数据库唯一约束独立保证同一 ChangeSet 不能被第二个 Child 引用。
+        with pytest.raises(IntegrityError):
+            async with reopened_engine.begin() as connection:
+                await connection.execute(
+                    insert(DatasetRevisionRow).values(
+                        dataset_revision_id=str(uuid4()),
+                        task_id=request.task_id,
+                        well_id=request.well_id,
+                        sequence=6,
+                        root_input_version_id=root.root_input_version_id,
+                        parent_revision_id=root.dataset_revision_id,
+                        change_set_id=change_set.change_set_id,
+                        lineage_sha256=child.lineage_sha256,
+                        created_from_execution_id=None,
+                        created_at=utc_now(),
+                    )
+                )
+
+        # ChangeSet flush 后让 Revision 主键冲突，整个事务必须回滚。
+        curve_change = DatasetCurveChange(
+            curve_code="GR",
+            unit="API",
+            samples=[
+                DatasetSampleChange(
+                    sample_index=1,
+                    depth_m=2000.5,
+                    before_value=48.0,
+                    after_value=90.0,
+                )
+            ],
+        )
+        digest = change_set_digest([curve_change])
+        orphan_candidate = DatasetChangeSet(
+            task_id=request.task_id,
+            well_id=request.well_id,
+            base_revision_id=child.dataset_revision_id,
+            curve_changes=[curve_change],
+            content_sha256=digest,
+            created_by="integration-test",
+        )
+        conflicting_revision = DatasetRevision(
+            dataset_revision_id=root.dataset_revision_id,
+            task_id=request.task_id,
+            well_id=request.well_id,
+            sequence=3,
+            root_input_version_id=root.root_input_version_id,
+            parent_revision_id=child.dataset_revision_id,
+            change_set_id=orphan_candidate.change_set_id,
+            lineage_sha256=child_lineage(child.lineage_sha256, digest),
+        )
+        with pytest.raises(InfrastructureError) as caught:
+            await reopened.create_revision_with_change_set(
+                conflicting_revision, orphan_candidate
+            )
+        assert caught.value.code == "DATASET_REVISION_CONFLICT"
+        assert await reopened.get_dataset_change_set(orphan_candidate.change_set_id) is None
+    finally:
+        async with reopened_engine.begin() as connection:
+            await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
+        await engine.dispose()
+        await reopened_engine.dispose()

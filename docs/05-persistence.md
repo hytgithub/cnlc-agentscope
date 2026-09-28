@@ -8,7 +8,7 @@ Execution、Workflow 和 ToolRun 状态的中文含义见 [11-status-enum-glossa
 
 正式持久模式使用 SQLAlchemy asyncio + asyncpg 访问 PostgreSQL，使用 redis-py asyncio 访问 Redis，使用 Alembic 显式管理 migration。Repository 和 StateStore 隔离 SDK；Agent、Workflow 和专业 Tool 不直接持有数据库连接。
 
-- PostgreSQL 保存 Task、InputVersion、Execution、ToolRun、SessionTaskBinding、报告、执行租约、Conversation Session / Message 及审计事实，是长期 canonical source。
+- PostgreSQL 保存 Task、InputVersion、DatasetRevision / DatasetChangeSet、Execution、ToolRun、SessionTaskBinding、报告、执行租约、Conversation Session / Message 及审计事实，是长期 canonical source。
 - Redis 保存可丢弃的 `InterpretationState` 运行检查点和有滑动 TTL 的 AgentScope 活跃聊天缓存；服务凭证等非 Conversation 资源不使用 Session TTL。
 - 进程内 `observed_task_ids` 和 dispatcher task 仅用于加速与调度，不是业务事实。
 
@@ -27,6 +27,10 @@ Workflow 检查点先写 PostgreSQL，再尝试写 Redis。Redis 写失败会被
 同一 Task 创建新 Execution 时，Repository 在数据库事务内以 `SELECT FOR UPDATE` 锁 Task，校验 `expected_current_execution_id`，并检查当前 Execution 是否活跃。旧计划被拒绝，活跃冲突返回 `TASK_EXECUTION_ACTIVE`；成功后在同一临界区分配连续 sequence 并更新当前指针。
 
 Task、InputVersion、Execution、ToolRun 和 Binding 的写入均依赖数据库约束。Repository 将可预期的唯一约束、归属和并发冲突转换为稳定错误码，不向浏览器暴露驱动异常或连接信息。AsyncSession 不跨并发任务共享。
+
+解编后局部曲线修改采用 metadata-only DatasetRevision 与稀疏 DatasetChangeSet。Root 只引用
+InputVersion，Child 与 ChangeSet 在一个事务中追加，不复制完整 RawData，也不移动 Execution
+指针。物化和分支规则见 [Dataset Revision & ChangeSet](architecture/dataset-revision-change-set.md)。
 
 ## 4. 后台执行、租约和崩溃恢复
 
