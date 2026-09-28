@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from cnlc_agent.application.stage_orchestrator import StageProgress
+from cnlc_agent.application.stage_results import StageResultView
 from cnlc_agent.domain.dataset_revision import (
     DatasetChangeSet,
     DatasetPatchRequest,
@@ -39,6 +40,7 @@ CONTRACTS: dict[str, type[Contract]] = {
     "execution": Execution,
     "stage-run": StageRun,
     "stage-progress": StageProgress,
+    "stage-result-view": StageResultView,
     "tool-input": ToolInput,
     "tool-output": ToolOutput,
 }

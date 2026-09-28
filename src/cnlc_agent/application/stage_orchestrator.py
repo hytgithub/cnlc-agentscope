@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from cnlc_agent.application.ports import TaskRepository
 from cnlc_agent.application.service import InterpretationTaskService
+from cnlc_agent.application.stage_results import StageResultProjector, StageResultView
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import InfrastructureError, WorkflowError
 from cnlc_agent.domain.execution import (
@@ -56,6 +57,7 @@ class StageProgress(Contract):
     summary: str = ""
     warnings: list[str]
     candidate_report: str | None = None
+    stage_result: StageResultView | None = None
 
 
 class StageOrchestrator:
@@ -64,6 +66,7 @@ class StageOrchestrator:
     def __init__(self, service: InterpretationTaskService) -> None:
         self.service = service
         self.repository: TaskRepository = service.repository
+        self.results = StageResultProjector(self.repository)
 
     @staticmethod
     def _execution_runs(execution: Execution) -> list[StageRun]:
@@ -109,6 +112,11 @@ class StageOrchestrator:
             None,
         )
         current = waiting or (runs[-1] if runs else None)
+        stage_result = (
+            self.results.project_loaded(task, execution, current.id)
+            if current is not None
+            else None
+        )
         return StageProgress(
             task_id=task_id,
             well_id=task.well_id,
@@ -129,14 +137,22 @@ class StageOrchestrator:
             next_stage=self._next_stage(execution),
             started_at=execution.started_at,
             updated_at=execution.updated_at,
-            summary=current.summary if current else "",
-            warnings=list(current.warnings) if current else [],
+            summary=stage_result.summary if stage_result else "",
+            warnings=list(stage_result.warnings) if stage_result else [],
             candidate_report=(
                 execution.markdown
                 if waiting is not None and waiting.stage == InterpretationStage.REPORT
                 else None
             ),
+            stage_result=stage_result,
         )
+
+    async def get_stage_result(
+        self, task_id: str, execution_id: str, stage_run_id: str
+    ) -> StageResultView:
+        """按显式三元标识查询确认视图，展示拼装由独立 Projector 完成。"""
+
+        return await self.results.project(task_id, execution_id, stage_run_id)
 
     async def confirm_stage(
         self,

@@ -602,3 +602,14 @@ StageRunStatus（阶段执行状态）表达一次实际执行的生命周期，
 分阶段模式中，非最终确认把同一个 Execution 从
 `WAITING_CONFIRMATION`（等待阶段确认）恢复为 `QUEUED`（排队等待）；只有 REPORT（报告）
 确认会进入 `SUCCESS`（执行成功）或 `WARNING`（完成但有告警）。
+
+## 42. StageResultView 确认阻断码（Task 11D）
+
+| 阻断码 | 中文含义 |
+| --- | --- |
+| `EXECUTION_NOT_CURRENT` | 阶段结果所在的查询 Execution 已不是 Task 当前执行。 |
+| `EXECUTION_NOT_WAITING_CONFIRMATION` | Execution 当前不处于等待阶段确认状态。 |
+| `STAGE_NOT_WAITING_CONFIRM` | StageRun 当前不处于等待确认状态。 |
+| `STAGE_RESULT_STALE` | 当前工作快照中的阶段结果已经失效。 |
+
+详细设计见 [四阶段结果展示契约](architecture/four-stage-result-contract.md)。

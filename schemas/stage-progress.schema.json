@@ -1,5 +1,33 @@
 {
   "$defs": {
+    "ConfirmationBlocker": {
+      "additionalProperties": false,
+      "description": "调用方可直接映射到确认页提示的稳定阻断原因。",
+      "properties": {
+        "code": {
+          "enum": [
+            "EXECUTION_NOT_CURRENT",
+            "EXECUTION_NOT_WAITING_CONFIRMATION",
+            "STAGE_NOT_WAITING_CONFIRM",
+            "STAGE_RESULT_STALE"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ConfirmationBlocker",
+      "type": "object"
+    },
     "ExecutionRunMode": {
       "description": "执行调度方式；持久化后可在进程重启时恢复相同语义。",
       "enum": [
@@ -35,6 +63,142 @@
       ],
       "title": "InterpretationStage",
       "type": "string"
+    },
+    "JsonValue": {},
+    "StageResultView": {
+      "additionalProperties": false,
+      "description": "确认页面使用的小型查询 DTO，不建立新的业务版本事实。",
+      "properties": {
+        "can_confirm": {
+          "title": "Can Confirm",
+          "type": "boolean"
+        },
+        "confirmation_blockers": {
+          "items": {
+            "$ref": "#/$defs/ConfirmationBlocker"
+          },
+          "maxItems": 4,
+          "title": "Confirmation Blockers",
+          "type": "array"
+        },
+        "conflicts": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "execution_id": {
+          "minLength": 1,
+          "title": "Execution Id",
+          "type": "string"
+        },
+        "headline": {
+          "maxLength": 1000,
+          "title": "Headline",
+          "type": "string"
+        },
+        "input_refs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 64,
+          "title": "Input Refs",
+          "type": "object"
+        },
+        "items": {
+          "items": {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          "maxItems": 50,
+          "title": "Items",
+          "type": "array"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metrics",
+          "type": "object"
+        },
+        "missing_items": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Missing Items",
+          "type": "array"
+        },
+        "output_refs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 64,
+          "title": "Output Refs",
+          "type": "object"
+        },
+        "stage": {
+          "$ref": "#/$defs/InterpretationStage"
+        },
+        "stage_run_id": {
+          "minLength": 1,
+          "title": "Stage Run Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/StageRunStatus"
+        },
+        "summary": {
+          "maxLength": 1000,
+          "title": "Summary",
+          "type": "string"
+        },
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "validity": {
+          "$ref": "#/$defs/StageValidity"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Warnings",
+          "type": "array"
+        },
+        "well_id": {
+          "minLength": 1,
+          "title": "Well Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "well_id",
+        "execution_id",
+        "stage_run_id",
+        "stage",
+        "status",
+        "validity",
+        "headline",
+        "summary",
+        "can_confirm",
+        "updated_at"
+      ],
+      "title": "StageResultView",
+      "type": "object"
     },
     "StageRunStatus": {
       "description": "阶段一次实际执行的生命周期，不承载后续修改造成的有效性变化。",
@@ -128,6 +292,17 @@
     },
     "run_mode": {
       "$ref": "#/$defs/ExecutionRunMode"
+    },
+    "stage_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageResultView"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "stage_status": {
       "anyOf": [
