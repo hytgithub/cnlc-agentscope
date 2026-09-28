@@ -5,7 +5,9 @@ Contract；它不复用 Mock 结果，也不让 Agent 自行决定底层调用�
 """
 
 import asyncio
+import json
 import math
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,8 @@ from cnlc_agent.domain.models import (
     WellData,
 )
 from cnlc_agent.infrastructure.company_api import CompanyApiClient, CompanyApiSettings
+from cnlc_agent.pygdsx.config import STANDARD_CURVE_DICT
+from cnlc_agent.pygdsx.curve import get_gdx_curve_info, get_gdx_curve_name_list
 from cnlc_agent.tools.contracts import ToolInput
 from cnlc_agent.wplm.data_analysis_utils.reader import load_well
 
@@ -84,6 +88,64 @@ def _well_data(path: Path, well_id: str) -> WellData:
     )
 
 
+def _reference_log_req_json(value: Any) -> JsonObject:
+    """复刻 ``DataPreprocessingTool`` 的落盘再读取语义。
+
+    参考实现将工具返回的 ``logReqJson`` 写入 JSON 文件，再由预测路由
+    ``json.load`` 成对象。AgentScope 无需制造临时文件，但必须得到完全
+    相同的对象，避免自行从 GDSX 重建一个未经公司协议确认的数据结构。
+    """
+
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            raise ToolError("COMPANY_PREPROCESS_DATA_INVALID", "预处理返回的 logReqJson 不是有效 JSON") from None
+    if not isinstance(value, dict) or not value:
+        raise ToolError("COMPANY_PREPROCESS_DATA_INVALID", "预处理返回的 logReqJson 必须是非空对象")
+    return value
+
+
+def _operations_with_depth_range(path: Path, configured: JsonObject) -> JsonObject:
+    """复刻 yuce 的 well_info 深度区间计算，再补入预处理 operations。
+
+    yuce 前端先以全部可识别曲线的公共区间生成 ``start_depth/end_depth``，
+    然后在 ``/wplm/preprocessing`` 请求中写为 ``startDepth/endDepth``。
+    AgentScope 只有上传文件而没有该前端表单，因此仅在配置未提供完整区间时
+    按同一 GDSX 元数据规则补齐；显式配置始终优先。
+    """
+
+    operations = deepcopy(configured)
+    start = operations.get("startDepth")
+    end = operations.get("endDepth")
+    if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+        return operations
+
+    aliases = {alias for names in STANDARD_CURVE_DICT.values() for alias in names}
+    calculated_start = 0.0
+    calculated_end = 9999999.0
+    for curve_name in get_gdx_curve_name_list(str(path)) or []:
+        if curve_name not in aliases:
+            continue
+        curve = get_gdx_curve_info(str(path), curve_name)
+        if curve is None:
+            continue
+        curve_start = getattr(curve, "dimension1Start", 0)
+        curve_end = getattr(curve, "dimension1End", 0)
+        if isinstance(curve_start, (int, float)) and curve_start > 0:
+            calculated_start = max(calculated_start, float(curve_start))
+        if isinstance(curve_end, (int, float)) and curve_end > 0:
+            calculated_end = min(calculated_end, float(curve_end))
+
+    calculated_start = round(calculated_start, 2)
+    calculated_end = round(calculated_end, 2)
+    if calculated_end < calculated_start:
+        raise ToolError("COMPANY_PREPROCESS_DEPTH_INVALID", "GDSX 有效曲线不存在公共深度区间")
+    operations["startDepth"] = calculated_start
+    operations["endDepth"] = calculated_end
+    return operations
+
+
 class RealCompanyBatchProvider:
     """真实预处理、模型列表和预测的执行级编排，结果仍按四批次输出。"""
 
@@ -142,6 +204,9 @@ class RealCompanyBatchProvider:
             return {"well_data": data.model_dump(mode="json")}
         if stage == "preprocessing":
             operations, _, _, _ = self._real_settings()
+            operations = await asyncio.to_thread(
+                _operations_with_depth_range, self._source_path(request), operations
+            )
             result = await self.client.preprocess(
                 self._source_path(request),
                 operations,
@@ -158,7 +223,7 @@ class RealCompanyBatchProvider:
             # 与 yuce_api.py 对齐：预测请求的 wellName 从预处理后的 GDSX
             # 读取，而不是沿用上传原文件或会话临时名。
             context["processed_well_name"] = processed_data.well.name
-            context["log_req_json"] = result.call.data["logReqJson"]
+            context["log_req_json"] = _reference_log_req_json(result.call.data["logReqJson"])
             qc = StageResult(
                 status=StepStatus.WARNING,
                 result={
