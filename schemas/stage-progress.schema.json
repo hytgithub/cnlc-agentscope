@@ -1,0 +1,217 @@
+{
+  "$defs": {
+    "ExecutionRunMode": {
+      "description": "执行调度方式；持久化后可在进程重启时恢复相同语义。",
+      "enum": [
+        "CONTINUOUS",
+        "STAGED_CONFIRMATION"
+      ],
+      "title": "ExecutionRunMode",
+      "type": "string"
+    },
+    "ExecutionStatus": {
+      "description": "后台执行生命周期，与 W01-W10 的 StepStatus 明确分离。",
+      "enum": [
+        "QUEUED",
+        "RUNNING",
+        "WAITING_CONFIRMATION",
+        "SUCCESS",
+        "WARNING",
+        "FAILED",
+        "BLOCKED",
+        "REVIEW_REQUIRED"
+      ],
+      "title": "ExecutionStatus",
+      "type": "string"
+    },
+    "InterpretationStage": {
+      "description": "复用既有规划阶段值，DECODE 别名保持 Demo 的 DATA_DECODE 协议兼容。",
+      "enum": [
+        "DATA_DECODE",
+        "DATA_DECODE",
+        "PREPROCESS",
+        "INTERPRET",
+        "REPORT"
+      ],
+      "title": "InterpretationStage",
+      "type": "string"
+    },
+    "StageRunStatus": {
+      "description": "阶段一次实际执行的生命周期，不承载后续修改造成的有效性变化。",
+      "enum": [
+        "PENDING",
+        "RUNNING",
+        "WAITING_CONFIRM",
+        "CONFIRMED",
+        "FAILED"
+      ],
+      "title": "StageRunStatus",
+      "type": "string"
+    },
+    "StageValidity": {
+      "description": "当前工作版本对既有阶段结果的有效性判断。",
+      "enum": [
+        "CURRENT",
+        "STALE"
+      ],
+      "title": "StageValidity",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "面向调用方的最小阶段进度投影，仅包含稳定标识和状态。",
+  "properties": {
+    "candidate_report": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Candidate Report"
+    },
+    "confirmed_stages": {
+      "items": {
+        "$ref": "#/$defs/InterpretationStage"
+      },
+      "title": "Confirmed Stages",
+      "type": "array"
+    },
+    "current_stage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InterpretationStage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "current_stage_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Current Stage Run Id"
+    },
+    "execution_id": {
+      "title": "Execution Id",
+      "type": "string"
+    },
+    "execution_sequence": {
+      "title": "Execution Sequence",
+      "type": "integer"
+    },
+    "execution_status": {
+      "$ref": "#/$defs/ExecutionStatus"
+    },
+    "next_stage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InterpretationStage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "run_mode": {
+      "$ref": "#/$defs/ExecutionRunMode"
+    },
+    "stage_status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageRunStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "stage_validity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageValidity"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Started At"
+    },
+    "summary": {
+      "default": "",
+      "title": "Summary",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "waiting_confirmation_stage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InterpretationStage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    },
+    "well_id": {
+      "title": "Well Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "well_id",
+    "execution_id",
+    "execution_sequence",
+    "run_mode",
+    "execution_status",
+    "confirmed_stages",
+    "updated_at",
+    "warnings"
+  ],
+  "title": "StageProgress",
+  "type": "object"
+}

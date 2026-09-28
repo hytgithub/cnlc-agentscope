@@ -24,11 +24,19 @@ class ExecutionStatus(StrEnum):
 
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    WAITING_CONFIRMATION = "WAITING_CONFIRMATION"
     SUCCESS = "SUCCESS"
     WARNING = "WARNING"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
+
+
+class ExecutionRunMode(StrEnum):
+    """执行调度方式；持久化后可在进程重启时恢复相同语义。"""
+
+    CONTINUOUS = "CONTINUOUS"
+    STAGED_CONFIRMATION = "STAGED_CONFIRMATION"
 
 
 TERMINAL_EXECUTION_STATUSES = {
@@ -74,6 +82,7 @@ class Execution(Contract):
     task_id: str
     sequence: int = Field(ge=1)
     status: ExecutionStatus
+    run_mode: ExecutionRunMode = ExecutionRunMode.CONTINUOUS
     state_snapshot: InterpretationState
     markdown: str = ""
     trigger_type: ExecutionTrigger
@@ -103,14 +112,26 @@ class Execution(Contract):
         if self.status == ExecutionStatus.QUEUED and any(
             value is not None
             for value in (
-                self.started_at, self.finished_at, self.lease_owner, self.lease_expires_at
+                self.finished_at, self.lease_owner, self.lease_expires_at
             )
         ):
-            raise ValueError("queued execution cannot have running fields")
+            raise ValueError("queued execution cannot have terminal or lease fields")
         if self.status == ExecutionStatus.RUNNING and (
             self.started_at is None or self.lease_owner is None or self.lease_expires_at is None
         ):
             raise ValueError("running execution requires an active lease")
+        if self.status == ExecutionStatus.WAITING_CONFIRMATION and (
+            self.started_at is None
+            or self.finished_at is not None
+            or self.lease_owner is not None
+            or self.lease_expires_at is not None
+        ):
+            raise ValueError("waiting confirmation execution must be started without a lease")
+        if (
+            self.status == ExecutionStatus.WAITING_CONFIRMATION
+            and self.run_mode != ExecutionRunMode.STAGED_CONFIRMATION
+        ):
+            raise ValueError("only staged execution can wait for confirmation")
         if self.status in TERMINAL_EXECUTION_STATUSES and self.finished_at is None:
             raise ValueError("terminal execution requires finished_at")
         return self

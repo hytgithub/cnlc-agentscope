@@ -10,12 +10,14 @@ from uuid import uuid4
 
 import pytest
 from redis.asyncio import Redis
-from sqlalchemy import delete, insert
+from sqlalchemy import delete, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from cnlc_agent.application.bootstrap import build_application
 from cnlc_agent.application.dataset_revision_service import DatasetRevisionService
 from cnlc_agent.application.runtime import application_runtime
+from cnlc_agent.application.stage_orchestrator import StageOrchestrator
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.domain.dataset_revision import (
     DatasetChangeSet,
@@ -30,7 +32,7 @@ from cnlc_agent.domain.dataset_revision import (
 )
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import InfrastructureError
-from cnlc_agent.domain.execution import ExecutionStatus
+from cnlc_agent.domain.execution import ExecutionRunMode, ExecutionStatus
 from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.stages import STAGE_ORDER, StageRunStatus
@@ -131,6 +133,74 @@ def migrated():
             timeout=30,
         )
         assert result.returncode == 0, "Real PostgreSQL migration failed; check local configuration"
+
+
+async def test_staged_confirmation_survives_postgresql_restart(migrated):
+    """WAITING 快照、确认和同一 Execution 续跑只依赖 PostgreSQL 事实。"""
+
+    request = TaskRequest(well_id="WELL_MOCK_001")
+    first_engine = create_async_engine(DB_URL)
+    second_engine = create_async_engine(DB_URL)
+    try:
+        first_repository = PostgreSQLTaskRepository(first_engine)
+        first_app = build_application(
+            AppSettings(mock_data_dir=ROOT / "mock_data", _env_file=None),
+            task_repository=first_repository,
+        )
+        state = InterpretationState(task=request)
+        await first_repository.create_task(state)
+        execution = await first_repository.create_execution(
+            state, "INITIAL", run_mode=ExecutionRunMode.STAGED_CONFIRMATION
+        )
+        first_orchestrator = StageOrchestrator(first_app)
+        waiting = await first_orchestrator.execute_next_stage(
+            execution.execution_id, worker_id="postgres-stage-1"
+        )
+        assert waiting.status == ExecutionStatus.WAITING_CONFIRMATION
+        stage_run = waiting.state_snapshot.stage_runs[-1]
+        async with first_engine.connect() as connection:
+            task_snapshot = await connection.scalar(
+                select(TaskRow.snapshot).where(TaskRow.task_id == request.task_id)
+            )
+        assert InterpretationState.model_validate(task_snapshot) == waiting.state_snapshot
+
+        # 新连接和新应用对象模拟进程重启；不读取旧对象中的任何活动上下文。
+        second_repository = PostgreSQLTaskRepository(second_engine)
+        second_app = build_application(
+            AppSettings(mock_data_dir=ROOT / "mock_data", _env_file=None),
+            task_repository=second_repository,
+        )
+        second_orchestrator = StageOrchestrator(second_app)
+        confirmations = await asyncio.gather(
+            *[
+                second_orchestrator.confirm_stage(
+                    request.task_id,
+                    execution.execution_id,
+                    STAGE_ORDER[0],
+                    stage_run.id,
+                    actor="postgres-test",
+                )
+                for _ in range(2)
+            ],
+            return_exceptions=True,
+        )
+        assert sum(not isinstance(item, Exception) for item in confirmations) == 1
+        queued = next(item for item in confirmations if not isinstance(item, Exception))
+        conflict = next(item for item in confirmations if isinstance(item, InfrastructureError))
+        assert conflict.code == "STAGE_CONFIRMATION_CONFLICT"
+        assert queued.status == ExecutionStatus.QUEUED
+        assert queued.execution_id == execution.execution_id
+        second_waiting = await second_orchestrator.execute_next_stage(
+            execution.execution_id, worker_id="postgres-stage-2"
+        )
+        assert second_waiting.status == ExecutionStatus.WAITING_CONFIRMATION
+        assert second_waiting.state_snapshot.stage_runs[-1].stage == STAGE_ORDER[1]
+        assert second_waiting.started_at == waiting.started_at
+    finally:
+        async with second_engine.begin() as connection:
+            await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
+        await first_engine.dispose()
+        await second_engine.dispose()
 
 
 async def test_real_workflow_restart_and_duplicate(migrated, tmp_path):

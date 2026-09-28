@@ -7,11 +7,13 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from cnlc_agent.application.stage_orchestrator import StageProgress
 from cnlc_agent.domain.dataset_revision import (
     DatasetChangeSet,
     DatasetPatchRequest,
     DatasetRevision,
 )
+from cnlc_agent.domain.execution import Execution
 from cnlc_agent.domain.models import (
     Contract,
     MockFixture,
@@ -20,6 +22,7 @@ from cnlc_agent.domain.models import (
     ValidationResult,
     WellData,
 )
+from cnlc_agent.domain.stages import StageRun
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.tools.contracts import ToolInput, ToolOutput
 
@@ -33,6 +36,9 @@ CONTRACTS: dict[str, type[Contract]] = {
     "dataset-patch-request": DatasetPatchRequest,
     "dataset-change-set": DatasetChangeSet,
     "dataset-revision": DatasetRevision,
+    "execution": Execution,
+    "stage-run": StageRun,
+    "stage-progress": StageProgress,
     "tool-input": ToolInput,
     "tool-output": ToolOutput,
 }

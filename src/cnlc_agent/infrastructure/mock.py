@@ -21,10 +21,12 @@ from cnlc_agent.domain.errors import DataError, InfrastructureError, ModelError
 from cnlc_agent.domain.execution import (
     TERMINAL_EXECUTION_STATUSES,
     Execution,
+    ExecutionRunMode,
     ExecutionStatus,
     ExecutionTrigger,
     InterpretationTask,
     PlanningReason,
+    execution_status_from_state,
 )
 from cnlc_agent.domain.inputs import (
     InputSource,
@@ -34,6 +36,12 @@ from cnlc_agent.domain.inputs import (
 from cnlc_agent.domain.models import JsonObject, MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
+from cnlc_agent.domain.stages import (
+    InterpretationStage,
+    StageRunStatus,
+    StageValidity,
+    confirm_stage,
+)
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolRun, ToolRunStatus
 
@@ -371,6 +379,7 @@ class InMemoryTaskRepository:
         source_execution_id: str | None = None,
         planning_reason: PlanningReason = "INITIAL",
         expected_current_execution_id: str | None = None,
+        run_mode: ExecutionRunMode = ExecutionRunMode.CONTINUOUS,
     ) -> Execution:
         """锁内分配序号并创建执行，随后才移动当前指针。"""
 
@@ -410,6 +419,7 @@ class InMemoryTaskRepository:
                 task_id=task_id,
                 sequence=next_sequence,
                 status=ExecutionStatus.QUEUED,
+                run_mode=run_mode,
                 state_snapshot=state.model_copy(deep=True),
                 trigger_type=trigger_type,
                 input_version_id=input_version_id,
@@ -455,7 +465,7 @@ class InMemoryTaskRepository:
             self._executions[execution_id] = Execution.model_validate({
                 **execution.model_dump(mode="python"),
                 "status": ExecutionStatus.RUNNING,
-                "started_at": now,
+                "started_at": execution.started_at or now,
                 "lease_owner": worker_id,
                 "lease_expires_at": lease_expires_at,
                 "updated_at": now,
@@ -523,6 +533,163 @@ class InMemoryTaskRepository:
             if status in {ExecutionStatus.SUCCESS, ExecutionStatus.WARNING} and execution.markdown:
                 task.latest_successful_execution_id = execution_id
             return execution.model_copy(deep=True)
+
+    async def pause_execution_for_confirmation(
+        self,
+        execution_id: str,
+        worker_id: str,
+        state: InterpretationState,
+        markdown: str = "",
+    ) -> Execution:
+        """同一锁内保存候选结果、释放 lease，并进入等待确认态。"""
+
+        async with self._lock:
+            execution = self._executions.get(execution_id)
+            task = self._tasks.get(state.task.task_id)
+            if execution is None or task is None or execution.task_id != task.task_id:
+                raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+            if task.current_execution_id != execution_id:
+                raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不能进入确认态")
+            if execution.run_mode != ExecutionRunMode.STAGED_CONFIRMATION:
+                raise InfrastructureError("INVALID_EXECUTION_MODE", "执行不是分阶段确认模式")
+            if execution.status != ExecutionStatus.RUNNING or execution.lease_owner != worker_id:
+                raise InfrastructureError("EXECUTION_LEASE_MISMATCH", "执行不由当前 Worker 持有")
+            if execution.lease_expires_at is None or execution.lease_expires_at <= utc_now():
+                raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
+            waiting = [
+                run for run in state.stage_runs
+                if run.execution_id == execution_id
+                and run.status == StageRunStatus.WAITING_CONFIRM
+                and run.validity == StageValidity.CURRENT
+            ]
+            if len(waiting) != 1 or any(
+                run.execution_id == execution_id and run.status == StageRunStatus.RUNNING
+                for run in state.stage_runs
+            ):
+                raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "阶段确认快照无效")
+            now = utc_now()
+            execution = Execution.model_validate({
+                **execution.model_dump(mode="python"),
+                "status": ExecutionStatus.WAITING_CONFIRMATION,
+                "state_snapshot": state,
+                "markdown": markdown,
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "updated_at": now,
+            })
+            self._executions[execution_id] = execution
+            self._states[task.task_id] = state.model_copy(deep=True)
+            self.reports[task.task_id] = markdown
+            task.updated_at = now
+            return execution.model_copy(deep=True)
+
+    def _confirm_waiting_run(
+        self,
+        execution: Execution,
+        stage: InterpretationStage,
+        expected_stage_run_id: str,
+        actor: str,
+    ) -> InterpretationState:
+        """锁内按预期 ID 确认唯一当前 StageRun，防止双击覆盖。"""
+
+        state = execution.state_snapshot.model_copy(deep=True)
+        matches = [
+            (index, run) for index, run in enumerate(state.stage_runs)
+            if run.task_id == execution.task_id
+            and run.execution_id == execution.execution_id
+            and run.stage == stage
+        ]
+        if len(matches) != 1:
+            raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "等待确认阶段不存在")
+        index, run = matches[0]
+        if (
+            run.id != expected_stage_run_id
+            or run.status != StageRunStatus.WAITING_CONFIRM
+            or run.validity != StageValidity.CURRENT
+        ):
+            raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "阶段已变化，请刷新后重试")
+        state.stage_runs[index] = confirm_stage(run, actor=actor)
+        state.updated_at = utc_now()
+        return state
+
+    async def confirm_stage_and_requeue(
+        self,
+        task_id: str,
+        execution_id: str,
+        stage: InterpretationStage,
+        expected_stage_run_id: str,
+        actor: str,
+    ) -> Execution:
+        """确认非报告阶段并把同一 Execution 原子放回队列。"""
+
+        if stage == InterpretationStage.REPORT:
+            raise InfrastructureError("INVALID_STAGE", "报告阶段应使用最终确认入口")
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            execution = self._executions.get(execution_id)
+            if task is None or execution is None or execution.task_id != task_id:
+                raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+            if task.current_execution_id != execution_id:
+                raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不能确认")
+            if execution.status != ExecutionStatus.WAITING_CONFIRMATION:
+                raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "执行不在等待确认态")
+            state = self._confirm_waiting_run(
+                execution, stage, expected_stage_run_id, actor
+            )
+            now = utc_now()
+            updated = Execution.model_validate({
+                **execution.model_dump(mode="python"),
+                "status": ExecutionStatus.QUEUED,
+                "state_snapshot": state,
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "updated_at": now,
+            })
+            self._executions[execution_id] = updated
+            self._states[task_id] = state.model_copy(deep=True)
+            task.updated_at = now
+            return updated.model_copy(deep=True)
+
+    async def confirm_final_stage_and_finish(
+        self,
+        task_id: str,
+        execution_id: str,
+        expected_stage_run_id: str,
+        actor: str,
+    ) -> Execution:
+        """确认报告候选并原子形成 Execution 终态和最新成功指针。"""
+
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            execution = self._executions.get(execution_id)
+            if task is None or execution is None or execution.task_id != task_id:
+                raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+            if task.current_execution_id != execution_id:
+                raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不能确认")
+            if execution.status != ExecutionStatus.WAITING_CONFIRMATION:
+                raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "执行不在等待确认态")
+            if not execution.markdown:
+                raise InfrastructureError("REPORT_NOT_READY", "报告候选尚未生成")
+            state = self._confirm_waiting_run(
+                execution, InterpretationStage.REPORT, expected_stage_run_id, actor
+            )
+            status = execution_status_from_state(state.completed_status())
+            now = utc_now()
+            updated = Execution.model_validate({
+                **execution.model_dump(mode="python"),
+                "status": status,
+                "state_snapshot": state,
+                "finished_at": now,
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "updated_at": now,
+            })
+            self._executions[execution_id] = updated
+            self._states[task_id] = state.model_copy(deep=True)
+            self.reports[task_id] = execution.markdown
+            task.latest_successful_execution_id = execution_id
+            task.updated_at = now
+            return updated.model_copy(deep=True)
 
     async def recover_expired_executions(self, now: datetime) -> list[str]:
         """过期 RUNNING 标记失败；不透明重放原 Execution。"""

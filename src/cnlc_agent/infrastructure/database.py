@@ -24,10 +24,12 @@ from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.execution import (
     TERMINAL_EXECUTION_STATUSES,
     Execution,
+    ExecutionRunMode,
     ExecutionStatus,
     ExecutionTrigger,
     InterpretationTask,
     PlanningReason,
+    execution_status_from_state,
 )
 from cnlc_agent.domain.inputs import (
     InputSource,
@@ -37,6 +39,12 @@ from cnlc_agent.domain.inputs import (
 from cnlc_agent.domain.models import JsonObject, MockFixture, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
+from cnlc_agent.domain.stages import (
+    InterpretationStage,
+    StageRunStatus,
+    StageValidity,
+    confirm_stage,
+)
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolExecutionMode, ToolRun, ToolRunStatus
 
@@ -201,6 +209,10 @@ class ExecutionRow(Base):
     )
     sequence: Mapped[int] = mapped_column(nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    run_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=ExecutionRunMode.CONTINUOUS.value,
+        server_default=ExecutionRunMode.CONTINUOUS.value,
+    )
     state_snapshot: Mapped[JsonObject] = mapped_column(JSONB, nullable=False)
     markdown: Mapped[str] = mapped_column(Text, nullable=False)
     trigger_type: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -283,6 +295,7 @@ def _as_execution(row: ExecutionRow) -> Execution:
         task_id=row.task_id,
         sequence=row.sequence,
         status=ExecutionStatus(row.status),
+        run_mode=ExecutionRunMode(row.run_mode),
         state_snapshot=InterpretationState.model_validate(row.state_snapshot),
         markdown=row.markdown,
         trigger_type=row.trigger_type,  # type: ignore[arg-type]
@@ -299,6 +312,35 @@ def _as_execution(row: ExecutionRow) -> Execution:
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _confirm_waiting_stage_snapshot(
+    row: ExecutionRow,
+    stage: InterpretationStage,
+    expected_stage_run_id: str,
+    actor: str,
+) -> InterpretationState:
+    """在 Execution 行锁内核对并确认唯一 StageRun，避免并发重复确认。"""
+
+    state = InterpretationState.model_validate(row.state_snapshot)
+    matches = [
+        (index, run) for index, run in enumerate(state.stage_runs)
+        if run.task_id == row.task_id
+        and run.execution_id == row.execution_id
+        and run.stage == stage
+    ]
+    if len(matches) != 1:
+        raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "等待确认阶段不存在")
+    index, run = matches[0]
+    if (
+        run.id != expected_stage_run_id
+        or run.status != StageRunStatus.WAITING_CONFIRM
+        or run.validity != StageValidity.CURRENT
+    ):
+        raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "阶段已变化，请刷新后重试")
+    state.stage_runs[index] = confirm_stage(run, actor=actor)
+    state.updated_at = utc_now()
+    return state
 
 
 def _as_input_version(row: InputVersionRow) -> InterpretationInputVersion:
@@ -900,6 +942,7 @@ class PostgreSQLTaskRepository:
         source_execution_id: str | None = None,
         planning_reason: PlanningReason = "INITIAL",
         expected_current_execution_id: str | None = None,
+        run_mode: ExecutionRunMode = ExecutionRunMode.CONTINUOUS,
     ) -> Execution:
         """任务行加锁后分配序号；插入成功才更新当前指针。"""
 
@@ -962,6 +1005,7 @@ class PostgreSQLTaskRepository:
                     task_id=state.task.task_id,
                     sequence=next_sequence,
                     status=ExecutionStatus.QUEUED.value,
+                    run_mode=run_mode.value,
                     state_snapshot=state.model_dump(mode="json"),
                     markdown="",
                     trigger_type=trigger_type,
@@ -1032,7 +1076,7 @@ class PostgreSQLTaskRepository:
                     return False
                 now = utc_now()
                 row.status = ExecutionStatus.RUNNING.value
-                row.started_at = now
+                row.started_at = row.started_at or now
                 row.lease_owner = worker_id
                 row.lease_expires_at = lease_expires_at
                 row.updated_at = now
@@ -1120,6 +1164,163 @@ class PostgreSQLTaskRepository:
             return result
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库执行终结失败") from None
+
+    async def pause_execution_for_confirmation(
+        self,
+        execution_id: str,
+        worker_id: str,
+        state: InterpretationState,
+        markdown: str = "",
+    ) -> Execution:
+        """保存阶段候选、清理 lease 和更新 Task 兼容视图，全部在一个事务内。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                identity = await session.get(ExecutionRow, execution_id)
+                if identity is None:
+                    raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+                task = await session.scalar(
+                    select(TaskRow).where(TaskRow.task_id == identity.task_id).with_for_update()
+                )
+                row = await session.scalar(
+                    select(ExecutionRow)
+                    .where(ExecutionRow.execution_id == execution_id)
+                    .with_for_update()
+                )
+                if row is None or task is None:
+                    raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+                if task.current_execution_id != execution_id:
+                    raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不能进入确认态")
+                if row.run_mode != ExecutionRunMode.STAGED_CONFIRMATION.value:
+                    raise InfrastructureError("INVALID_EXECUTION_MODE", "执行不是分阶段确认模式")
+                if row.status != ExecutionStatus.RUNNING.value or row.lease_owner != worker_id:
+                    raise InfrastructureError(
+                        "EXECUTION_LEASE_MISMATCH", "执行不由当前 Worker 持有"
+                    )
+                if row.lease_expires_at is None or row.lease_expires_at <= utc_now():
+                    raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
+                waiting = [
+                    run for run in state.stage_runs
+                    if run.execution_id == execution_id
+                    and run.status == StageRunStatus.WAITING_CONFIRM
+                    and run.validity == StageValidity.CURRENT
+                ]
+                if len(waiting) != 1 or any(
+                    run.execution_id == execution_id and run.status == StageRunStatus.RUNNING
+                    for run in state.stage_runs
+                ):
+                    raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "阶段确认快照无效")
+                now = utc_now()
+                payload = state.model_dump(mode="json")
+                row.status = ExecutionStatus.WAITING_CONFIRMATION.value
+                row.state_snapshot = payload
+                row.markdown = markdown
+                row.lease_owner = None
+                row.lease_expires_at = None
+                row.updated_at = now
+                task.status = row.status
+                task.snapshot = payload
+                task.markdown = markdown
+                task.updated_at = now
+                result = _as_execution(row)
+            return result
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库阶段暂停失败") from None
+
+    async def confirm_stage_and_requeue(
+        self,
+        task_id: str,
+        execution_id: str,
+        stage: InterpretationStage,
+        expected_stage_run_id: str,
+        actor: str,
+    ) -> Execution:
+        """确认非报告阶段并原子重排同一 Execution，不创建新版本。"""
+
+        if stage == InterpretationStage.REPORT:
+            raise InfrastructureError("INVALID_STAGE", "报告阶段应使用最终确认入口")
+        try:
+            async with self.sessions.begin() as session:
+                task = await session.scalar(
+                    select(TaskRow).where(TaskRow.task_id == task_id).with_for_update()
+                )
+                row = await session.scalar(
+                    select(ExecutionRow)
+                    .where(ExecutionRow.execution_id == execution_id)
+                    .with_for_update()
+                )
+                if task is None or row is None or row.task_id != task_id:
+                    raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+                if task.current_execution_id != execution_id:
+                    raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不能确认")
+                if row.status != ExecutionStatus.WAITING_CONFIRMATION.value:
+                    raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "执行不在等待确认态")
+                state = _confirm_waiting_stage_snapshot(
+                    row, stage, expected_stage_run_id, actor
+                )
+                now = utc_now()
+                payload = state.model_dump(mode="json")
+                row.status = ExecutionStatus.QUEUED.value
+                row.state_snapshot = payload
+                row.lease_owner = None
+                row.lease_expires_at = None
+                row.updated_at = now
+                task.status = row.status
+                task.snapshot = payload
+                task.updated_at = now
+                result = _as_execution(row)
+            return result
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库阶段确认失败") from None
+
+    async def confirm_final_stage_and_finish(
+        self,
+        task_id: str,
+        execution_id: str,
+        expected_stage_run_id: str,
+        actor: str,
+    ) -> Execution:
+        """确认报告并原子写入最终状态、完成时间和最新成功指针。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                task = await session.scalar(
+                    select(TaskRow).where(TaskRow.task_id == task_id).with_for_update()
+                )
+                row = await session.scalar(
+                    select(ExecutionRow)
+                    .where(ExecutionRow.execution_id == execution_id)
+                    .with_for_update()
+                )
+                if task is None or row is None or row.task_id != task_id:
+                    raise InfrastructureError("EXECUTION_NOT_FOUND", "执行不存在")
+                if task.current_execution_id != execution_id:
+                    raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不能确认")
+                if row.status != ExecutionStatus.WAITING_CONFIRMATION.value:
+                    raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "执行不在等待确认态")
+                if not row.markdown:
+                    raise InfrastructureError("REPORT_NOT_READY", "报告候选尚未生成")
+                state = _confirm_waiting_stage_snapshot(
+                    row, InterpretationStage.REPORT, expected_stage_run_id, actor
+                )
+                status = execution_status_from_state(state.completed_status())
+                now = utc_now()
+                payload = state.model_dump(mode="json")
+                row.status = status.value
+                row.state_snapshot = payload
+                row.finished_at = now
+                row.lease_owner = None
+                row.lease_expires_at = None
+                row.updated_at = now
+                task.status = row.status
+                task.snapshot = payload
+                task.markdown = row.markdown
+                task.latest_successful_execution_id = execution_id
+                task.updated_at = now
+                result = _as_execution(row)
+            return result
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库最终确认失败") from None
 
     async def recover_expired_executions(self, now: datetime) -> list[str]:
         """锁定所有过期 RUNNING 并失败，不自动再次调用 Workflow。"""
@@ -1254,6 +1455,7 @@ class PostgreSQLTaskRepository:
                         task_id=state.task.task_id,
                         sequence=1,
                         status=ExecutionStatus.QUEUED.value,
+                        run_mode=ExecutionRunMode.CONTINUOUS.value,
                         state_snapshot=payload,
                         markdown="",
                         trigger_type="INITIAL",

@@ -25,6 +25,7 @@
 | --- | --- | --- |
 | `QUEUED` | 排队等待 | Execution 已创建，等待 Worker 领取。 |
 | `RUNNING` | 正在执行 | Worker 已领取并持有有效租约。 |
+| `WAITING_CONFIRMATION` | 等待阶段确认 | 分阶段模式的当前阶段已产生候选结果，Worker lease 已释放，Execution 尚未终结。 |
 | `SUCCESS` | 执行成功 | 本次 Execution 正常结束。 |
 | `WARNING` | 完成但有告警 | 本次 Execution 已完成，但存在告警。 |
 | `FAILED` | 执行失败 | 本次 Execution 因错误终止。 |
@@ -32,6 +33,8 @@
 | `REVIEW_REQUIRED` | 需要人工复核 | 自动流程停止，等待人工复核。 |
 
 Execution 没有 `PENDING` 和 `SKIPPED`；这两个值属于 Workflow 步骤状态。
+`WAITING_CONFIRMATION`（等待阶段确认）不是终态，且只用于
+`STAGED_CONFIRMATION`（分阶段确认执行）模式。
 
 ## 3. ValidationStatus（W09 多源综合验证结论）
 
@@ -582,3 +585,20 @@ StageRunStatus（阶段执行状态）表达一次实际执行的生命周期，
 | `REPORT_GENERATION_FAILED` | 报告生成异常 |
 
 详细设计见 [四阶段执行模型](architecture/four-stage-execution-model.md)。
+
+## 41. ExecutionRunMode 与阶段确认错误码（Task 11C）
+
+| 代码值 | 中文含义 |
+| --- | --- |
+| `CONTINUOUS` | 连续执行；W01～W10 和报告一次运行，阶段由系统自动确认。 |
+| `STAGED_CONFIRMATION` | 分阶段确认执行；每个阶段成功后释放 Worker 并等待人工确认。 |
+
+| 错误代码值 | 中文含义 |
+| --- | --- |
+| `INVALID_EXECUTION_MODE` | 当前 Execution 不是分阶段确认模式。 |
+| `STAGE_CONFIRMATION_CONFLICT` | 等待阶段、预期 StageRun ID 或确认状态已经变化。 |
+| `EXECUTION_NOT_CURRENT` | 请求针对历史 Execution，禁止确认或改写。 |
+
+分阶段模式中，非最终确认把同一个 Execution 从
+`WAITING_CONFIRMATION`（等待阶段确认）恢复为 `QUEUED`（排队等待）；只有 REPORT（报告）
+确认会进入 `SUCCESS`（执行成功）或 `WARNING`（完成但有告警）。

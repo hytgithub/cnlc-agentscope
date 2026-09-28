@@ -9,6 +9,7 @@ from cnlc_agent.domain.dataset_revision import DatasetChangeSet, DatasetRevision
 from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.execution import (
     Execution,
+    ExecutionRunMode,
     ExecutionStatus,
     ExecutionTrigger,
     InterpretationTask,
@@ -18,6 +19,7 @@ from cnlc_agent.domain.inputs import InputSource, InterpretationInputVersion
 from cnlc_agent.domain.models import Contract, JsonObject, MockFixture, WellData, WellId
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
+from cnlc_agent.domain.stages import InterpretationStage
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolRun, ToolRunStatus
 
@@ -78,6 +80,7 @@ class TaskRepository(Protocol):
         source_execution_id: str | None = None,
         planning_reason: PlanningReason = "INITIAL",
         expected_current_execution_id: str | None = None,
+        run_mode: ExecutionRunMode = ExecutionRunMode.CONTINUOUS,
     ) -> Execution: ...
 
     async def get_execution(self, execution_id: str) -> Execution | None: ...
@@ -98,6 +101,31 @@ class TaskRepository(Protocol):
         worker_id: str,
         status: ExecutionStatus,
         error_code: str | None = None,
+    ) -> Execution: ...
+
+    async def pause_execution_for_confirmation(
+        self,
+        execution_id: str,
+        worker_id: str,
+        state: InterpretationState,
+        markdown: str = "",
+    ) -> Execution: ...
+
+    async def confirm_stage_and_requeue(
+        self,
+        task_id: str,
+        execution_id: str,
+        stage: InterpretationStage,
+        expected_stage_run_id: str,
+        actor: str,
+    ) -> Execution: ...
+
+    async def confirm_final_stage_and_finish(
+        self,
+        task_id: str,
+        execution_id: str,
+        expected_stage_run_id: str,
+        actor: str,
     ) -> Execution: ...
 
     async def recover_expired_executions(self, now: datetime) -> list[str]: ...

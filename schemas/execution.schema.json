@@ -1,0 +1,1394 @@
+{
+  "$defs": {
+    "DataRequirements": {
+      "additionalProperties": false,
+      "description": "临时输入资料契约，不代表正式专业解释标准。",
+      "properties": {
+        "recommended_sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Recommended Sources",
+          "type": "array"
+        },
+        "required_curves": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Required Curves",
+          "type": "array"
+        }
+      },
+      "required": [
+        "required_curves"
+      ],
+      "title": "DataRequirements",
+      "type": "object"
+    },
+    "ErrorDetail": {
+      "additionalProperties": false,
+      "description": "可持久化、可展示的结构化错误。",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "step_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ErrorDetail",
+      "type": "object"
+    },
+    "ExecutionRunMode": {
+      "description": "执行调度方式；持久化后可在进程重启时恢复相同语义。",
+      "enum": [
+        "CONTINUOUS",
+        "STAGED_CONFIRMATION"
+      ],
+      "title": "ExecutionRunMode",
+      "type": "string"
+    },
+    "ExecutionStatus": {
+      "description": "后台执行生命周期，与 W01-W10 的 StepStatus 明确分离。",
+      "enum": [
+        "QUEUED",
+        "RUNNING",
+        "WAITING_CONFIRMATION",
+        "SUCCESS",
+        "WARNING",
+        "FAILED",
+        "BLOCKED",
+        "REVIEW_REQUIRED"
+      ],
+      "title": "ExecutionStatus",
+      "type": "string"
+    },
+    "InterpretationOverride": {
+      "additionalProperties": false,
+      "description": "严格校验的解释条件；PERM 正式单位与专业规则尚待确认。",
+      "properties": {
+        "perm": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Perm"
+        },
+        "por": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Por"
+        },
+        "prediction_model": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prediction Model"
+        },
+        "sampling_interval": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sampling Interval"
+        }
+      },
+      "title": "InterpretationOverride",
+      "type": "object"
+    },
+    "InterpretationStage": {
+      "description": "复用既有规划阶段值，DECODE 别名保持 Demo 的 DATA_DECODE 协议兼容。",
+      "enum": [
+        "DATA_DECODE",
+        "DATA_DECODE",
+        "PREPROCESS",
+        "INTERPRET",
+        "REPORT"
+      ],
+      "title": "InterpretationStage",
+      "type": "string"
+    },
+    "InterpretationState": {
+      "additionalProperties": false,
+      "description": "单井解释任务唯一可信状态，汇总 W01-W10 的全部阶段结果。",
+      "properties": {
+        "changes": {
+          "items": {
+            "$ref": "#/$defs/StateChange"
+          },
+          "title": "Changes",
+          "type": "array"
+        },
+        "completed_steps": {
+          "items": {
+            "$ref": "#/$defs/StepId"
+          },
+          "title": "Completed Steps",
+          "type": "array"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "current_step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "data_requirements": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DataRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "effective_override": {
+          "$ref": "#/$defs/InterpretationOverride"
+        },
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/ErrorDetail"
+          },
+          "title": "Errors",
+          "type": "array"
+        },
+        "executions": {
+          "items": {
+            "$ref": "#/$defs/StepExecution"
+          },
+          "title": "Executions",
+          "type": "array"
+        },
+        "final_check": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fluid_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_version_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Version Id"
+        },
+        "interval_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "layer_classification": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lithology_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "missing_data": {
+          "items": {
+            "$ref": "#/$defs/MissingData"
+          },
+          "title": "Missing Data",
+          "type": "array"
+        },
+        "mode": {
+          "default": "mock",
+          "enum": [
+            "mock",
+            "demo"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "petrophysics_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "processed_data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawData"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "qc_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "raw_data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawData"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reused_steps": {
+          "items": {
+            "$ref": "#/$defs/ReusedStep"
+          },
+          "title": "Reused Steps",
+          "type": "array"
+        },
+        "review_required": {
+          "default": false,
+          "title": "Review Required",
+          "type": "boolean"
+        },
+        "rollback_count": {
+          "default": 0,
+          "title": "Rollback Count",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "0.1-skeleton",
+          "default": "0.1-skeleton",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stage_runs": {
+          "items": {
+            "$ref": "#/$defs/StageRun"
+          },
+          "title": "Stage Runs",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/StepStatus",
+          "default": "PENDING"
+        },
+        "task": {
+          "$ref": "#/$defs/TaskRequest"
+        },
+        "trace_id": {
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "validation_result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ValidationResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        },
+        "well": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Well"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "workflow_execution_id": {
+          "title": "Workflow Execution Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task"
+      ],
+      "title": "InterpretationState",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "LogCurve": {
+      "additionalProperties": false,
+      "description": "一条测井曲线及其单位和逐深度采样值。",
+      "properties": {
+        "unit": {
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "unit",
+        "values"
+      ],
+      "title": "LogCurve",
+      "type": "object"
+    },
+    "MissingData": {
+      "additionalProperties": false,
+      "description": "缺失资料及其重要级别和影响步骤。",
+      "properties": {
+        "affected_step": {
+          "$ref": "#/$defs/StepId"
+        },
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "importance": {
+          "enum": [
+            "Required",
+            "Recommended",
+            "Optional"
+          ],
+          "title": "Importance",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "importance",
+        "affected_step"
+      ],
+      "title": "MissingData",
+      "type": "object"
+    },
+    "RawData": {
+      "additionalProperties": false,
+      "description": "统一深度轴上的原始测井曲线和辅助资料。",
+      "properties": {
+        "auxiliary": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Auxiliary",
+          "type": "object"
+        },
+        "curves": {
+          "additionalProperties": {
+            "$ref": "#/$defs/LogCurve"
+          },
+          "title": "Curves",
+          "type": "object"
+        },
+        "depth_reference": {
+          "const": "MD",
+          "default": "MD",
+          "title": "Depth Reference",
+          "type": "string"
+        },
+        "depth_unit": {
+          "const": "m",
+          "default": "m",
+          "title": "Depth Unit",
+          "type": "string"
+        },
+        "depths": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Depths",
+          "type": "array"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        }
+      },
+      "required": [
+        "depths",
+        "curves"
+      ],
+      "title": "RawData",
+      "type": "object"
+    },
+    "ReusedStep": {
+      "additionalProperties": false,
+      "description": "有效前置步骤的来源引用；不冒充本 Execution 的真实步骤执行。",
+      "properties": {
+        "source_execution_id": {
+          "minLength": 1,
+          "title": "Source Execution Id",
+          "type": "string"
+        },
+        "source_status": {
+          "enum": [
+            "SUCCESS",
+            "WARNING"
+          ],
+          "title": "Source Status",
+          "type": "string"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "step_id",
+        "source_execution_id",
+        "source_status"
+      ],
+      "title": "ReusedStep",
+      "type": "object"
+    },
+    "StageResult": {
+      "additionalProperties": false,
+      "description": "各专业阶段共享的结构化结果外壳。",
+      "properties": {
+        "conflicts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "is_mock": {
+          "title": "Is Mock",
+          "type": "boolean"
+        },
+        "missing_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Evidence",
+          "type": "array"
+        },
+        "recommended_action": {
+          "default": "continue",
+          "title": "Recommended Action",
+          "type": "string"
+        },
+        "result": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Result",
+          "type": "object"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "status": {
+          "default": "SUCCESS",
+          "enum": [
+            "SUCCESS",
+            "WARNING",
+            "BLOCKED",
+            "FAILED",
+            "REVIEW_REQUIRED"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "is_mock",
+        "source"
+      ],
+      "title": "StageResult",
+      "type": "object"
+    },
+    "StageRun": {
+      "additionalProperties": false,
+      "description": "某任务某阶段的一次真实执行，refs 仅存逻辑 ID，不包含结果正文。",
+      "properties": {
+        "applied_change_ids": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Applied Change Ids",
+          "type": "array"
+        },
+        "confirmed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmed At"
+        },
+        "confirmed_by": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmed By"
+        },
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/ErrorDetail"
+          },
+          "title": "Errors",
+          "type": "array"
+        },
+        "execution_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Execution Id",
+          "type": "string"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finished At"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "input_refs": {
+          "additionalProperties": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "propertyNames": {
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "title": "Input Refs",
+          "type": "object"
+        },
+        "invalidated_by_change_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invalidated By Change Id"
+        },
+        "output_refs": {
+          "additionalProperties": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "propertyNames": {
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "title": "Output Refs",
+          "type": "object"
+        },
+        "stage": {
+          "$ref": "#/$defs/InterpretationStage"
+        },
+        "stale_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stale At"
+        },
+        "stale_reason": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stale Reason"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "status": {
+          "$ref": "#/$defs/StageRunStatus",
+          "default": "PENDING"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "transitions": {
+          "items": {
+            "$ref": "#/$defs/StageTransition"
+          },
+          "title": "Transitions",
+          "type": "array"
+        },
+        "validity": {
+          "$ref": "#/$defs/StageValidity",
+          "default": "CURRENT"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "task_id",
+        "execution_id",
+        "stage"
+      ],
+      "title": "StageRun",
+      "type": "object"
+    },
+    "StageRunStatus": {
+      "description": "阶段一次实际执行的生命周期，不承载后续修改造成的有效性变化。",
+      "enum": [
+        "PENDING",
+        "RUNNING",
+        "WAITING_CONFIRM",
+        "CONFIRMED",
+        "FAILED"
+      ],
+      "title": "StageRunStatus",
+      "type": "string"
+    },
+    "StageTransition": {
+      "additionalProperties": false,
+      "description": "阶段执行状态审计随 Execution 快照持久化。",
+      "properties": {
+        "actor": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Actor",
+          "type": "string"
+        },
+        "after": {
+          "$ref": "#/$defs/StageRunStatus"
+        },
+        "before": {
+          "$ref": "#/$defs/StageRunStatus"
+        },
+        "reason": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        }
+      },
+      "required": [
+        "before",
+        "after",
+        "actor",
+        "reason"
+      ],
+      "title": "StageTransition",
+      "type": "object"
+    },
+    "StageValidity": {
+      "description": "当前工作版本对既有阶段结果的有效性判断。",
+      "enum": [
+        "CURRENT",
+        "STALE"
+      ],
+      "title": "StageValidity",
+      "type": "string"
+    },
+    "StateChange": {
+      "additionalProperties": false,
+      "description": "一次可审计状态变更，记录修改者、原因及前后差异。",
+      "properties": {
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "after": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "After",
+          "type": "object"
+        },
+        "before": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Before",
+          "type": "object"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor",
+        "step_id",
+        "reason",
+        "before",
+        "after"
+      ],
+      "title": "StateChange",
+      "type": "object"
+    },
+    "StepExecution": {
+      "additionalProperties": false,
+      "description": "节点单次执行记录，为后续 Retry/Rollback 保留独立标识。",
+      "properties": {
+        "ended_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ended At"
+        },
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/ErrorDetail"
+          },
+          "title": "Errors",
+          "type": "array"
+        },
+        "retry_count": {
+          "default": 0,
+          "title": "Retry Count",
+          "type": "integer"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/StepStatus",
+          "default": "RUNNING"
+        },
+        "step_execution_id": {
+          "title": "Step Execution Id",
+          "type": "string"
+        },
+        "step_id": {
+          "$ref": "#/$defs/StepId"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "step_id"
+      ],
+      "title": "StepExecution",
+      "type": "object"
+    },
+    "StepId": {
+      "description": "固定业务流程 W01-W10 的步骤标识。",
+      "enum": [
+        "W01",
+        "W02",
+        "W03",
+        "W04",
+        "W05",
+        "W06",
+        "W07",
+        "W08",
+        "W09",
+        "W10"
+      ],
+      "title": "StepId",
+      "type": "string"
+    },
+    "StepStatus": {
+      "description": "Workflow 节点和任务统一使用的状态集合。",
+      "enum": [
+        "PENDING",
+        "RUNNING",
+        "SUCCESS",
+        "WARNING",
+        "FAILED",
+        "BLOCKED",
+        "REVIEW_REQUIRED",
+        "SKIPPED"
+      ],
+      "title": "StepStatus",
+      "type": "string"
+    },
+    "TaskRequest": {
+      "additionalProperties": false,
+      "description": "启动一次单井解释任务所需的最小请求。",
+      "properties": {
+        "instruction": {
+          "default": "执行单井测井解释骨架演示",
+          "minLength": 1,
+          "title": "Instruction",
+          "type": "string"
+        },
+        "task_id": {
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "well_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+          "title": "Well Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "well_id"
+      ],
+      "title": "TaskRequest",
+      "type": "object"
+    },
+    "ValidationResult": {
+      "additionalProperties": false,
+      "description": "W09 多源验证结果，可提出回退目标但不能直接改写解释结论。",
+      "properties": {
+        "conflicts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "is_mock": {
+          "title": "Is Mock",
+          "type": "boolean"
+        },
+        "missing_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Evidence",
+          "type": "array"
+        },
+        "recommended_action": {
+          "default": "continue",
+          "title": "Recommended Action",
+          "type": "string"
+        },
+        "result": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Result",
+          "type": "object"
+        },
+        "rollback_target": {
+          "anyOf": [
+            {
+              "enum": [
+                "W06",
+                "W07"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rollback Target"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "status": {
+          "default": "SUCCESS",
+          "enum": [
+            "SUCCESS",
+            "WARNING",
+            "BLOCKED",
+            "FAILED",
+            "REVIEW_REQUIRED"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "validation_status": {
+          "$ref": "#/$defs/ValidationStatus"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "is_mock",
+        "source",
+        "validation_status"
+      ],
+      "title": "ValidationResult",
+      "type": "object"
+    },
+    "ValidationStatus": {
+      "description": "多源资料综合验证结论。",
+      "enum": [
+        "CONSISTENT",
+        "PARTIAL_CONFLICT",
+        "SERIOUS_CONFLICT",
+        "INSUFFICIENT_EVIDENCE"
+      ],
+      "title": "ValidationStatus",
+      "type": "string"
+    },
+    "Well": {
+      "additionalProperties": false,
+      "description": "井基础信息；未冻结字段放入 extensions，避免提前扩张 Schema。",
+      "properties": {
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "well_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+          "title": "Well Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "well_id",
+        "name"
+      ],
+      "title": "Well",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "一次完整或局部重跑及其独立状态快照、复用来源和报告。",
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Code"
+    },
+    "execution_id": {
+      "title": "Execution Id",
+      "type": "string"
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Finished At"
+    },
+    "input_version_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Version Id"
+    },
+    "lease_expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Lease Expires At"
+    },
+    "lease_owner": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Lease Owner"
+    },
+    "markdown": {
+      "default": "",
+      "title": "Markdown",
+      "type": "string"
+    },
+    "override_snapshot": {
+      "$ref": "#/$defs/InterpretationOverride"
+    },
+    "planning_reason": {
+      "default": "INITIAL",
+      "enum": [
+        "INITIAL",
+        "FULL_RERUN",
+        "NO_REUSABLE_SOURCE",
+        "INPUT_CHANGED",
+        "OVERRIDE_CHANGED",
+        "REPORT_ONLY",
+        "LEGACY_MIGRATED"
+      ],
+      "title": "Planning Reason",
+      "type": "string"
+    },
+    "run_mode": {
+      "$ref": "#/$defs/ExecutionRunMode",
+      "default": "CONTINUOUS"
+    },
+    "sequence": {
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "source_execution_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Execution Id"
+    },
+    "start_step": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StepId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": "W01"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Started At"
+    },
+    "state_snapshot": {
+      "$ref": "#/$defs/InterpretationState"
+    },
+    "status": {
+      "$ref": "#/$defs/ExecutionStatus"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "trigger_type": {
+      "enum": [
+        "INITIAL",
+        "RERUN"
+      ],
+      "title": "Trigger Type",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "execution_id",
+    "task_id",
+    "sequence",
+    "status",
+    "state_snapshot",
+    "trigger_type"
+  ],
+  "title": "Execution",
+  "type": "object"
+}

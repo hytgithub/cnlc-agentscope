@@ -169,11 +169,16 @@ flowchart LR
 - `state_snapshot`：本次 W01～W10 的完整 `InterpretationState` 快照。
 - `markdown`：本次 Execution 的最终或诊断报告。
 - `started_at`、`finished_at`、`lease_owner`、`lease_expires_at`、`error_code`：后台生命周期和失败诊断。
+- `run_mode`：`CONTINUOUS`（连续执行）或 `STAGED_CONFIRMATION`（分阶段确认执行）。
 
 ```mermaid
 stateDiagram-v2
     [*] --> QUEUED
     QUEUED --> RUNNING: worker claim
+    RUNNING --> WAITING_CONFIRMATION: stage candidate persisted
+    WAITING_CONFIRMATION --> QUEUED: confirm non-final stage
+    WAITING_CONFIRMATION --> SUCCESS: confirm REPORT
+    WAITING_CONFIRMATION --> WARNING: confirm REPORT with warnings
     RUNNING --> SUCCESS
     RUNNING --> WARNING
     RUNNING --> FAILED
@@ -246,6 +251,12 @@ Execution、ToolRun 或报告。详细恢复、TTL、幂等和去重边界见
 创建新 Execution 时，Repository 对 Task 执行 `SELECT ... FOR UPDATE`，并校验规划携带的 `expected_current_execution_id`。指针已变化说明计划过期；当前 Execution 仍为活跃状态则返回 `TASK_EXECUTION_ACTIVE`。这保证同一 Task 只有一个当前活跃执行。
 
 Worker 以原子 `claim_execution` 把 `QUEUED` 改为 `RUNNING`，写入 owner 和过期时间；运行期间按租约周期约三分之一心跳续租。终态写入必须匹配 worker、未过期租约和 Task 当前指针，并同时清空租约。启动和周期恢复使用 `FOR UPDATE SKIP LOCKED` 扫描过期 RUNNING，将其标记为 `FAILED`，不会自动重放可能有副作用的 Workflow。
+
+分阶段模式暂停时，在同一事务中保存 `StageRun.WAITING_CONFIRM`（等待确认）的快照、候选报告、
+Execution 的 `WAITING_CONFIRMATION`（等待阶段确认）状态和 Task 当前视图，并清空 lease。
+确认事务以 Task 行、Execution 行和 `expected_stage_run_id` 为并发边界：非报告阶段确认后把同一
+Execution 重新置为 `QUEUED`，保留首次 `started_at`；报告确认后才写 `finished_at` 和最新成功指针。
+等待确认状态没有 lease，因此过期执行恢复不会把它误判为失败。
 
 ## 10. PostgreSQL 与 Redis
 

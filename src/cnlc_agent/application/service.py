@@ -15,6 +15,7 @@ from cnlc_agent.domain.errors import DataError, InfrastructureError
 from cnlc_agent.domain.execution import (
     TERMINAL_EXECUTION_STATUSES,
     Execution,
+    ExecutionRunMode,
     ExecutionStatus,
     execution_status_from_state,
 )
@@ -89,6 +90,8 @@ class InterpretationTaskService:
         self,
         request: TaskRequest,
         fixture: MockFixture,
+        *,
+        run_mode: ExecutionRunMode = ExecutionRunMode.CONTINUOUS,
     ) -> Execution:
         """持久化 Task、InputVersion 与 QUEUED Execution，不在提交请求中运行业务流程。"""
 
@@ -110,6 +113,7 @@ class InterpretationTaskService:
                 source_execution_id=None,
                 planning_reason="INITIAL",
                 expected_current_execution_id=None,
+                run_mode=run_mode,
             )
 
     async def run_with_input(
@@ -251,6 +255,8 @@ class InterpretationTaskService:
         self,
         request: TaskRequest,
         plan: ExecutionPlan,
+        *,
+        run_mode: ExecutionRunMode = ExecutionRunMode.CONTINUOUS,
     ) -> Execution:
         """重新读取并校验计划来源，原子创建可供 Worker claim 的执行记录。"""
 
@@ -293,6 +299,7 @@ class InterpretationTaskService:
             source_execution_id=plan.source_execution_id,
             planning_reason=plan.planning_reason,
             expected_current_execution_id=plan.expected_current_execution_id,
+            run_mode=run_mode,
         )
 
     async def execute_rerun_plan(

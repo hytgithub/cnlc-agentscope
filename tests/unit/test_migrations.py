@@ -51,6 +51,8 @@ def test_initial_migration_generates_postgresql_sql():
     assert "uq_dataset_revision_task_sequence" in result.stdout
     assert "uq_dataset_revision_change_set_id" in result.stdout
     assert "fk_dataset_revision_change_set" in result.stdout
+    assert "ADD COLUMN run_mode" in result.stdout
+    assert "CONTINUOUS" in result.stdout
     assert (
         "FOREIGN KEY(execution_id) REFERENCES interpretation_execution "
         "(execution_id) ON DELETE CASCADE"
@@ -118,6 +120,33 @@ def test_execution_lifecycle_migration_downgrades_to_0004():
     assert "DROP INDEX ix_interpretation_execution_lease_expires_at" in result.stdout
     assert "DROP COLUMN lease_owner" in result.stdout
     assert "DROP COLUMN start_step" in result.stdout
+
+
+def test_stage_orchestration_migration_round_trip_sql():
+    """0009 只持久化执行模式，回退不改写历史快照。"""
+
+    environment = {**os.environ, "DATABASE_URL": "postgresql+asyncpg://localhost/cnlc"}
+    upgrade = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "0008:0009", "--sql"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert upgrade.returncode == 0, upgrade.stderr
+    assert "ADD COLUMN run_mode" in upgrade.stdout
+    assert "CONTINUOUS" in upgrade.stdout
+    downgrade = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", "0009:0008", "--sql"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert downgrade.returncode == 0, downgrade.stderr
+    assert "DROP COLUMN run_mode" in downgrade.stdout
 
 
 def test_session_task_binding_migration_downgrades_to_0005():

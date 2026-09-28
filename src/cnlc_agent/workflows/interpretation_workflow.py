@@ -11,7 +11,7 @@ from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import ApplicationError, WorkflowError
 from cnlc_agent.domain.models import ErrorDetail, JsonObject, RawData, StageResult, utc_now
 from cnlc_agent.domain.stage_runtime import begin_stage, finish_stage
-from cnlc_agent.domain.stages import STAGE_STEPS
+from cnlc_agent.domain.stages import STAGE_STEPS, InterpretationStage
 from cnlc_agent.domain.state import (
     InterpretationState,
     StateChange,
@@ -358,25 +358,70 @@ class InterpretationWorkflow:
     async def run(
         self, state: InterpretationState, *, start_step: StepId = StepId.W01
     ) -> InterpretationState:
-        """从已校验的连续前缀之后执行，保留完整节点定义与原有终止分支。"""
+        """保持既有连续入口，一次执行起点之后的全部 W01～W10。"""
 
-        if state.status != StepStatus.PENDING:
-            raise WorkflowError("TASK_ALREADY_STARTED", "骨架暂不支持恢复已有任务，请创建新任务")
+        return await self._run_steps(
+            state,
+            start_step=start_step,
+            end_step=StepId.W10,
+            auto_confirm=True,
+            require_new_state=True,
+        )
+
+    async def run_stage(
+        self, state: InterpretationState, stage: InterpretationStage
+    ) -> InterpretationState:
+        """只执行一个业务阶段；REPORT 由报告装配器在应用层执行。"""
+
+        steps = STAGE_STEPS[stage]
+        if not steps:
+            raise WorkflowError("INVALID_STAGE", "REPORT 阶段不包含 Workflow 节点")
+        return await self._run_steps(
+            state,
+            start_step=steps[0],
+            end_step=steps[-1],
+            auto_confirm=False,
+            require_new_state=False,
+        )
+
+    async def _run_steps(
+        self,
+        state: InterpretationState,
+        *,
+        start_step: StepId = StepId.W01,
+        end_step: StepId = StepId.W10,
+        auto_confirm: bool,
+        require_new_state: bool,
+    ) -> InterpretationState:
+        """连续与分阶段模式共用唯一节点循环，避免两套 W01～W10 语义漂移。"""
+
         if start_step not in {StepId.W01, StepId.W02, StepId.W04}:
             raise WorkflowError("INVALID_START_STEP", "只允许从业务阶段边界启动")
         start_index = list(StepId).index(start_step)
+        end_index = list(StepId).index(end_step)
         prefix = list(StepId)[:start_index]
-        if (
-            state.completed_steps != prefix
+        if state.completed_steps != prefix or any(
+            item.step_id in list(StepId)[start_index : end_index + 1]
+            for item in state.executions
+        ):
+            raise WorkflowError("INVALID_REUSE_PREFIX", "执行起点需要完整连续的复用前缀和新状态")
+        if require_new_state and (
+            state.status != StepStatus.PENDING
             or [item.step_id for item in state.reused_steps] != prefix
             or state.executions
             or state.current_step is not None
         ):
             raise WorkflowError("INVALID_REUSE_PREFIX", "执行起点需要完整连续的复用前缀和新状态")
+        if not require_new_state and state.status not in {
+            StepStatus.PENDING,
+            StepStatus.SUCCESS,
+            StepStatus.WARNING,
+        }:
+            raise WorkflowError("TASK_NOT_RESUMABLE", "当前任务状态不能继续下一阶段")
         attributes: JsonObject = {"task_id": state.task.task_id, "trace_id": state.trace_id}
         with self.telemetry.span("workflow", attributes):
             for index, node in enumerate(self.nodes):
-                if index < start_index:
+                if index < start_index or index > end_index:
                     continue
                 stage = next(stage for stage, steps in STAGE_STEPS.items() if node.step_id in steps)
                 if node.step_id == STAGE_STEPS[stage][0]:
@@ -501,7 +546,7 @@ class InterpretationWorkflow:
                         },
                     )
                     if outcome.status not in COMPLETED or node.step_id == STAGE_STEPS[stage][-1]:
-                        finish_stage(state, stage)
+                        finish_stage(state, stage, auto_confirm=auto_confirm)
                     await self.store.save(state)
                 if outcome.status not in COMPLETED:
                     # FAILED、BLOCKED、REVIEW_REQUIRED 均为显式终止分支，禁止继续后续步骤。
@@ -509,6 +554,8 @@ class InterpretationWorkflow:
             if len(state.completed_steps) == len(StepId):
                 # 所有步骤完成后，任一步骤告警都会提升最终任务状态为 WARNING。
                 state.status = state.completed_status()
+            if state.status in COMPLETED:
+                state.current_step = None
             state.updated_at = utc_now()
             await self.store.save(state)
             self.telemetry.event("workflow.result", {**attributes, "status": state.status.value})

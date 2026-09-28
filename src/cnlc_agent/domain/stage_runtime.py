@@ -89,8 +89,9 @@ def finish_stage(
     stage: InterpretationStage,
     *,
     error: ErrorDetail | None = None,
+    auto_confirm: bool = True,
 ) -> None:
-    """Demo 自动确认完成阶段；阻断和复核保留原步骤状态，并记录阶段未成功。"""
+    """结束阶段；连续模式自动确认，分阶段模式保留人工确认边界。"""
 
     index = next(
         i
@@ -125,10 +126,13 @@ def finish_stage(
     else:
         # 尚未建设 Revision 实体；引用指向包含结果的不可变 Execution 快照字段。
         output = {OUTPUT_KEY[stage]: f"execution:{state.workflow_execution_id}:{stage.value}"}
+        target = (
+            StageRunStatus.CONFIRMED if auto_confirm else StageRunStatus.WAITING_CONFIRM
+        )
         updated = run.transition(
-            StageRunStatus.CONFIRMED,
+            target,
             actor="system",
-            reason="自动确认阶段结果",
+            reason="自动确认阶段结果" if auto_confirm else "阶段完成，等待人工确认",
             output_refs=output,
             warnings=warnings,
             summary=f"{stage.value} 阶段完成",
