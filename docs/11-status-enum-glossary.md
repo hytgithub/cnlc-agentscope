@@ -524,3 +524,42 @@ TASK_EXECUTION_ACTIVE（任务仍有活跃执行）及 B Resolver / Application 
 
 复用 CORRECTION（修正上一输入）、INVALID_OPERATION_PLAN（操作结构非法）及既有错误码。
 未新增 Execution、Workflow 或持久化状态。
+
+## 39. InterpretationStage、StageRunStatus 与 StageValidity（Task 11A）
+
+`InterpretationStage`（解释业务阶段）与第 10 节 `ExecutionStage`（执行规划阶段）是同一
+枚举对象；`DECODE`（数据准备）是 `DATA_DECODE`（已有数据准备阶段）的别名，协议值不变。
+StageRunStatus（阶段执行状态）表达一次实际执行的生命周期，不替代步骤状态、后台执行状态或规划动作。
+
+| 代码值 | 中文含义 |
+| --- | --- |
+| `PENDING` | 等待执行 |
+| `RUNNING` | 执行中 |
+| `WAITING_CONFIRM` | 成功产出，等待用户确认 |
+| `CONFIRMED` | 已由用户或系统确认，可供下游消费 |
+| `FAILED` | 未成功完成，保留错误 |
+
+| StageValidity | 中文含义 |
+| --- | --- |
+| `CURRENT` | 当前工作版本可用 |
+| `STALE` | 当前工作版本已失效；不改变原执行终态，不回写历史 Execution |
+
+## 40. StageImpact（修改影响类型）与阶段稳定错误码
+
+| 修改影响代码值 | 中文含义 | 受影响阶段 |
+| --- | --- | --- |
+| `DatasetPatch` | 原始 / 标准化曲线局部数据修改 | 预处理、解释、报告 |
+| `PreprocessParameterChange` | 预处理参数修改 | 预处理、解释、报告 |
+| `InterpretationParameterChange` | 解释参数修改 | 解释、报告 |
+| `InterpretationOverride` | 人工解释修改；不代替同名现有参数模型 | 解释、报告 |
+| `ReportConfigChange` | 报告配置修改 | 报告 |
+
+| 错误代码值 | 中文含义 |
+| --- | --- |
+| `INVALID_STAGE_TRANSITION` | 非法阶段状态转换或重复启动 |
+| `STAGE_DEPENDENCY_UNAVAILABLE` | 前置结果未确认、失效、缺失或输入引用不匹配 |
+| `STAGE_CHANGE_DURING_RUN` | 受影响阶段执行中，不能修改其依赖 |
+| `STAGE_NOT_COMPLETED` | 阶段未完整完成、被阻断或需要人工复核 |
+| `REPORT_GENERATION_FAILED` | 报告生成异常 |
+
+详细设计见 [四阶段执行模型](architecture/four-stage-execution-model.md)。

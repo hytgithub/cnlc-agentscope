@@ -125,6 +125,18 @@
       "title": "InterpretationOverride",
       "type": "object"
     },
+    "InterpretationStage": {
+      "description": "复用既有规划阶段值，DECODE 别名保持 Demo 的 DATA_DECODE 协议兼容。",
+      "enum": [
+        "DATA_DECODE",
+        "DATA_DECODE",
+        "PREPROCESS",
+        "INTERPRET",
+        "REPORT"
+      ],
+      "title": "InterpretationStage",
+      "type": "string"
+    },
     "JsonValue": {},
     "LogCurve": {
       "additionalProperties": false,
@@ -346,6 +358,260 @@
       ],
       "title": "StageResult",
       "type": "object"
+    },
+    "StageRun": {
+      "additionalProperties": false,
+      "description": "某任务某阶段的一次真实执行，refs 仅存逻辑 ID，不包含结果正文。",
+      "properties": {
+        "applied_change_ids": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Applied Change Ids",
+          "type": "array"
+        },
+        "confirmed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmed At"
+        },
+        "confirmed_by": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirmed By"
+        },
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/ErrorDetail"
+          },
+          "title": "Errors",
+          "type": "array"
+        },
+        "execution_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Execution Id",
+          "type": "string"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finished At"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "input_refs": {
+          "additionalProperties": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "propertyNames": {
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "title": "Input Refs",
+          "type": "object"
+        },
+        "invalidated_by_change_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invalidated By Change Id"
+        },
+        "output_refs": {
+          "additionalProperties": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "propertyNames": {
+            "maxLength": 512,
+            "minLength": 1
+          },
+          "title": "Output Refs",
+          "type": "object"
+        },
+        "stage": {
+          "$ref": "#/$defs/InterpretationStage"
+        },
+        "stale_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stale At"
+        },
+        "stale_reason": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stale Reason"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "status": {
+          "$ref": "#/$defs/StageRunStatus",
+          "default": "PENDING"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Task Id",
+          "type": "string"
+        },
+        "transitions": {
+          "items": {
+            "$ref": "#/$defs/StageTransition"
+          },
+          "title": "Transitions",
+          "type": "array"
+        },
+        "validity": {
+          "$ref": "#/$defs/StageValidity",
+          "default": "CURRENT"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "task_id",
+        "execution_id",
+        "stage"
+      ],
+      "title": "StageRun",
+      "type": "object"
+    },
+    "StageRunStatus": {
+      "description": "阶段一次实际执行的生命周期，不承载后续修改造成的有效性变化。",
+      "enum": [
+        "PENDING",
+        "RUNNING",
+        "WAITING_CONFIRM",
+        "CONFIRMED",
+        "FAILED"
+      ],
+      "title": "StageRunStatus",
+      "type": "string"
+    },
+    "StageTransition": {
+      "additionalProperties": false,
+      "description": "阶段执行状态审计随 Execution 快照持久化。",
+      "properties": {
+        "actor": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Actor",
+          "type": "string"
+        },
+        "after": {
+          "$ref": "#/$defs/StageRunStatus"
+        },
+        "before": {
+          "$ref": "#/$defs/StageRunStatus"
+        },
+        "reason": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        }
+      },
+      "required": [
+        "before",
+        "after",
+        "actor",
+        "reason"
+      ],
+      "title": "StageTransition",
+      "type": "object"
+    },
+    "StageValidity": {
+      "description": "当前工作版本对既有阶段结果的有效性判断。",
+      "enum": [
+        "CURRENT",
+        "STALE"
+      ],
+      "title": "StageValidity",
+      "type": "string"
     },
     "StateChange": {
       "additionalProperties": false,
@@ -855,6 +1121,13 @@
       "default": "0.1-skeleton",
       "title": "Schema Version",
       "type": "string"
+    },
+    "stage_runs": {
+      "items": {
+        "$ref": "#/$defs/StageRun"
+      },
+      "title": "Stage Runs",
+      "type": "array"
     },
     "status": {
       "$ref": "#/$defs/StepStatus",

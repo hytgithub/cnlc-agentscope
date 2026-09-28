@@ -21,6 +21,8 @@ from cnlc_agent.domain.execution import (
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import ErrorDetail, MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
+from cnlc_agent.domain.stage_runtime import begin_stage, fail_running_stages, finish_stage
+from cnlc_agent.domain.stages import InterpretationStage, StageRunStatus
 from cnlc_agent.domain.state import InterpretationState, StateChange
 from cnlc_agent.domain.tool_run import ToolRun
 from cnlc_agent.reports.assembler import ReportAssembler
@@ -383,6 +385,9 @@ class InterpretationTaskService:
             )
             return state, markdown
         except asyncio.CancelledError:
+            await self._record_stage_failure(
+                execution_id, worker_id, "BACKGROUND_EXECUTION_CANCELLED"
+            )
             with suppress(InfrastructureError):
                 await self.repository.finish_execution(
                     execution_id,
@@ -392,6 +397,7 @@ class InterpretationTaskService:
                 )
             raise
         except Exception:
+            await self._record_stage_failure(execution_id, worker_id, "BACKGROUND_EXECUTION_FAILED")
             with suppress(InfrastructureError):
                 await self.repository.finish_execution(
                     execution_id,
@@ -406,6 +412,35 @@ class InterpretationTaskService:
                 await heartbeat_task
             except asyncio.CancelledError:
                 pass
+
+    async def _record_stage_failure(self, execution_id: str, worker_id: str, code: str) -> None:
+        """异常终结前尽量保存活动阶段诊断；仅处理当前 Worker 仍持有的执行。"""
+
+        try:
+            execution = await self.repository.get_execution(execution_id)
+            if execution is None or execution.lease_owner != worker_id:
+                return
+            state = execution.state_snapshot
+            if not any(
+                run.execution_id == execution_id and run.status == StageRunStatus.RUNNING
+                for run in state.stage_runs
+            ):
+                return
+            error = ErrorDetail(code=code, message="执行异常终止", step_id=state.current_step)
+            fail_running_stages(state, error)
+            state.status = StepStatus.FAILED
+            state.errors.append(error)
+            state.updated_at = utc_now()
+            if state.executions and state.executions[-1].status == StepStatus.RUNNING:
+                state.executions[-1].status = StepStatus.FAILED
+                state.executions[-1].ended_at = state.updated_at
+                state.executions[-1].errors.append(error)
+            await self.repository.save_execution_state(state)
+        except InfrastructureError as exc:
+            # 持久化不可用时仍保留既有 Execution 终结流程，并显式记录保存失败。
+            self.telemetry.event(
+                "persistence.error", {"execution_id": execution_id, "code": exc.code}
+            )
 
     async def _run_execution(
         self,
@@ -445,6 +480,7 @@ class InterpretationTaskService:
             state.updated_at = utc_now()
             error = ErrorDetail(code=exc.code, message=str(exc), step_id=state.current_step)
             state.errors.append(error)
+            fail_running_stages(state, error)
             if state.current_step is not None:
                 state.changes.append(
                     StateChange(
@@ -470,7 +506,27 @@ class InterpretationTaskService:
                 "trace_id": state.trace_id,
             },
         ):
-            markdown = self.reports.to_markdown(state)
+            formal_report = state.status in {StepStatus.SUCCESS, StepStatus.WARNING}
+            if formal_report:
+                begin_stage(
+                    state,
+                    InterpretationStage.REPORT,
+                    report_config_ref=f"report-config:style:{self.reports.generator.style.value}",
+                )
+                await self.repository.save_execution_state(state)
+            try:
+                markdown = self.reports.to_markdown(state)
+            except Exception:
+                # 报告失败保留结构化诊断；原始异常交给既有执行异常处理，不暴露正文。
+                error = ErrorDetail(code="REPORT_GENERATION_FAILED", message="报告生成失败")
+                fail_running_stages(state, error)
+                state.status = StepStatus.FAILED
+                state.errors.append(error)
+                state.updated_at = utc_now()
+                await self.repository.save_execution_state(state)
+                raise
+            if formal_report:
+                finish_stage(state, InterpretationStage.REPORT)
             await self.repository.save(state, markdown)
         return state, markdown
 

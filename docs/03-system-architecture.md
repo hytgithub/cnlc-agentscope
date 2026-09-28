@@ -21,6 +21,7 @@
 - [05-persistence.md](05-persistence.md)：PostgreSQL / Redis 运行时持久化；
 - [07-database-design.md](07-database-design.md)：数据库实体、版本和并发控制；
 - [08-intent-and-interaction-design.md](08-intent-and-interaction-design.md)：意图识别与任务级 Tool；
+- [architecture/four-stage-execution-model.md](architecture/four-stage-execution-model.md)：四阶段运行、确认、依赖及失效契约；
 - [09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md)：解释过程 SSE 与前端职责。
 
 `06-interactive-agent-gap-analysis.md` 是历史差距分析，不作为当前能力事实来源。

@@ -11,15 +11,15 @@ from cnlc_agent.domain.execution import Execution, ExecutionStatus
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import Contract
 from cnlc_agent.domain.override import InterpretationOverride
-
-
-class ExecutionStage(StrEnum):
-    """Execution 视图的四个规划阶段，不取代 W01～W10。"""
-
-    DATA_DECODE = "DATA_DECODE"
-    PREPROCESS = "PREPROCESS"
-    INTERPRET = "INTERPRET"
-    REPORT = "REPORT"
+from cnlc_agent.domain.stages import (
+    STAGE_ORDER as STAGE_ORDER,
+)
+from cnlc_agent.domain.stages import (
+    STAGE_STEPS as STAGE_STEPS,
+)
+from cnlc_agent.domain.stages import (
+    ExecutionStage as ExecutionStage,
+)
 
 
 class PlanAction(StrEnum):
@@ -28,23 +28,6 @@ class PlanAction(StrEnum):
     RUN = "RUN"
     REUSE = "REUSE"
 
-
-STAGE_ORDER = tuple(ExecutionStage)
-STAGE_STEPS: dict[ExecutionStage, tuple[StepId, ...]] = {
-    ExecutionStage.DATA_DECODE: (StepId.W01,),
-    ExecutionStage.PREPROCESS: (StepId.W02, StepId.W03),
-    ExecutionStage.INTERPRET: (
-        StepId.W04,
-        StepId.W05,
-        StepId.W06,
-        StepId.W07,
-        StepId.W08,
-        StepId.W09,
-        StepId.W10,
-    ),
-    # REPORT 由现有 ReportAssembler / ReportGenerator 在十步完成后承担。
-    ExecutionStage.REPORT: (),
-}
 
 # 唯一的参数依赖事实表；新 Override 字段缺少映射时必须显式报错。
 DEPENDENCY_IMPACT: dict[str, ExecutionStage] = {

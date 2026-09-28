@@ -1,4 +1,4 @@
-"""把可信来源的业务字段装配到全新状态；不复制历史运行快照。"""
+"""把可信来源的业务字段装配到全新状态；保留阶段历史引用，步骤运行记录仍属于新执行。"""
 
 from typing import Literal
 
@@ -14,6 +14,7 @@ from cnlc_agent.domain.errors import WorkflowError
 from cnlc_agent.domain.execution import Execution, ExecutionStatus
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import StageResult, TaskRequest
+from cnlc_agent.domain.stages import mark_downstream_stale
 from cnlc_agent.domain.state import InterpretationState, ReusedStep, StateChange
 
 REUSE_FIELDS = {
@@ -79,6 +80,20 @@ class StateReuseAssembler:
             input_version_id=plan.selected_input_version_id,
             effective_override=plan.effective_override.model_copy(deep=True),
         )
+        # 阶段历史随新快照继承，来源 Execution 快照保持不变；不复制步骤执行记录。
+        if source is not None and source.execution_id == plan.source_execution_id:
+            if source.task_id != request.task_id:
+                raise WorkflowError("REUSE_SOURCE_TASK_MISMATCH", "阶段历史来源不属于当前任务")
+            first_run = next(
+                item.stage for item in plan.stage_plans if item.action == PlanAction.RUN
+            )
+            state.stage_runs = mark_downstream_stale(
+                source.state_snapshot.stage_runs,
+                task_id=request.task_id,
+                start_stage=first_run,
+                actor="StateReuseAssembler",
+                reason="新执行计划使旧阶段结果失效",
+            )
         reused = [item for item in plan.stage_plans if item.action == PlanAction.REUSE]
         if not reused:
             return state
