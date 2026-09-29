@@ -108,7 +108,7 @@ def build_steps(
             patch=StatePatch(
                 well=data.well, raw_data=data.raw_data, data_requirements=data.requirements
             ),
-            reason="通过 get_well_data 加载 Mock 井资料",
+            reason="通过 get_well_data 加载本次任务绑定的井资料",
         )
 
     async def completeness(state: InterpretationState) -> StepOutcome:
@@ -160,7 +160,7 @@ def build_steps(
             else StepStatus.SUCCESS,
             missing_data=missing,
             warnings=warnings,
-            reason="检查当前 Mock Fixture 声明的数据要求（正式业务字段表待确认）",
+            reason="检查当前井资料声明的数据要求（正式业务字段表待确认）",
         )
 
     async def qc(state: InterpretationState) -> StepOutcome:
@@ -168,7 +168,18 @@ def build_steps(
 
         output = await caller.call(tools["check_curve_quality"], tool_request(state, StepId.W03))
         result = StageResult.model_validate(output.data)
-        return outcome_for(result, StatePatch(qc_result=result, processed_data=state.raw_data))
+        processed_payload = result.result.pop("processed_data", None)
+        processed_data = (
+            RawData.model_validate(processed_payload)
+            if isinstance(processed_payload, dict)
+            else state.raw_data
+        )
+        if company_batches and not result.is_mock and processed_payload is None:
+            raise WorkflowError(
+                "COMPANY_PROCESSED_DATA_MISSING",
+                "真实预处理没有返回处理后曲线数据",
+            )
+        return outcome_for(result, StatePatch(qc_result=result, processed_data=processed_data))
 
     async def lithology(state: InterpretationState) -> StepOutcome:
         """W04：调用岩性识别 Tool。"""

@@ -26,6 +26,35 @@ def settings():
     )
 
 
+def report_settings():
+    """正式报告链路通过可配置业务网关调用，测试不访问内网。"""
+    return CompanyApiSettings(
+        preprocessing_url="http://preprocess.test/",
+        prediction_url="http://predict.test/center-management/",
+        token=SecretStr("prediction-token"),
+        business_url="http://business.test/api/",
+        business_token=SecretStr("business-token"),
+        report_type="单井解释报告",
+        report_gdsx_type="解释成果",
+        report_minio_file_type="gdsx",
+        report_poll_seconds=0.001,
+        report_timeout_seconds=1,
+        _env_file=None,
+    )
+
+
+def login_settings():
+    """动态登录模式不得依赖预置 Token。"""
+    return CompanyApiSettings(
+        preprocessing_url="http://preprocess.test/",
+        prediction_url="http://predict.test/center-management/",
+        login_url="http://predict.test/center-management/authlogin/logImpLoginByAgent",
+        username="test-user",
+        password=SecretStr("test-password"),
+        _env_file=None,
+    )
+
+
 def request_body():
     return {
         "wellName": "test-well",
@@ -113,6 +142,43 @@ async def test_preprocessing_uses_server_path_and_keeps_original_file(tmp_path):
         await client.aclose()
 
 
+async def test_login_and_running_model_list_follow_verified_protocol():
+    """真实模式可自行登录，并严格查询运行中的模型而不调用 yuce 路由。"""
+
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if request.url.path.endswith("logImpLoginByAgent"):
+            assert request.url.params["username"] == "test-user"
+            assert request.url.params["password"] == "test-password"
+            return httpx.Response(200, json={"code": 200, "data": {"token": "fresh-token"}})
+        assert request.headers["Authorization"] == "fresh-token"
+        assert json.loads(request.content) == {
+            "name": "",
+            "pageNum": 1,
+            "pageSize": 100,
+            "status": "运行中",
+        }
+        return httpx.Response(
+            200,
+            json={"success": True, "obj": {"items": [{"id": "service-1"}]}},
+        )
+
+    client = CompanyApiClient(login_settings(), transport=httpx.MockTransport(handler))
+    try:
+        models = await client.list_models(
+            {"name": "", "pageNum": 1, "pageSize": 100, "status": "运行中"}
+        )
+        assert models == [{"id": "service-1"}]
+        assert seen == [
+            "/center-management/authlogin/logImpLoginByAgent",
+            "/center-management/center/ServiceInfo/get-page/v1",
+        ]
+    finally:
+        await client.aclose()
+
+
 @pytest.mark.parametrize(
     "kind,code",
     [
@@ -170,3 +236,47 @@ def test_supported_result_wrappers(payload):
 def test_multiple_wells_cannot_be_silently_assigned_to_one_task():
     with pytest.raises(ToolError):
         extract_prediction_data({"resultData": [{"well": 1}, {"well": 2}]})
+
+
+async def test_real_report_chain_uploads_concludes_and_polls_docx(tmp_path):
+    """W09/W10 所需客户端严格走上传、解释结论、任务提交和 GET 进度。"""
+
+    final_gdsx = tmp_path / "final.gdsx"
+    final_gdsx.write_bytes(b"final-gdsx")
+    seen: list[tuple[str, str]] = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path))
+        assert request.headers["Authorization"] == "business-token"
+        if request.url.path.endswith("upload/minio"):
+            return httpx.Response(200, json={"code": 200, "data": {"upload_results": [
+                {"filename": "final.gdsx", "upload_id": "upload-1", "size": 10, "status": "success"}
+            ]}})
+        if request.url.path.endswith("gdsx-interresult"):
+            assert json.loads(request.content)["gdsx_upload_ids"] == ["upload-1"]
+            return httpx.Response(200, json={"code": 200, "data": [
+                {"id": "result-1", "conclusion": "油层"}
+            ]})
+        if request.url.path.endswith("report-tasks"):
+            return httpx.Response(200, json={"code": 200, "data": {"task_id": "task-1"}})
+        assert request.method == "GET"
+        return httpx.Response(200, json={"code": 200, "data": {
+            "status": "SUCCESS", "file_name": "report.docx", "file_url": "/report.docx"
+        }})
+
+    client = CompanyApiClient(report_settings(), transport=httpx.MockTransport(handler))
+    try:
+        uploaded = await client.upload_report_gdsx(final_gdsx)
+        conclusions = await client.get_gdsx_conclusions(uploaded["upload_id"])
+        report = await client.generate_report({"well_name": "well", "extra_request_parameter": {}})
+        assert conclusions[0]["id"] == "result-1"
+        assert report["task_id"] == "task-1"
+        assert report["file_name"] == "report.docx"
+        assert seen == [
+            ("POST", "/api/upload/minio"),
+            ("POST", "/api/explanation/gdsx-interresult"),
+            ("POST", "/api/explanation/report-tasks"),
+            ("GET", "/api/explanation/report-tasks/task-1/progress"),
+        ]
+    finally:
+        await client.aclose()

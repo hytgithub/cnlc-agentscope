@@ -59,6 +59,7 @@ const hitlKey = (e: { worker_session_id: string; reply_id: string }) =>
  * Lifecycle phase of the reply currently owned by this session.
  *
  * - ``idle`` — no in-flight reply; the send button is enabled.
+ * - ``submitting`` — 用户消息已进入前端发送流程，正在等待后端确认启动。
  * - ``streaming`` — a reply is in progress (either actively producing
  *   events or parked awaiting HITL). The send button is replaced by a
  *   Stop button. The parked-vs-generating distinction is not tracked
@@ -70,7 +71,7 @@ const hitlKey = (e: { worker_session_id: string; reply_id: string }) =>
  *   to ``idle`` after a 10s safety timeout in case the terminating
  *   event never arrives (dropped SSE frame, backend bug, etc.).
  */
-export type ReplyPhase = 'idle' | 'streaming' | 'interrupting';
+export type ReplyPhase = 'idle' | 'submitting' | 'streaming' | 'interrupting';
 
 /** Safety fallback: force phase back to idle if REPLY_END is not seen. */
 const INTERRUPT_TIMEOUT_MS = 10_000;
@@ -387,7 +388,7 @@ export function useMessages(
 			// 在乐观渲染和网络请求之前同步加锁，先于 React 向输入框发布新 phase，
 			// 从而彻底关闭重复提交窗口。
 			runActiveRef.current = true;
-			setPhase('streaming');
+			setPhase('submitting');
 			setError(null);
 
 			const userMsg = UserMsg({ name: 'user', content });

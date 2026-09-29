@@ -616,11 +616,25 @@ interface ASBlockProps {
 	interpretationReply?: boolean;
 }
 
+// 历史诊断报告可能来自旧版本并包含数千条逐点明细。限制单个 Markdown
+// 渲染体积，避免 Streamdown 在主线程解析超大表格时冻结整个页面。
+const MAX_CHAT_MARKDOWN_CHARS = 200_000;
+
+function renderableText(text: string): { text: string; truncated: boolean } {
+	if (text.length <= MAX_CHAT_MARKDOWN_CHARS) return { text, truncated: false };
+	const boundary = text.lastIndexOf('\n', MAX_CHAT_MARKDOWN_CHARS);
+	return {
+		text: text.slice(0, boundary > 0 ? boundary : MAX_CHAT_MARKDOWN_CHARS),
+		truncated: true,
+	};
+}
+
 export function ASBlock({ block, interpretationReply = false, ...props }: ASBlockProps) {
 	const { t } = useTranslation();
 
 	switch (block.type) {
-		case 'text':
+		case 'text': {
+			const rendered = renderableText(block.text);
 			return (
 				<section>
 					{interpretationReply && (
@@ -633,19 +647,27 @@ export function ASBlock({ block, interpretationReply = false, ...props }: ASBloc
 						</h3>
 					)}
 					<Markdown animated isAnimating={!block.finished_at} {...props}>
-						{block.text}
+						{rendered.text}
 					</Markdown>
+					{rendered.truncated && (
+						<p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+							{t('messageBubble.largeReportTruncated')}
+						</p>
+					)}
 				</section>
 			);
+		}
 		case 'data': {
 			const dataType = block.source.media_type.split('/')[0];
 			if (dataType === 'audio') return null;
-			const data =
-				block.source.type === 'url'
-					? block.source.url
-					: `data:${block.source.media_type};base64,${block.source.data}`;
 			switch (dataType) {
-				case 'image':
+				case 'image': {
+					// 只有真正需要 src 的媒体才构造 data URL。GDSX 等二进制附件
+					// 仅显示名称，不能在每次 React render 时复制整段 Base64。
+					const data =
+						block.source.type === 'url'
+							? block.source.url
+							: `data:${block.source.media_type};base64,${block.source.data}`;
 					return (
 						<Attachment>
 							<AttachmentMedia variant={'image'}>
@@ -661,6 +683,7 @@ export function ASBlock({ block, interpretationReply = false, ...props }: ASBloc
 							</AttachmentContent>
 						</Attachment>
 					);
+				}
 				case 'video':
 					return (
 						<Attachment>

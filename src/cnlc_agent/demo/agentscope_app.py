@@ -35,11 +35,15 @@ from cnlc_agent.demo.demo_agent import (
     MockTaskShellCredential,
     MockTaskShellModel,
 )
+from cnlc_agent.demo.log_plot import LogPlotStage, LogPlotView
 from cnlc_agent.demo.operation_tool import build_agent_task_tools
 from cnlc_agent.demo.read_models import (
     InterpretationExecutionView,
     InterpretationTaskView,
+    InterpretationTraceView,
+    present_execution_trace,
     present_execution_view,
+    present_stage_log_plot,
     present_task_view,
 )
 from cnlc_agent.demo.task_tools import TaskCommandRunner
@@ -229,6 +233,9 @@ class AgentScopeServiceAdapter(LoggingInterpretationDemoAgent):
             raise ValueError("Demo Agent 不允许注册 MCP 或技能工具")
         builtins = {
             "Bash",
+            # AgentScope 在 Windows 工作区注入 PowerShell，而类 Unix 环境注入 Bash；
+            # 两者都是框架工作区工具，均不得进入受控测井业务 Tool 集合。
+            "PowerShell",
             "Read",
             "Write",
             "Edit",
@@ -455,6 +462,54 @@ def create_demo_app(
                 if execution is None or execution.task_id != task_id:
                     raise HTTPException(status_code=404, detail="EXECUTION_NOT_FOUND")
                 return await present_execution_view(service.repository, execution)
+
+    @app.get(
+        "/cnlc/interpretation/agents/{agent_id}/sessions/{session_id}/tasks/{task_id}"
+        "/executions/{execution_id}/log-plots/{stage}",
+        response_model=LogPlotView,
+    )
+    async def get_interpretation_stage_log_plot(
+        request: Request,
+        agent_id: str,
+        session_id: str,
+        task_id: str,
+        execution_id: str,
+        stage: LogPlotStage,
+    ) -> LogPlotView:
+        """阶段完成后按需读取一次曲线，避免状态轮询重复传输逐点数组。"""
+
+        runner = await owned_runner(request, agent_id, session_id, task_id)
+        with TemporaryDirectory(prefix="cnlc-read-") as directory:
+            async with runner.context(Path(directory)) as service:
+                execution = await service.repository.get_execution(execution_id)
+                if execution is None or execution.task_id != task_id:
+                    raise HTTPException(status_code=404, detail="EXECUTION_NOT_FOUND")
+                plot = present_stage_log_plot(execution, stage)
+                if plot is None:
+                    raise HTTPException(status_code=404, detail="STAGE_ARTIFACT_NOT_READY")
+                return plot
+
+    @app.get(
+        "/cnlc/interpretation/agents/{agent_id}/sessions/{session_id}/tasks/{task_id}"
+        "/executions/{execution_id}/trace",
+        response_model=InterpretationTraceView,
+    )
+    async def get_interpretation_execution_trace(
+        request: Request,
+        agent_id: str,
+        session_id: str,
+        task_id: str,
+        execution_id: str,
+    ) -> InterpretationTraceView:
+        """读取当前或历史 Execution 的安全业务链路，不触发新的业务调用。"""
+
+        runner = await owned_runner(request, agent_id, session_id, task_id)
+        with TemporaryDirectory(prefix="cnlc-trace-") as directory:
+            async with runner.context(Path(directory)) as service:
+                execution = await service.repository.get_execution(execution_id)
+                if execution is None or execution.task_id != task_id:
+                    raise HTTPException(status_code=404, detail="EXECUTION_NOT_FOUND")
+                return await present_execution_trace(service.repository, execution)
 
     return app
 

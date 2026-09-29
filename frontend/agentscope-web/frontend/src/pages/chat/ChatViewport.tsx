@@ -259,6 +259,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 		msgs,
 		loading: messagesLoading,
 		phase,
+		error: messagesError,
 		send,
 		onUserConfirm,
 		onSubagentConfirm,
@@ -640,6 +641,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 			setSelectedModel(backendModel);
 			if (
 				(!sessionModel ||
+					sessionModel.type !== backendModel.type ||
 					sessionModel.credential_id !== backendModel.credential_id ||
 					sessionModel.model !== backendModel.model) &&
 				sessionId &&
@@ -900,6 +902,7 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 									git={workspaceStatus?.git ?? null}
 									onRefreshGit={refetchWorkspaceStatus}
 									phase={phase}
+									error={messagesError}
 									disabled={selectedModel === null}
 									onSend={send}
 									onUserConfirm={onUserConfirm}
@@ -928,11 +931,14 @@ export function ChatViewport({ agentId, sessionId, onSessionsChanged }: ChatView
 										) : null
 									}
 									// 井资料由后端适配器解析，不受模型原生多模态输入类型限制。
-									allowedInputTypes={['.json', '.txt']}
+									// 真实测井链路支持上传 GDSX；后端仍会校验 HDF5 文件头和大小。
+									allowedInputTypes={['.json', '.txt', '.gdsx']}
 									fileProcessor={async (file) => {
-										// 浏览器先限制体积，后端仍会执行同样的安全校验。
-										if (file.size > 5 * 1024 * 1024) {
-											throw new Error('井资料文件不能超过 5 MiB');
+										// GDSX 是二进制原始资料，允许到后端相同的 200 MiB 上限；JSON/TXT 维持 5 MiB。
+										const isGdsx = file.name.toLowerCase().endsWith('.gdsx');
+										const maxBytes = (isGdsx ? 200 : 5) * 1024 * 1024;
+										if (file.size > maxBytes) {
+											throw new Error(`井资料文件不能超过 ${isGdsx ? 200 : 5} MiB`);
 										}
 										if (file.type === 'text/plain') {
 											const text = await file.text();

@@ -29,6 +29,10 @@ LABELS = {
     "summary": "摘要",
 }
 
+# 诊断报告用于定位失败/人工复核原因，不承担原始逐点数据导出。真实预测可能包含
+# 数千到数万采样点；全部展开会让 SSE、消息持久化和浏览器 Markdown 渲染同时膨胀。
+MAX_DIAGNOSTIC_LIST_ITEMS = 50
+
 
 def _safe(value: Any) -> Any:
     """在导出副本中脱敏凭据字段和原始错误消息，不修改持久化状态。"""
@@ -73,7 +77,18 @@ def _rows(value: Any, prefix: str = "") -> list[str]:
             rows.extend(_rows(item, f"{prefix} / {label}" if prefix else label))
         return rows
     if isinstance(value, list):
-        return [row for i, item in enumerate(value, 1) for row in _rows(item, f"{prefix} {i}")]
+        visible = value[:MAX_DIAGNOSTIC_LIST_ITEMS]
+        rows = [
+            row
+            for i, item in enumerate(visible, 1)
+            for row in _rows(item, f"{prefix} {i}")
+        ]
+        if len(value) > len(visible):
+            rows.append(
+                f"| {_cell(prefix)} / 其余数据 | "
+                f"共 {len(value)} 条，仅展示前 {len(visible)} 条；完整数据保留在 Execution 结果中 |"
+            )
+        return rows
     return [f"| {_cell(prefix)} | {_cell(value)} |"]
 
 

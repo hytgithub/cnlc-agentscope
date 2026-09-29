@@ -13,7 +13,7 @@ from cnlc_agent.domain.execution import (
     InterpretationTask,
     PlanningReason,
 )
-from cnlc_agent.domain.inputs import InputSource, InterpretationInputVersion
+from cnlc_agent.domain.inputs import GdsxArtifact, InputSource, InterpretationInputVersion
 from cnlc_agent.domain.models import Contract, JsonObject, MockFixture, WellData, WellId
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
@@ -44,6 +44,10 @@ class TaskRepository(Protocol):
 
     async def create_input_version(
         self, task_id: str, fixture: MockFixture, source_type: InputSource = "UPLOAD"
+    ) -> InterpretationInputVersion: ...
+
+    async def create_gdsx_input_version(
+        self, task_id: str, artifact: GdsxArtifact, content_sha256: str
     ) -> InterpretationInputVersion: ...
 
     async def get_input_version(

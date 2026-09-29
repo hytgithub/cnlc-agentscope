@@ -26,6 +26,7 @@ from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import MockFixture, TaskRequest
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState
+from cnlc_agent.demo.uploads import UploadedGdsx
 
 if TYPE_CHECKING:
     from cnlc_agent.application.commands import TaskCommandResult
@@ -219,7 +220,7 @@ class RunWellInterpretationTool(ToolBase):
 
             runner = TaskCommandRunner()
         self._runner = runner
-        self.upload: tuple[MockFixture, str] | None = None
+        self.upload: tuple[MockFixture | UploadedGdsx, str] | None = None
 
     async def check_permissions(self, *_args: Any, **_kwargs: Any) -> PermissionDecision:
         """用户主动提交解释请求后，允许执行本地单井解释流程。"""
@@ -270,7 +271,19 @@ class RunWellInterpretationTool(ToolBase):
         well_id = cast(str, kwargs["well_id"])
         if self.upload is not None:
             # upload 只在当前回复期间设置，井号必须与 Tool 参数一致。
-            fixture, instruction = self.upload
+            uploaded, instruction = self.upload
+            if isinstance(uploaded, UploadedGdsx):
+                if uploaded.well_id != well_id:
+                    raise ValueError("上传井与任务井标识不一致")
+                result = await self._runner.start_uploaded_gdsx(uploaded, instruction)
+                payload = result.model_dump(mode="json")
+                execution_status = payload.get("execution_status", payload.get("status"))
+                return ToolChunk(
+                    content=[TextBlock(text=json.dumps(payload, ensure_ascii=False))],
+                    state=ToolResultState.SUCCESS if execution_status in {"QUEUED", "RUNNING", "SUCCESS", "WARNING"} else ToolResultState.ERROR,
+                    metadata={"result": payload},
+                )
+            fixture = uploaded
             if fixture.well.well_id != well_id:
                 raise ValueError("上传井与任务井标识不一致")
             result = await self._runner.start_uploaded(fixture, instruction)

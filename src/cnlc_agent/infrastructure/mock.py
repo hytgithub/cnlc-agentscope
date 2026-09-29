@@ -20,6 +20,7 @@ from cnlc_agent.domain.execution import (
     PlanningReason,
 )
 from cnlc_agent.domain.inputs import (
+    GdsxArtifact,
     InputSource,
     InterpretationInputVersion,
     fixture_digest,
@@ -206,6 +207,32 @@ class InMemoryTaskRepository:
                 source_type=source_type,
                 content_sha256=fixture_digest(fixture),
                 payload=fixture.model_copy(deep=True),
+            )
+            self._inputs[version.input_version_id] = version
+            self._task_inputs[task_id].append(version.input_version_id)
+            task.current_input_version_id = version.input_version_id
+            task.updated_at = utc_now()
+            return version.model_copy(deep=True)
+
+    async def create_gdsx_input_version(
+        self, task_id: str, artifact, content_sha256: str
+    ) -> InterpretationInputVersion:
+        """保存受控 GDSX 引用；文件内容由上传存储层负责不可变保存。"""
+
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+            sequence = max(
+                (self._inputs[item].sequence for item in self._task_inputs[task_id]), default=0
+            ) + 1
+            version = InterpretationInputVersion(
+                task_id=task_id,
+                well_id=task.well_id,
+                sequence=sequence,
+                source_type="GDSX",
+                content_sha256=content_sha256,
+                gdsx_artifact=artifact.model_copy(deep=True),
             )
             self._inputs[version.input_version_id] = version
             self._task_inputs[task_id].append(version.input_version_id)

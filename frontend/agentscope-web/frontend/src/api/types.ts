@@ -291,6 +291,14 @@ export interface InterpretationToolRunView {
 
 export interface InterpretationExecutionView extends InterpretationExecutionSummary {
 	log_plot?: LogPlotView | null;
+	available_log_plot_stages: Array<'RAW' | 'PREPROCESSED' | 'INTERPRETED'>;
+	latest_log_plot_stage: 'RAW' | 'PREPROCESSED' | 'INTERPRETED' | null;
+	official_report: {
+		task_id: string | null;
+		status: string | null;
+		file_name: string | null;
+		file_url: string | null;
+	} | null;
 	current_step: string | null;
 	completed_steps: string[];
 	reused_steps: string[];

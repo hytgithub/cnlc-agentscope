@@ -9,7 +9,10 @@ import type {
 import { Markdown } from '@/components/markdown';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { useInterpretationExecution } from '@/hooks/useInterpretationTask';
+import {
+	useInterpretationExecution,
+	useInterpretationStageLogPlot,
+} from '@/hooks/useInterpretationTask';
 
 interface InterpretationPanelProps {
 	agentId: string | null;
@@ -21,6 +24,8 @@ interface InterpretationPanelProps {
 const displayTime = (value: string | null) =>
 	value ? new Date(value).toLocaleString() : '—';
 
+const MAX_PANEL_REPORT_CHARS = 200_000;
+
 const statusMark = (status: string) => {
 	if (status === 'REUSED' || status === 'SUCCESS' || status === 'WARNING') return '✓';
 	if (status === 'RUNNING') return '●';
@@ -28,13 +33,82 @@ const statusMark = (status: string) => {
 	return '○';
 };
 
-const jsonSummary = (value: Record<string, unknown>) => (
-	<pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-sm bg-muted p-2 text-xs">
-		{JSON.stringify(value, null, 2)}
-	</pre>
-);
+const SUMMARY_PREVIEW_ITEMS = 10;
 
-function ExecutionBody({ execution }: { execution: InterpretationExecutionView }) {
+function previewJson(value: unknown): { value: unknown; truncated: boolean } {
+	if (Array.isArray(value)) {
+		const children = value.slice(0, SUMMARY_PREVIEW_ITEMS).map(previewJson);
+		return {
+			value: children.map((child) => child.value),
+			truncated: value.length > SUMMARY_PREVIEW_ITEMS || children.some((child) => child.truncated),
+		};
+	}
+	if (value && typeof value === 'object') {
+		let truncated = false;
+		const entries = Object.entries(value as Record<string, unknown>).map(([key, item]) => {
+			const child = previewJson(item);
+			truncated ||= child.truncated;
+			return [key, child.value];
+		});
+		return { value: Object.fromEntries(entries), truncated };
+	}
+	return { value, truncated: false };
+}
+
+function JsonSummary({ value }: { value: Record<string, unknown> }) {
+	const [expanded, setExpanded] = useState(false);
+	const preview = useMemo(() => previewJson(value), [value]);
+	return (
+		<div className="space-y-1">
+			<pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-sm bg-muted p-2 text-xs">
+				{JSON.stringify(expanded ? value : preview.value, null, 2)}
+			</pre>
+			{preview.truncated && (
+				<Button size="sm" variant="ghost" onClick={() => setExpanded((current) => !current)}>
+					{expanded ? '收起，仅展示每组前 10 条' : '查看全部数据'}
+				</Button>
+			)}
+		</div>
+	);
+}
+
+function ExecutionBody({
+	agentId,
+	sessionId,
+	taskId,
+	execution,
+}: {
+	agentId: string;
+	sessionId: string;
+	taskId: string;
+	execution: InterpretationExecutionView;
+}) {
+	const [selectedPlotStage, setSelectedPlotStage] = useState(execution.latest_log_plot_stage);
+	const [plotSelectionPinned, setPlotSelectionPinned] = useState(false);
+	useEffect(() => {
+		setPlotSelectionPinned(false);
+		setSelectedPlotStage(execution.latest_log_plot_stage);
+	}, [execution.execution_id]);
+	useEffect(() => {
+		setSelectedPlotStage((current) => {
+			if (!plotSelectionPinned) return execution.latest_log_plot_stage;
+			return current && execution.available_log_plot_stages.includes(current)
+				? current
+				: execution.latest_log_plot_stage;
+		});
+	}, [execution.available_log_plot_stages, execution.latest_log_plot_stage, plotSelectionPinned]);
+	const selectedPlotAvailable = Boolean(
+		selectedPlotStage && execution.available_log_plot_stages.includes(selectedPlotStage),
+	);
+	const selectedPlotQuery = useInterpretationStageLogPlot(
+		agentId,
+		sessionId,
+		taskId,
+		execution.execution_id,
+		selectedPlotStage,
+		selectedPlotAvailable,
+	);
+	const isMockExecution = execution.tool_runs.some((run) => run.execution_mode === 'MOCK');
 	const currentStepName = execution.steps.find((step) => step.id === execution.current_step)?.name;
 	const parameters = [
 		['sampling_interval', execution.effective_override.sampling_interval],
@@ -42,6 +116,12 @@ function ExecutionBody({ execution }: { execution: InterpretationExecutionView }
 		['PERM', execution.effective_override.perm],
 		['prediction_model', execution.effective_override.prediction_model],
 	] as const;
+	const reportTruncated = Boolean(
+		execution.report_markdown && execution.report_markdown.length > MAX_PANEL_REPORT_CHARS,
+	);
+	const visibleReport = reportTruncated
+		? execution.report_markdown!.slice(0, MAX_PANEL_REPORT_CHARS)
+		: execution.report_markdown;
 
 	return (
 		<div className="space-y-4 pb-4 text-sm">
@@ -49,7 +129,7 @@ function ExecutionBody({ execution }: { execution: InterpretationExecutionView }
 				<div className="flex flex-wrap items-center gap-2">
 					<span className="font-semibold">Execution #{execution.sequence}</span>
 					<Badge variant="secondary">{execution.execution_status}</Badge>
-					<Badge variant="outline">Demo / Mock</Badge>
+					<Badge variant="outline">{isMockExecution ? 'Mock 执行' : '真实执行'}</Badge>
 				</div>
 				<div className="text-xs text-muted-foreground">
 					{execution.execution_status === 'QUEUED'
@@ -89,8 +169,8 @@ function ExecutionBody({ execution }: { execution: InterpretationExecutionView }
 						</summary>
 						<div className="space-y-2 border-t p-2 text-xs">
 							<div>来源：{step.source}</div>
-							<div><div className="mb-1 text-muted-foreground">输入摘要</div>{jsonSummary(step.input_summary)}</div>
-							<div><div className="mb-1 text-muted-foreground">输出摘要</div>{jsonSummary(step.output_summary)}</div>
+							<div><div className="mb-1 text-muted-foreground">输入摘要</div><JsonSummary value={step.input_summary} /></div>
+							<div><div className="mb-1 text-muted-foreground">输出摘要</div><JsonSummary value={step.output_summary} /></div>
 							{step.evidence.length > 0 && <div>证据：{step.evidence.join('；')}</div>}
 							{step.warnings.length > 0 && <div className="text-amber-700 dark:text-amber-300">告警：{step.warnings.join('；')}</div>}
 						</div>
@@ -128,12 +208,58 @@ function ExecutionBody({ execution }: { execution: InterpretationExecutionView }
 				</div>
 			</section>
 
-			<WellLogPlot key={execution.execution_id} plot={execution.log_plot} executionId={execution.execution_id} />
+			<section className="space-y-2">
+				<div className="flex items-center justify-between gap-2">
+					<div className="text-xs font-medium text-muted-foreground">阶段曲线产物</div>
+					<select
+						className="rounded border bg-background px-2 py-1 text-xs"
+						value={selectedPlotStage ?? ''}
+						onChange={(event) => {
+							setPlotSelectionPinned(true);
+							setSelectedPlotStage(event.target.value as typeof selectedPlotStage);
+						}}
+					>
+						<option value="RAW" disabled={!execution.available_log_plot_stages.includes('RAW')}>原始 GDSX 曲线</option>
+						<option value="PREPROCESSED" disabled={!execution.available_log_plot_stages.includes('PREPROCESSED')}>预处理后 GDSX 曲线</option>
+						<option value="INTERPRETED" disabled={!execution.available_log_plot_stages.includes('INTERPRETED')}>智能处理后 GDSX 曲线</option>
+					</select>
+				</div>
+				<div className="text-xs text-muted-foreground">
+					阶段完成后读取一次并缓存；后台继续执行下一阶段时不会重复轮询曲线。
+				</div>
+				{selectedPlotQuery.isLoading && <div className="text-xs text-muted-foreground">正在读取阶段曲线…</div>}
+				{selectedPlotQuery.isError && <div className="text-xs text-destructive">阶段曲线读取失败</div>}
+				<WellLogPlot
+					key={`${execution.execution_id}-${selectedPlotStage ?? 'empty'}`}
+					plot={selectedPlotQuery.data ?? null}
+					executionId={execution.execution_id}
+				/>
+			</section>
 
 			<section className="space-y-2 border-t pt-3">
-				<div className="text-xs font-medium text-muted-foreground">Markdown Report</div>
-				{execution.report_ready && execution.report_markdown
-					? <Markdown>{execution.report_markdown}</Markdown>
+				<div className="text-xs font-medium text-muted-foreground">正式解释报告</div>
+				{execution.official_report
+					? <div className="space-y-2 rounded border p-3 text-xs">
+						<div>状态：{execution.official_report.status ?? 'SUCCESS'}</div>
+						<div>文件：{execution.official_report.file_name ?? '解释报告.docx'}</div>
+						{execution.official_report.file_url
+							? <a className="text-primary underline" href={execution.official_report.file_url} target="_blank" rel="noreferrer">预览或下载正式报告</a>
+							: <div className="text-amber-700">报告服务未返回可下载地址</div>}
+					</div>
+					: <div className="text-xs text-muted-foreground">正式报告尚未生成</div>}
+			</section>
+
+			<section className="space-y-2 border-t pt-3">
+				<div className="text-xs font-medium text-muted-foreground">执行诊断摘要（非正式报告）</div>
+				{execution.report_ready && visibleReport
+					? <>
+						<Markdown>{visibleReport}</Markdown>
+						{reportTruncated && (
+							<div className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+								报告过大，右侧仅展示前 200,000 个字符；完整结构化结果仍保留在当前 Execution 中。
+							</div>
+						)}
+					</>
 					: <div className="text-xs text-muted-foreground">报告尚未生成</div>}
 			</section>
 		</div>
@@ -194,7 +320,14 @@ export function InterpretationPanel({ agentId, sessionId, task, loading }: Inter
 			</section>
 
 			{historical.isLoading && <div className="text-xs text-muted-foreground">正在读取历史版本…</div>}
-			{selected && <ExecutionBody execution={selected} />}
+			{selected && agentId && sessionId && (
+				<ExecutionBody
+					agentId={agentId}
+					sessionId={sessionId}
+					taskId={task.task_id}
+					execution={selected}
+				/>
+			)}
 		</div>
 	);
 }

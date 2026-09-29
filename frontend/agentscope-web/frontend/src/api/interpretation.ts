@@ -1,5 +1,5 @@
 import { client } from './client';
-import type { InterpretationExecutionView, InterpretationTaskView } from './types';
+import type { InterpretationExecutionView, InterpretationTaskView, LogPlotView } from './types';
 
 const taskPath = (agentId: string, sessionId: string, taskId: string) =>
 	`/cnlc/interpretation/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`;
@@ -23,6 +23,18 @@ export const interpretationApi = {
 		signal?: AbortSignal,
 	) => client.get<InterpretationExecutionView>(
 		`${taskPath(agentId, sessionId, taskId)}/executions/${encodeURIComponent(executionId)}`,
+		undefined,
+		{ silent: true, signal },
+	),
+	getStageLogPlot: (
+		agentId: string,
+		sessionId: string,
+		taskId: string,
+		executionId: string,
+		stage: 'RAW' | 'PREPROCESSED' | 'INTERPRETED',
+		signal?: AbortSignal,
+	) => client.get<LogPlotView>(
+		`${taskPath(agentId, sessionId, taskId)}/executions/${encodeURIComponent(executionId)}/log-plots/${stage}`,
 		undefined,
 		{ silent: true, signal },
 	),

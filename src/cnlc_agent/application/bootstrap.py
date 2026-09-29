@@ -16,10 +16,13 @@ from cnlc_agent.infrastructure.mock import (
     MockModelGateway,
     MockWellRepository,
 )
+from cnlc_agent.infrastructure.company_api import CompanyApiClient, CompanyApiSettings
+from cnlc_agent.infrastructure.gdsx_artifacts import GdsxArtifactStore, InputArtifactResolver
 from cnlc_agent.infrastructure.model_gateway import OpenAICompatibleModelGateway
 from cnlc_agent.infrastructure.telemetry import LoggingTelemetry
 from cnlc_agent.reports.assembler import ReportAssembler
-from cnlc_agent.tools.company_batches import build_company_mock_tools
+from cnlc_agent.tools.company_batches import build_company_mock_tools, build_company_tools
+from cnlc_agent.tools.company_real import RealCompanyBatchProvider
 from cnlc_agent.tools.contracts import Tool, ToolCaller
 from cnlc_agent.tools.mock import GetWellDataTool, MockResultTool
 from cnlc_agent.workflows.interpretation_workflow import InterpretationWorkflow
@@ -38,8 +41,16 @@ def build_application(
     repository = MockWellRepository(settings.mock_data_dir)
     telemetry = LoggingTelemetry()
     active_tasks = task_repository if task_repository is not None else InMemoryTaskRepository()
-    caller = ToolCaller(telemetry, settings.tool_timeout_seconds, active_tasks)
+    company_settings = (
+        CompanyApiSettings() if settings.professional_provider == "company_real" else None
+    )
+    effective_tool_timeout = max(
+        settings.tool_timeout_seconds,
+        company_settings.timeout_seconds if company_settings is not None else 0,
+    )
+    caller = ToolCaller(telemetry, effective_tool_timeout, active_tasks)
     tools: dict[str, Tool] = {"get_well_data": GetWellDataTool(repository)}
+    close_callbacks: list[Callable[[], Awaitable[None]]] = []
     prediction = MockPredictionProvider()
     for name, key in {
         "check_curve_quality": "qc",
@@ -51,7 +62,15 @@ def build_application(
         tools[name] = MockResultTool(name, key, repository, prediction)
     if settings.professional_provider == "company_mock":
         tools = dict(build_company_mock_tools(repository, caller))
-    close_callbacks: list[Callable[[], Awaitable[None]]] = []
+    elif settings.professional_provider == "company_real":
+        assert company_settings is not None
+        company_client = CompanyApiClient(company_settings)
+        provider = RealCompanyBatchProvider(
+            company_client, company_settings, settings.output_dir,
+            InputArtifactResolver(active_tasks, GdsxArtifactStore(settings.output_dir)),
+        )
+        tools = dict(build_company_tools(provider, caller))
+        close_callbacks.append(provider.close)
     gateway: ModelGateway
     if settings.model_provider == "mock":
         gateway = MockModelGateway(repository)
@@ -70,7 +89,7 @@ def build_application(
             interpretation,
             validation,
             demo_mode=settings.mode == "demo",
-            company_batches=settings.professional_provider == "company_mock",
+            company_batches=settings.professional_provider in {"company_mock", "company_real"},
         ),
         (
             state_store

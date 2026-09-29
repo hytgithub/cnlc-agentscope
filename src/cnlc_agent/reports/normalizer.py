@@ -526,9 +526,9 @@ def _uses_mock_results(state: InterpretationState) -> bool:
         state.interval_result,
         state.validation_result,
     )
-    return state.mode in {"mock", "demo"} or any(
-        stage is not None and stage.is_mock for stage in stages
-    )
+    # mode 只描述应用运行方式；真实 company provider 也可运行在 demo Web 外壳中。
+    # 报告是否为 Mock 必须由实际专业结果的来源决定，不能因 mode=demo 误标。
+    return any(stage is not None and stage.is_mock for stage in stages)
 
 
 def _stage_items(*stages: StageResult | None, field: str) -> tuple[str, ...]:

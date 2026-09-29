@@ -137,7 +137,8 @@
 			"setup": "The session could not be prepared — check the agent's model, tools and knowledge bases.",
 			"unknown": "The reply failed with an unknown error."
 		},
-		"copy": "Copy"
+		"copy": "Copy",
+		"largeReportTruncated": "This report is too large for the chat view. Only the first 200,000 characters are shown; the complete structured result remains in the task execution."
 	},
 	"chat": {
 		"inputPlaceholder": "Type a message...",
@@ -145,6 +146,15 @@
 		"subagentConfirmTitle": "{{name}} requests confirmation",
 		"newSession": "New Session",
 		"greeting": "Where should we start?",
+		"executionStatus": {
+			"loading": "Loading session",
+			"ready": "System ready",
+			"submitting": "Submitting task",
+			"running": "Task is running normally",
+			"interrupting": "Stopping task",
+			"success": "Latest task completed",
+			"failed": "Task failed"
+		},
 		"maxItersExceeded": {
 			"title": "Reached the iteration limit",
 			"description": "Send a new message to keep going, or continue the current task.",

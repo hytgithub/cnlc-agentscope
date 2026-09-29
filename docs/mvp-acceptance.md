@@ -498,7 +498,7 @@ MQ
 完整 CI/CD
 复杂前端
 性能容量优化
-正式 Word/PDF 报告
+Fixture 链路的正式 Word/PDF 报告（`company_real` 链路必须生成真实 DOCX）
 ```
 
 ## 26. V0.1 最终演示场景

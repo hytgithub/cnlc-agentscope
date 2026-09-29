@@ -5,6 +5,7 @@ import type { CredentialView, ModelCard } from '@/api';
 
 const BACKEND_MODEL_CREDENTIAL_ID = 'cnlc-backend-model';
 const BACKEND_MODEL_NAME = 'qwen-plus';
+const BACKEND_MODEL_TYPE = 'cnlc_mock_shell_model';
 
 export interface CredentialWithModels {
 	credential: CredentialView;
@@ -23,11 +24,18 @@ async function fetchGroups(): Promise<Record<string, CredentialWithModels[]>> {
 
 	await Promise.all(
 		credentials.map(async (credential) => {
-			const type = credential.data.type as string | undefined;
-			if (!type) return;
-			if (!result[type]) result[type] = [];
+			const credentialType = credential.data.type as string | undefined;
+			if (!credentialType) return;
+			// AgentScope 用凭据类型查询可用模型，但会话 chat_model_config.type
+			// 必须是 ChatModel 的注册类型。项目内置 Mock 凭据与模型使用不同类型，
+			// 不能像普通供应商一样直接复用 credential.data.type。
+			const configType =
+				credential.id === BACKEND_MODEL_CREDENTIAL_ID
+					? BACKEND_MODEL_TYPE
+					: credentialType;
+			if (!result[configType]) result[configType] = [];
 			try {
-				const { models } = await modelApi.list(type);
+				const { models } = await modelApi.list(credentialType);
 				// 普通凭据保留完整模型列表，项目内置凭据仅保留后端固定模型。
 				const visibleModels =
 					credential.id === BACKEND_MODEL_CREDENTIAL_ID
@@ -36,14 +44,14 @@ async function fetchGroups(): Promise<Record<string, CredentialWithModels[]>> {
 				// Reverse-alphabetical, which is how the providers' naming
 				// schemes rank themselves — gpt-5 before gpt-4, qwen3 before
 				// qwen2 — so the strongest models sit at the top of the picker.
-				result[type].push({
+				result[configType].push({
 					credential,
 					models: [...visibleModels].sort((a, b) =>
 						b.name.localeCompare(a.name, undefined, { numeric: true }),
 					),
 				});
 			} catch {
-				result[type].push({ credential, models: [] });
+				result[configType].push({ credential, models: [] });
 			}
 		}),
 	);

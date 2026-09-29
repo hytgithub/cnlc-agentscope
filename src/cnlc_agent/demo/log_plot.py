@@ -1,12 +1,15 @@
 """从执行快照提取多道测井图；不生成采样值，不将层段摘要扩展成连续曲线。"""
 
 from math import isfinite
+from typing import Literal
 
 from pydantic import Field, ValidationError
 
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.models import Contract, RawData, StageResult
 from cnlc_agent.domain.state import InterpretationState
+
+LogPlotStage = Literal["RAW", "PREPROCESSED", "INTERPRETED"]
 
 
 class PlotCurve(Contract):
@@ -45,9 +48,11 @@ class LogPlotView(Contract):
     warnings: list[str] = Field(default_factory=list)
 
 
-def build_log_plot(state: InterpretationState) -> LogPlotView | None:
-    """图由当前快照的原始曲线、专业逐点结果和层段生成，兼容没有图数据的旧任务。"""
-    raw = state.raw_data
+def build_log_plot(
+    state: InterpretationState, stage: LogPlotStage = "INTERPRETED"
+) -> LogPlotView | None:
+    """按大阶段投影真实曲线；每个阶段只读取当时已经形成的数据产物。"""
+    raw = state.processed_data if stage in {"PREPROCESSED", "INTERPRETED"} else state.raw_data
     if raw is None or state.well is None:
         return None
     view = LogPlotView(well_name=state.well.name)
@@ -70,7 +75,21 @@ def build_log_plot(state: InterpretationState) -> LogPlotView | None:
                 )
             )
 
-    append_curves(raw, "input:raw_data", True, "raw")
+    batch_source = state.well.extensions.get("company_batch_source", {})
+    raw_is_mock = (
+        bool(batch_source.get("is_mock", False))
+        if isinstance(batch_source, dict)
+        else state.mode == "mock"
+    )
+    source = (
+        "company:processed_data"
+        if stage != "RAW" and state.processed_data
+        else "input:raw_data"
+    )
+    append_curves(raw, source, raw_is_mock, "processed" if stage != "RAW" else "raw")
+    if stage != "INTERPRETED":
+        view.warnings.insert(0, "仅绘制已提供的真实采样点；连线只用于展示，不代表专业插值")
+        return view
     for result in (state.lithology_result, state.petrophysics_result, state.fluid_result):
         if result is None or result.status not in {StepStatus.SUCCESS, StepStatus.WARNING}:
             continue
@@ -137,5 +156,5 @@ def build_log_plot(state: InterpretationState) -> LogPlotView | None:
                         lithology=str(item.get("lithology") or "")[:64],
                     )
                 )
-    view.warnings.insert(0, "Mock 演示：只绘制已提供的采样点；连线仅作展示，不代表专业插值")
+    view.warnings.insert(0, "仅绘制已提供的真实采样点；连线只用于展示，不代表专业插值")
     return view

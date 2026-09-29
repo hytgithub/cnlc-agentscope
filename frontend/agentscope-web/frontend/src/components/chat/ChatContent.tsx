@@ -6,7 +6,14 @@ import {
 	type TextBlock,
 	type ToolCallBlock,
 } from '@agentscope-ai/agentscope/message';
-import { GitBranch, TriangleAlert } from 'lucide-react';
+import {
+	CircleCheck,
+	CircleDot,
+	CircleX,
+	GitBranch,
+	LoaderCircle,
+	TriangleAlert,
+} from 'lucide-react';
 import React, { useEffect, useMemo, useState } from 'react';
 
 import { Button } from '../ui/button';
@@ -74,6 +81,8 @@ interface ChatContentProps {
 	 * icon, tooltip, disabled state and click handler from one source.
 	 */
 	phase: ReplyPhase;
+	/** 当前会话请求或事件流错误；状态栏必须显式暴露，不能静默失败。 */
+	error?: Error | null;
 	disabled: boolean;
 	onSend: (content: ContentBlock[]) => void;
 	onUserConfirm: (
@@ -116,6 +125,7 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 	msgs,
 	loading = false,
 	phase,
+	error = null,
 	disabled,
 	onSend,
 	onUserConfirm,
@@ -142,6 +152,45 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 	// Treating "no messages yet" as empty would flash the greeting over
 	// every session that does have history.
 	const isEmpty = !loading && visibleMsgs.length === 0;
+	const lastAssistantMessage = useMemo(
+		() => [...visibleMsgs].reverse().find((message) => message.role === 'assistant'),
+		[visibleMsgs],
+	);
+	const executionStatus = useMemo(() => {
+		if (loading) return { state: 'loading', label: t('chat.executionStatus.loading') };
+		if (phase === 'submitting') {
+			return { state: 'submitting', label: t('chat.executionStatus.submitting') };
+		}
+		if (phase === 'streaming') {
+			return { state: 'running', label: t('chat.executionStatus.running') };
+		}
+		if (phase === 'interrupting') {
+			return { state: 'interrupting', label: t('chat.executionStatus.interrupting') };
+		}
+		if (error || lastAssistantMessage?.finished_reason === ReplyFinishedReason.ERROR) {
+			return {
+				state: 'failed',
+				label: t('chat.executionStatus.failed'),
+				detail: error?.message ?? lastAssistantMessage?.error?.message,
+			};
+		}
+		if (lastAssistantMessage?.finished_at) {
+			return { state: 'success', label: t('chat.executionStatus.success') };
+		}
+		return { state: 'ready', label: t('chat.executionStatus.ready') };
+	}, [error, lastAssistantMessage, loading, phase, t]);
+	const statusIcon =
+		executionStatus.state === 'failed' ? (
+			<CircleX className="size-4 text-destructive" />
+		) : executionStatus.state === 'success' ? (
+			<CircleCheck className="size-4 text-emerald-600" />
+		) : ['loading', 'submitting', 'running', 'interrupting'].includes(
+				executionStatus.state,
+		  ) ? (
+			<LoaderCircle className="size-4 animate-spin text-blue-600" />
+		) : (
+			<CircleDot className="size-4 text-emerald-600" />
+		);
 
 	// A spinner that appears and vanishes inside a couple of frames reads
 	// as a flicker, not as feedback — so hold it back until the load has
@@ -266,6 +315,21 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 
 			{loading ? null : (
 				<div className="relative min-w-full max-w-full w-full">
+					<div
+						role="status"
+						aria-live="polite"
+						data-execution-state={executionStatus.state}
+						className="mb-2 flex min-h-9 items-center gap-2 rounded-xl border bg-background px-3 py-2 text-sm shadow-sm"
+						title={executionStatus.detail}
+					>
+						{statusIcon}
+						<span className="font-medium">{executionStatus.label}</span>
+						{executionStatus.detail && (
+							<span className="min-w-0 truncate text-xs text-muted-foreground">
+								{executionStatus.detail}
+							</span>
+						)}
+					</div>
 					<FlipCard
 						visible={toConfirmedToolCalls.length > 0 || footerSlot !== null}
 						className="absolute bottom-full left-0 right-0 mb-2 z-50"

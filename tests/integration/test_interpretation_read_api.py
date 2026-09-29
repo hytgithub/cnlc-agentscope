@@ -62,6 +62,17 @@ async def test_read_api_queued_detail_and_session_isolation(tmp_path, data_dir, 
         assert detail.status_code == 200
         assert detail.json()["execution_id"] == execution.execution_id
 
+        trace = await client.get(
+            f"{path}/executions/{execution.execution_id}/trace",
+            headers={"X-User-ID": "owner"},
+        )
+        assert trace.status_code == 200
+        trace_body = trace.json()
+        assert trace_body["execution_id"] == execution.execution_id
+        assert trace_body["business_trace_id"]
+        assert trace_body["nodes"][0]["kind"] == "EXECUTION"
+        assert len([item for item in trace_body["nodes"] if item["kind"] == "STEP"]) == 10
+
         for denied_path, headers in [
             (path.replace("session-a", "session-b"), {"X-User-ID": "owner"}),
             (path, {"X-User-ID": "other"}),

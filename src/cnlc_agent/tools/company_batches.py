@@ -1,4 +1,4 @@
-"""四大步骤的公司能力边界：当前返回既有 Fixture，细分步骤只消费批量结果。"""
+"""四大步骤的公司能力边界；细分步骤只消费所属批次的结构化结果。"""
 
 import asyncio
 import hashlib
@@ -18,11 +18,15 @@ from cnlc_agent.tools.mock import MockResultTool
 class CompanyBatchProvider(Protocol):
     """将来公司 API 拆分时只替换批量提供者内部实现，保留规范化结果键。"""
 
+    is_mock: bool
+
     async def execute(self, stage: str, request: ToolInput) -> JsonObject: ...
 
 
 class MockCompanyBatchProvider:
     """直接返回本项目现有 Mock 资料，不发网络请求、不伪造真实服务响应协议。"""
+
+    is_mock = True
 
     def __init__(self, repository: FixtureRepository) -> None:
         self.repository = repository
@@ -73,13 +77,16 @@ class MockCompanyBatchProvider:
 class _BatchTool:
     """一个实际的 Mock 大步骤调用，独立记录来源和共享调用 ID。"""
 
-    execution_mode = ToolExecutionMode.MOCK
-
     def __init__(self, stage: str, provider: CompanyBatchProvider) -> None:
         self.stage = stage
         self.provider = provider
         self.name = f"company_{stage}"
-        self.source = f"mock:company:{stage}"
+        self.is_mock = provider.is_mock
+        self.execution_mode = (
+            ToolExecutionMode.MOCK if self.is_mock else ToolExecutionMode.REAL
+        )
+        prefix = "mock" if self.is_mock else "real"
+        self.source = f"{prefix}:company:{stage}"
 
     async def execute(self, request: ToolInput) -> ToolOutput:
         data = await self.provider.execute(self.stage, request)
@@ -88,7 +95,7 @@ class _BatchTool:
             status=StepStatus.SUCCESS,
             data=data,
             metadata={
-                "is_mock": True,
+                "is_mock": self.is_mock,
                 "source": f"{self.source}:{call_id}",
                 "external_call_id": call_id,
                 "stage": self.stage,
@@ -132,10 +139,10 @@ class CompanyResultTool:
     """细分工具读取批量结果，审计标记 DERIVED，不冒充独立公司 API 调用。"""
 
     execution_mode = ToolExecutionMode.DERIVED
-    source = "mock:company:projection"
-
     def __init__(self, name: str, stage: str, key: str, batches: CompanyBatchResults) -> None:
         self.name, self.stage, self.key, self.batches = name, stage, key, batches
+        prefix = "mock" if batches.provider.is_mock else "real"
+        self.source = f"{prefix}:company:projection"
 
     async def execute(self, request: ToolInput) -> ToolOutput:
         batch = await self.batches.get(self.stage, request)
@@ -155,7 +162,7 @@ class CompanyResultTool:
                 data["well"] = {**well, "extensions": extensions}
         else:
             data["source"] = metadata["source"]
-            data["is_mock"] = True
+            data["is_mock"] = bool(metadata.get("is_mock", False))
             raw_result = data.get("result", {})
             if not isinstance(raw_result, dict):
                 raise ToolError("COMPANY_RESULT_INVALID", "细分结果必须为对象")
@@ -163,6 +170,10 @@ class CompanyResultTool:
             result["company_batch"] = metadata
             if self.key == "qc":
                 result["operations_applied"] = batch.data.get("operations_applied", False)
+                # 预处理后的逐点数据属于 W03 的真实阶段产物，必须进入 Workflow。
+                processed_data = batch.data.get("processed_data")
+                if isinstance(processed_data, dict):
+                    result["processed_data"] = processed_data
             data["result"] = result
         # 传输成功与子功能成功分开；由 Workflow 消费 StageResult 的业务状态。
         return ToolOutput(status=StepStatus.SUCCESS, data=data, metadata=metadata)
@@ -187,4 +198,28 @@ def build_company_mock_tools(
     }
     return {
         name: CompanyResultTool(name, stage, key, batches) for name, (stage, key) in mapping.items()
+    }
+
+
+def build_company_tools(
+    provider: CompanyBatchProvider, caller: ToolCaller
+) -> dict[str, CompanyResultTool]:
+    """将真实或 Mock 批次提供者装配到同一组 Workflow Tool。"""
+
+    batches = CompanyBatchResults(provider, caller)
+    mapping = {
+        "get_well_data": ("analysis", "well_data"),
+        "check_curve_quality": ("preprocessing", "qc"),
+        "identify_lithology": ("interpretation", "lithology"),
+        "evaluate_petrophysics": ("interpretation", "petrophysics"),
+        "calculate_sw": ("interpretation", "sw"),
+        "identify_fluid": ("interpretation", "fluid"),
+        "classify_layer": ("interpretation", "classification"),
+        "merge_intervals": ("interpretation", "intervals"),
+        "validate_interpretation": ("validation", "validation"),
+        "prepare_report": ("report", "final_check"),
+    }
+    return {
+        name: CompanyResultTool(name, stage, key, batches)
+        for name, (stage, key) in mapping.items()
     }

@@ -18,7 +18,7 @@ from cnlc_agent.domain.execution import (
     ExecutionStatus,
     execution_status_from_state,
 )
-from cnlc_agent.domain.inputs import InterpretationInputVersion
+from cnlc_agent.domain.inputs import GdsxArtifact, InterpretationInputVersion
 from cnlc_agent.domain.models import ErrorDetail, MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.state import InterpretationState, StateChange
@@ -107,6 +107,24 @@ class InterpretationTaskService:
                 start_step=StepId.W01,
                 source_execution_id=None,
                 planning_reason="INITIAL",
+                expected_current_execution_id=None,
+            )
+
+    async def prepare_initial_with_gdsx(
+        self, request: TaskRequest, artifact: GdsxArtifact, content_sha256: str
+    ) -> Execution:
+        """为已受控保存的 GDSX 创建任务与输入版本，不从附件伪造曲线数据。"""
+
+        state = InterpretationState(task=request, mode=self.mode)
+        with self.telemetry.span("task.create", {"task_id": request.task_id, "trace_id": state.trace_id}):
+            await self.repository.create_task(state)
+            version = await self.repository.create_gdsx_input_version(
+                request.task_id, artifact, content_sha256
+            )
+            state.input_version_id = version.input_version_id
+            return await self.repository.create_execution(
+                state, "INITIAL", input_version_id=version.input_version_id,
+                start_step=StepId.W01, source_execution_id=None, planning_reason="INITIAL",
                 expected_current_execution_id=None,
             )
 

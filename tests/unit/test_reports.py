@@ -3,6 +3,7 @@ import math
 from cnlc_agent.application.bootstrap import build_application
 from cnlc_agent.config.settings import AppSettings
 from cnlc_agent.domain.models import TaskRequest
+from cnlc_agent.reports.assembler import MAX_DIAGNOSTIC_LIST_ITEMS, _rows
 from cnlc_agent.reports.formatter import MISSING, measurement, number, text
 from cnlc_agent.reports.generator import ReportGenerator
 from cnlc_agent.reports.models import Measurement, ReportStyle
@@ -128,3 +129,14 @@ async def test_zero_survives_state_normalization_and_final_rendering(data_dir):
         report = generator.render(normalized, style)
         assert "0.00" in report
         assert "0.00%" in report
+
+
+def test_diagnostic_rows_bound_large_sample_lists():
+    """诊断报告只预览逐点数据，避免生成会冻结 Web 的巨型 Markdown。"""
+
+    values = list(range(MAX_DIAGNOSTIC_LIST_ITEMS + 25))
+    rows = _rows(values, "classification_samples")
+
+    assert len(rows) == MAX_DIAGNOSTIC_LIST_ITEMS + 1
+    assert f"共 {len(values)} 条" in rows[-1]
+    assert f"前 {MAX_DIAGNOSTIC_LIST_ITEMS} 条" in rows[-1]

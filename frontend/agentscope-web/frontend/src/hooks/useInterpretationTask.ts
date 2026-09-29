@@ -112,3 +112,26 @@ export function useInterpretationExecution(
 		retry: false,
 	});
 }
+
+/** 阶段曲线只在阶段完成或用户切换阶段时读取一次；查询结果永久缓存，不参与状态轮询。 */
+export function useInterpretationStageLogPlot(
+	agentId: string | null,
+	sessionId: string | null,
+	taskId: string | null,
+	executionId: string | null,
+	stage: 'RAW' | 'PREPROCESSED' | 'INTERPRETED' | null,
+	enabled: boolean,
+) {
+	return useQuery({
+		queryKey: ['interpretation-stage-log-plot', agentId, sessionId, taskId, executionId, stage],
+		enabled: Boolean(enabled && agentId && sessionId && taskId && executionId && stage),
+		queryFn: ({ signal }) => interpretationApi.getStageLogPlot(
+			agentId!, sessionId!, taskId!, executionId!, stage!, signal,
+		),
+		staleTime: Infinity,
+		gcTime: Infinity,
+		retry: false,
+		refetchOnWindowFocus: false,
+		refetchOnReconnect: false,
+	});
+}

@@ -7,15 +7,29 @@ import json
 
 from agentscope.message import Base64Source, DataBlock, Msg, TextBlock
 from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict
 
 from cnlc_agent.demo.upload_adapters import adapt_synthetic_context
 from cnlc_agent.domain.models import MockFixture
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+MAX_GDSX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 class UploadError(ValueError):
     """可安全展示给用户的附件错误，不携带解析器堆栈或原始内容。"""
+
+
+class UploadedGdsx(BaseModel):
+    """当前回合的原始 GDSX；落盘前不携带客户端文件路径。"""
+
+    model_config = ConfigDict(extra="forbid")
+    content: bytes
+    filename: str = "uploaded.gdsx"
+
+    @property
+    def well_id(self) -> str:
+        return f"UPLOAD_GDSX_{hashlib.sha256(self.content).hexdigest()[:24].upper()}"
 
 
 def has_attachment(messages: list[Msg]) -> bool:
@@ -84,3 +98,38 @@ def parse_upload(messages: list[Msg]) -> tuple[MockFixture, str]:
     if not fixture.raw_data.depths or not fixture.raw_data.curves:
         raise UploadError("井资料中没有深度采样或测井曲线，请检查上传文件。")
     return fixture, "\n".join(instructions).strip() or "执行上传井资料的测井解释演示"
+
+
+def parse_uploaded_input(messages: list[Msg]) -> tuple[MockFixture | UploadedGdsx, str]:
+    """优先按既有 JSON 解析；非 JSON 二进制附件作为 GDSX 交给真实 W01 校验。"""
+
+    try:
+        return parse_upload(messages)
+    except UploadError as fixture_error:
+        attachments: list[bytes] = []
+        instructions: list[str] = []
+        for message in messages:
+            if message.role != "user":
+                continue
+            for block in message.content:
+                if isinstance(block, DataBlock) and isinstance(block.source, Base64Source):
+                    try:
+                        attachments.append(base64.b64decode(block.source.data, validate=True))
+                    except (ValueError, binascii.Error):
+                        raise fixture_error from None
+                elif isinstance(block, TextBlock) and not block.text.startswith("[File: "):
+                    instructions.append(block.text)
+        if len(attachments) != 1:
+            raise fixture_error
+        content = attachments[0]
+        # JSON 格式错误仍按 JSON 提示；仅二进制资料进入 GDSX 链路。
+        if content.lstrip().startswith((b"{", b"[")):
+            raise fixture_error
+        # GDSX 基于 HDF5；不能把任意文本或未知二进制误当作井资料执行。
+        if not content.startswith(b"\x89HDF\r\n\x1a\n"):
+            raise fixture_error
+        if len(content) > MAX_GDSX_UPLOAD_BYTES:
+            raise UploadError("GDSX 文件不能超过 200 MiB。")
+        if not content:
+            raise UploadError("上传的 GDSX 文件为空。")
+        return UploadedGdsx(content=content), "\n".join(instructions).strip() or "执行上传 GDSX 的测井解释"

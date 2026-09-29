@@ -21,6 +21,7 @@ from cnlc_agent.domain.execution import (
     PlanningReason,
 )
 from cnlc_agent.domain.inputs import (
+    GdsxArtifact,
     InputSource,
     InterpretationInputVersion,
     fixture_digest,
@@ -228,7 +229,8 @@ def _as_input_version(row: InputVersionRow) -> InterpretationInputVersion:
         sequence=row.sequence,
         source_type=row.source_type,  # type: ignore[arg-type]
         content_sha256=row.content_sha256,
-        payload=MockFixture.model_validate(row.payload),
+        payload=(MockFixture.model_validate(row.payload) if row.source_type != "GDSX" else None),
+        gdsx_artifact=(GdsxArtifact.model_validate(row.payload) if row.source_type == "GDSX" else None),
         created_at=row.created_at,
     )
 
@@ -517,6 +519,39 @@ class PostgreSQLTaskRepository:
             raise InfrastructureError(
                 "INPUT_VERSION_CONFLICT", "输入版本标识或序号已存在"
             ) from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库输入版本创建失败") from None
+
+    async def create_gdsx_input_version(
+        self, task_id: str, artifact: GdsxArtifact, content_sha256: str
+    ) -> InterpretationInputVersion:
+        """保存 GDSX 的受控引用，原始二进制不进入 PostgreSQL JSON 列。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                task = await session.scalar(
+                    select(TaskRow).where(TaskRow.task_id == task_id).with_for_update()
+                )
+                if task is None:
+                    raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
+                last_sequence = await session.scalar(
+                    select(func.max(InputVersionRow.sequence)).where(InputVersionRow.task_id == task_id)
+                )
+                version = InterpretationInputVersion(
+                    task_id=task_id, well_id=task.well_id, sequence=(last_sequence or 0) + 1,
+                    source_type="GDSX", content_sha256=content_sha256, gdsx_artifact=artifact,
+                )
+                session.add(InputVersionRow(
+                    input_version_id=version.input_version_id, task_id=task_id, well_id=task.well_id,
+                    sequence=version.sequence, source_type=version.source_type,
+                    content_sha256=version.content_sha256,
+                    payload=artifact.model_dump(mode="json"), created_at=version.created_at,
+                ))
+                task.current_input_version_id = version.input_version_id
+                task.updated_at = utc_now()
+            return version.model_copy(deep=True)
+        except IntegrityError:
+            raise InfrastructureError("INPUT_VERSION_CONFLICT", "输入版本标识或序号已存在") from None
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库输入版本创建失败") from None
 

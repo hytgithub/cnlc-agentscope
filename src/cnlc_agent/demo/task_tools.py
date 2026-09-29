@@ -54,6 +54,8 @@ from cnlc_agent.demo.task_context import SessionTaskResolver, TaskReference
 from cnlc_agent.domain.errors import ApplicationError, InfrastructureError
 from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, ExecutionStatus
 from cnlc_agent.domain.inputs import InterpretationInputVersion
+from cnlc_agent.infrastructure.gdsx_artifacts import GdsxArtifactStore
+from cnlc_agent.demo.uploads import UploadedGdsx
 from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
@@ -380,6 +382,33 @@ class TaskCommandRunner:
             )
             return result
 
+    async def start_uploaded_gdsx(
+        self, uploaded: UploadedGdsx, instruction: str
+    ) -> TaskCommandResult:
+        """保存用户当前选择的 GDSX，并仅以输入版本引用启动后台执行。"""
+
+        self.clear_pending()
+        InteractionPolicy.decide(await self.interaction_snapshot(), "START")
+        self.clear_operation_clarification()
+        async with self._lock:
+            artifact, digest = await asyncio.to_thread(
+                GdsxArtifactStore(self.settings.output_dir).save, uploaded.content, uploaded.filename
+            )
+            with TemporaryDirectory(prefix="cnlc-submit-") as directory:
+                async with self.context(Path(directory)) as service:
+                    execution = await service.prepare_initial_with_gdsx(
+                        TaskRequest(well_id=uploaded.well_id, instruction=instruction), artifact, digest
+                    )
+                    if self.session_identity is not None:
+                        await service.repository.bind_task_to_session(
+                            SessionTaskBinding(**self.session_identity.model_dump(mode="python"), task_id=execution.task_id)
+                        )
+                    self._remember_task(execution.task_id)
+                    self.set_active_task(execution.task_id)
+                    result = await TaskCommands(service).project(execution.task_id, execution.execution_id, "START")
+            await self.dispatcher.submit(execution.execution_id, self._executor(execution.execution_id))
+            return result
+
     def _executor(self, execution_id: str) -> Callable[[str], Awaitable[None]]:
         """每个后台 Worker 自建服务与临时输入目录，避免跨请求复用连接。"""
 
@@ -445,6 +474,8 @@ class TaskCommandRunner:
         """仅从已校验的 InputVersion 物化数据；不使用上传文件名或旧临时路径。"""
 
         async def materialize(version: InterpretationInputVersion) -> None:
+            if version.source_type == "GDSX":
+                return
             await asyncio.to_thread(
                 (root / f"{version.well_id}.json").write_text,
                 version.payload.model_dump_json(),

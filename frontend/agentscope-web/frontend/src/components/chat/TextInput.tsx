@@ -277,7 +277,7 @@ export const TextInput = forwardRef<TextInputRef, TextInputProps>(
 			return {
 				icon: ArrowUp,
 				tooltip: t('textInput.send'),
-				disabled: disabled || !value.trim() || hasProcessing,
+				disabled: phase !== 'idle' || disabled || !value.trim() || hasProcessing,
 				onClick: handleSend,
 			};
 		})();

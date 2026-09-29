@@ -78,6 +78,9 @@ const fmt = (n: number) => Number(n.toPrecision(4)).toString();
 
 /** 依据参考图的紧凑道头、密网格和细线排版；导出仍保存独立 SVG。 */
 function LogSvg({ plot, height }: { plot: LogPlotView; height: number }) {
+	const isMock = plot.curves.some((curve) => curve.is_mock)
+		|| plot.intervals.some((interval) => interval.is_mock);
+	const sourceLabel = isMock ? 'Mock' : '真实数据';
 	const range = depthRange(plot);
 	if (!range)
 		return <div className="p-8 text-sm text-muted-foreground">暂无可绘制的深度数据</div>;
@@ -117,7 +120,7 @@ function LogSvg({ plot, height }: { plot: LogPlotView; height: number }) {
 				flexShrink: 0,
 			}}
 		>
-			<title>{plot.well_name} · 最终解释曲线 · Mock</title>
+			<title>{plot.well_name} · 最终解释曲线 · {sourceLabel}</title>
 			<rect width={width} height={height + HEADER + 22} fill="white" />
 			<rect
 				x={0.5}
@@ -138,7 +141,7 @@ function LogSvg({ plot, height }: { plot: LogPlotView; height: number }) {
 				({plot.depth_unit})
 			</text>
 			<text x={LEFT / 2} y={125} fontSize={8} textAnchor="middle" fill="#666">
-				Mock
+				{sourceLabel}
 			</text>
 			{ticks.map((d, i) => {
 				const isMajor = Math.abs(d / major - Math.round(d / major)) < 1e-5;
@@ -460,7 +463,7 @@ function LogSvg({ plot, height }: { plot: LogPlotView; height: number }) {
 				);
 			})}
 			<text x={4} y={HEADER + height + 14} fontSize={8} fill="#666">
-				{plot.well_name} · Mock ·
+				{plot.well_name} · {sourceLabel} ·
 				刻度按数据范围；缺值断线；对数轴不绘非正值；颜色不代表专业判别规则。
 			</text>
 		</svg>
@@ -475,6 +478,8 @@ export function WellLogPlot({
 	plot: LogPlotView | null | undefined;
 	executionId: string;
 }) {
+	const isMock = Boolean(plot?.curves.some((curve) => curve.is_mock)
+		|| plot?.intervals.some((interval) => interval.is_mock));
 	const [expanded, setExpanded] = useState(false);
 	const [height, setHeight] = useState(800);
 	const container = useRef<HTMLDivElement>(null);
@@ -542,7 +547,7 @@ export function WellLogPlot({
 				<DialogContent className="h-[95vh] w-[96vw] max-w-none sm:max-w-none flex flex-col">
 					<DialogTitle>最终解释曲线 · {plot.well_name}</DialogTitle>
 					<DialogDescription>
-						Mock 演示 · 按深度对齐 · 使用滚动条查看全部图道和井段
+						{isMock ? 'Mock 演示' : '真实数据'} · 按深度对齐 · 使用滚动条查看全部图道和井段
 					</DialogDescription>
 					<div className="min-h-0 flex-1 overflow-auto border bg-white">
 						<LogSvg plot={plot} height={height} />

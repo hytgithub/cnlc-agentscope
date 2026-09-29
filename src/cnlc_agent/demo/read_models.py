@@ -7,7 +7,7 @@ from pydantic import Field
 
 from cnlc_agent.application.planning import STAGE_STEPS, ExecutionStage, PlanAction
 from cnlc_agent.application.ports import TaskRepository
-from cnlc_agent.demo.log_plot import LogPlotView, build_log_plot
+from cnlc_agent.demo.log_plot import LogPlotStage, LogPlotView, build_log_plot
 from cnlc_agent.demo.presentation import present_steps
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.execution import (
@@ -93,6 +93,36 @@ class InterpretationExecutionView(InterpretationExecutionSummary):
     tool_runs: list[InterpretationToolRunView]
     report_markdown: str | None
     log_plot: LogPlotView | None = None
+    available_log_plot_stages: list[LogPlotStage] = Field(default_factory=list)
+    latest_log_plot_stage: LogPlotStage | None = None
+    official_report: dict[str, str | None] | None = None
+
+
+TraceNodeKind = Literal["EXECUTION", "AGENT", "WORKFLOW", "STEP", "TOOL", "REPORT"]
+
+
+class InterpretationTraceNodeView(Contract):
+    """Execution 链路中的一个安全 Trace 节点，不传递原始业务快照。"""
+
+    span_id: str
+    parent_span_id: str | None = None
+    kind: TraceNodeKind
+    name: str
+    status: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_ms: float | None = None
+    attributes: dict[str, object] = Field(default_factory=dict)
+    error_code: str | None = None
+
+
+class InterpretationTraceView(Contract):
+    """一次 Execution 当前可读取的业务 Trace Tree。"""
+
+    execution_id: str
+    business_trace_id: str
+    status: ExecutionStatus
+    nodes: list[InterpretationTraceNodeView]
 
 
 class InterpretationTaskView(Contract):
@@ -190,6 +220,45 @@ async def present_execution_view(
         if _report_ready(execution)
         else None
     )
+    available_log_plot_stages: list[LogPlotStage] = []
+    for stage, completed_step in (
+        ("RAW", StepId.W01),
+        ("PREPROCESSED", StepId.W03),
+        ("INTERPRETED", StepId.W08),
+    ):
+        if completed_step in execution.state_snapshot.completed_steps:
+            available_log_plot_stages.append(stage)
+    latest_log_plot_stage = next(
+        (
+            stage
+            for stage in ("INTERPRETED", "PREPROCESSED", "RAW")
+            if stage in available_log_plot_stages
+        ),
+        None,
+    )
+    official_report = None
+    final_result = execution.state_snapshot.final_check
+    if final_result is not None:
+        report = final_result.result.get("report_task")
+        if isinstance(report, dict):
+            def read_report_value(*keys: str) -> str | None:
+                sources = [report]
+                for container in ("data", "task_info"):
+                    nested = report.get(container)
+                    if isinstance(nested, dict):
+                        sources.append(nested)
+                for source in sources:
+                    for key in keys:
+                        value = source.get(key)
+                        if isinstance(value, str) and value.strip():
+                            return value.strip()
+                return None
+            official_report = {
+                "task_id": read_report_value("task_id", "taskId", "id"),
+                "status": read_report_value("status", "state") or "SUCCESS",
+                "file_name": read_report_value("file_name", "fileName", "filename"),
+                "file_url": read_report_value("file_url", "url", "response"),
+            }
     return InterpretationExecutionView(
         **present_execution_summary(execution).model_dump(mode="python"),
         current_step=execution.state_snapshot.current_step,
@@ -199,7 +268,170 @@ async def present_execution_view(
         steps=steps,
         tool_runs=tool_runs,
         report_markdown=report,
-        log_plot=build_log_plot(execution.state_snapshot),
+        # 曲线逐点数组通过独立接口按需读取，避免每秒状态轮询重复传输大数据。
+        log_plot=None,
+        available_log_plot_stages=available_log_plot_stages,
+        latest_log_plot_stage=latest_log_plot_stage,
+        official_report=official_report,
+    )
+
+
+def present_stage_log_plot(execution: Execution, stage: LogPlotStage) -> LogPlotView | None:
+    """按阶段读取一份曲线；未完成的阶段不暴露其他阶段数据作为替代。"""
+
+    required = {"RAW": StepId.W01, "PREPROCESSED": StepId.W03, "INTERPRETED": StepId.W08}
+    if required[stage] not in execution.state_snapshot.completed_steps:
+        return None
+    return build_log_plot(execution.state_snapshot, stage)
+
+
+def _duration_ms(started_at: datetime | None, finished_at: datetime | None) -> float | None:
+    """只在两个时间点均已确定时计算展示耗时。"""
+
+    if started_at is None or finished_at is None:
+        return None
+    return round((finished_at - started_at).total_seconds() * 1000, 3)
+
+
+async def present_execution_trace(
+    repository: TaskRepository, execution: Execution
+) -> InterpretationTraceView:
+    """由持久化 Execution、步骤与 ToolRun 组合当前链路，不调用模型或外部服务。"""
+
+    state = execution.state_snapshot
+    root_id = f"execution:{execution.execution_id}"
+    agent_id = f"agent:{execution.execution_id}:main"
+    workflow_id = f"workflow:{execution.execution_id}"
+    started_at = execution.started_at
+    finished_at = execution.finished_at
+    nodes = [
+        InterpretationTraceNodeView(
+            span_id=root_id,
+            kind="EXECUTION",
+            name="Execution",
+            status=execution.status.value,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=_duration_ms(started_at, finished_at),
+            attributes={
+                "task_id": execution.task_id,
+                "sequence": execution.sequence,
+                "trigger_type": execution.trigger_type,
+                "start_step": execution.start_step.value if execution.start_step else "REPORT",
+            },
+            error_code=execution.error_code,
+        )
+    ]
+    if execution.status != ExecutionStatus.QUEUED:
+        nodes.extend(
+            [
+                InterpretationTraceNodeView(
+                    span_id=agent_id,
+                    parent_span_id=root_id,
+                    kind="AGENT",
+                    name="MainAgent",
+                    status=state.status.value,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=_duration_ms(started_at, finished_at),
+                ),
+                InterpretationTraceNodeView(
+                    span_id=workflow_id,
+                    parent_span_id=agent_id,
+                    kind="WORKFLOW",
+                    name="InterpretationWorkflow",
+                    status=state.status.value,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=_duration_ms(started_at, finished_at),
+                ),
+            ]
+        )
+
+    records = {record.step_id: record for record in state.executions}
+    reused = {item.step_id: item for item in state.reused_steps}
+    for step_id in StepId:
+        record = records.get(step_id)
+        reused_step = reused.get(step_id)
+        if record is not None:
+            status = record.status.value
+            step_started_at = record.started_at
+            step_finished_at = record.ended_at
+            error_code = record.errors[-1].code if record.errors else None
+            attributes: dict[str, object] = {
+                "step_id": step_id.value,
+                "step_execution_id": record.step_execution_id,
+            }
+        elif reused_step is not None:
+            status = "REUSED"
+            step_started_at = None
+            step_finished_at = None
+            error_code = None
+            attributes = {
+                "step_id": step_id.value,
+                "source_execution_id": reused_step.source_execution_id,
+            }
+        else:
+            status = "PENDING"
+            step_started_at = None
+            step_finished_at = None
+            error_code = None
+            attributes = {"step_id": step_id.value}
+        nodes.append(
+            InterpretationTraceNodeView(
+                span_id=f"step:{execution.execution_id}:{step_id.value}",
+                parent_span_id=(
+                    workflow_id if execution.status != ExecutionStatus.QUEUED else root_id
+                ),
+                kind="STEP",
+                name=step_id.value,
+                status=status,
+                started_at=step_started_at,
+                finished_at=step_finished_at,
+                duration_ms=_duration_ms(step_started_at, step_finished_at),
+                attributes=attributes,
+                error_code=error_code,
+            )
+        )
+
+    for run in await repository.list_tool_runs(execution.execution_id):
+        nodes.append(
+            InterpretationTraceNodeView(
+                span_id=f"tool:{run.tool_run_id}",
+                parent_span_id=f"step:{execution.execution_id}:{run.step_id.value}",
+                kind="TOOL",
+                name=run.tool_code,
+                status=run.status.value,
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+                duration_ms=_duration_ms(run.started_at, run.finished_at),
+                attributes={
+                    "tool_run_id": run.tool_run_id,
+                    "execution_mode": run.execution_mode.value,
+                    "source": run.source,
+                },
+                error_code=run.error_code,
+            )
+        )
+
+    if execution.status in TERMINAL_EXECUTION_STATUSES or execution.start_step is None:
+        nodes.append(
+            InterpretationTraceNodeView(
+                span_id=f"report:{execution.execution_id}",
+                parent_span_id=root_id,
+                kind="REPORT",
+                name="Report",
+                status=execution.status.value,
+                started_at=finished_at,
+                finished_at=finished_at,
+                duration_ms=0.0 if finished_at is not None else None,
+            )
+        )
+    return InterpretationTraceView(
+        execution_id=execution.execution_id,
+        business_trace_id=state.trace_id,
+        status=execution.status,
+        nodes=nodes,
     )
 
 
