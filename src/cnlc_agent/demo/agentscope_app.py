@@ -28,11 +28,13 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from redis.asyncio.connection import SSLConnection
 
 from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispatcher
 from cnlc_agent.application.runtime import application_runtime
+from cnlc_agent.application.stage_orchestrator import StageProgress
+from cnlc_agent.application.stage_results import StageResultView
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.demo.demo_agent import (
     LoggingInterpretationDemoAgent,
@@ -48,8 +50,9 @@ from cnlc_agent.demo.read_models import (
 )
 from cnlc_agent.demo.task_tools import TaskCommandRunner
 from cnlc_agent.demo.uploads import GdsxUpload
-from cnlc_agent.domain.errors import InfrastructureError
+from cnlc_agent.domain.errors import ApplicationError, InfrastructureError
 from cnlc_agent.domain.session_binding import TaskSessionIdentity
+from cnlc_agent.domain.stages import InterpretationStage
 from cnlc_agent.infrastructure.conversation import DurableConversationStorage
 
 
@@ -75,6 +78,64 @@ class GdsxTaskCreateRequest(BaseModel):
 class GdsxTaskCreateResponse(BaseModel):
     task_id: str
     execution_id: str
+
+
+class StageProgressResponse(BaseModel):
+    """阶段进度 Web DTO；不暴露候选正文、曲线数组或本地路径。"""
+
+    task_id: str
+    well_id: str
+    well_name: str | None = None
+    execution_id: str
+    execution_sequence: int
+    run_mode: str
+    execution_status: str
+    current_stage: InterpretationStage | None = None
+    current_stage_run_id: str | None = None
+    stage_status: str | None = None
+    stage_validity: str | None = None
+    confirmed_stages: list[InterpretationStage]
+    waiting_confirmation_stage: InterpretationStage | None = None
+    next_stage: InterpretationStage | None = None
+    started_at: Any | None = None
+    updated_at: Any
+    summary: str = ""
+    warnings: list[str]
+    candidate_report_available: bool = False
+    stage_result: StageResultView | None = None
+
+    @classmethod
+    def from_progress(cls, progress: StageProgress) -> "StageProgressResponse":
+        """只把安全阶段投影转换为 HTTP 响应，丢弃完整候选 Markdown。"""
+
+        return cls(
+            task_id=progress.task_id,
+            well_id=progress.well_id,
+            well_name=progress.well_name,
+            execution_id=progress.execution_id,
+            execution_sequence=progress.execution_sequence,
+            run_mode=progress.run_mode.value,
+            execution_status=progress.execution_status.value,
+            current_stage=progress.current_stage,
+            current_stage_run_id=progress.current_stage_run_id,
+            stage_status=progress.stage_status.value if progress.stage_status else None,
+            stage_validity=progress.stage_validity.value if progress.stage_validity else None,
+            confirmed_stages=progress.confirmed_stages,
+            waiting_confirmation_stage=progress.waiting_confirmation_stage,
+            next_stage=progress.next_stage,
+            started_at=progress.started_at,
+            updated_at=progress.updated_at,
+            summary=progress.summary,
+            warnings=progress.warnings,
+            candidate_report_available=progress.candidate_report is not None,
+            stage_result=progress.stage_result,
+        )
+
+
+class StageConfirmRequest(BaseModel):
+    """确认请求只接收当前页面持有的 StageRun ID。"""
+
+    expected_stage_run_id: str = Field(min_length=1, max_length=128)
 
 
 class RejectDurableGdsxDataBlockMiddleware:
@@ -352,6 +413,8 @@ class AgentScopeServiceAdapter(LoggingInterpretationDemoAgent):
         # 前端仍使用固定 qwen-plus 标识，专业 Workflow 的模型边界保持不变。
         if AppSettings().model_provider == "mock":
             kwargs["model"] = MockTaskShellModel()
+        # 官方 AgentScope Web 上传走人工确认；CLI 与直接兼容 Tool 仍由父类默认连续执行。
+        kwargs["staged_upload_confirmation"] = True
         super().__init__(toolkit=Toolkit(tools=tools), **kwargs)
 
 
@@ -618,6 +681,64 @@ def create_demo_app(
                 if execution is None or execution.task_id != task_id:
                     raise HTTPException(status_code=404, detail="EXECUTION_NOT_FOUND")
                 return await present_execution_view(service.repository, execution)
+
+    @app.get(
+        "/cnlc/interpretation/agents/{agent_id}/sessions/{session_id}/tasks/{task_id}"
+        "/executions/{execution_id}/stage-progress",
+        response_model=StageProgressResponse,
+    )
+    async def get_stage_progress(
+        request: Request,
+        agent_id: str,
+        session_id: str,
+        task_id: str,
+        execution_id: str,
+    ) -> StageProgressResponse:
+        """返回当前 Execution 的阶段进度和有界阶段摘要。"""
+
+        runner = await owned_runner(request, agent_id, session_id, task_id)
+        try:
+            progress = await runner.get_stage_progress(task_id, execution_id)
+        except InfrastructureError as exc:
+            raise HTTPException(status_code=404, detail=exc.code) from None
+        return StageProgressResponse.from_progress(progress)
+
+    @app.post(
+        "/cnlc/interpretation/agents/{agent_id}/sessions/{session_id}/tasks/{task_id}"
+        "/executions/{execution_id}/stages/{stage}/confirm",
+        response_model=StageProgressResponse,
+    )
+    async def confirm_interpretation_stage(
+        request: Request,
+        agent_id: str,
+        session_id: str,
+        task_id: str,
+        execution_id: str,
+        stage: InterpretationStage,
+        payload: StageConfirmRequest,
+    ) -> StageProgressResponse:
+        """在 Session/Task ownership 下确认阶段，并重排队同一 Execution。"""
+
+        runner = await owned_runner(request, agent_id, session_id, task_id)
+        actor = request.headers.get("X-User-ID", "session-user")
+        try:
+            await runner.confirm_stage(
+                task_id,
+                execution_id,
+                stage,
+                payload.expected_stage_run_id,
+                actor=actor,
+            )
+            progress = await runner.get_stage_progress(task_id, execution_id)
+        except ApplicationError as exc:
+            status_code = 409 if exc.code in {
+                "STAGE_CONFIRMATION_CONFLICT",
+                "EXECUTION_NOT_CURRENT",
+                "EXECUTION_NOT_WAITING_CONFIRMATION",
+                "STAGE_NOT_WAITING_CONFIRM",
+            } else 400
+            raise HTTPException(status_code=status_code, detail=exc.code) from None
+        return StageProgressResponse.from_progress(progress)
 
     return app
 

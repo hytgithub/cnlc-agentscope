@@ -229,6 +229,7 @@ export interface SessionListResponse {
 export type InterpretationExecutionStatus =
 	| 'QUEUED'
 	| 'RUNNING'
+	| 'WAITING_CONFIRMATION'
 	| 'SUCCESS'
 	| 'WARNING'
 	| 'FAILED'
@@ -263,6 +264,54 @@ export interface InterpretationStageView {
 	stage: 'DATA_DECODE' | 'PREPROCESS' | 'INTERPRET' | 'REPORT';
 	name: string;
 	action: 'RUN' | 'REUSE';
+}
+
+export type InterpretationStageRuntime = 'PENDING' | 'RUNNING' | 'WAITING_CONFIRM' | 'CONFIRMED' | 'FAILED' | 'STALE';
+
+export interface StageResultView {
+	task_id: string;
+	well_id: string;
+	execution_id: string;
+	stage_run_id: string;
+	stage: InterpretationStageView['stage'];
+	status: InterpretationStageRuntime;
+	validity: 'CURRENT' | 'STALE';
+	headline: string;
+	summary: string;
+	metrics: Record<string, unknown>;
+	items: Record<string, unknown>[];
+	warnings: string[];
+	conflicts: string[];
+	missing_items: string[];
+	input_refs: Record<string, string>;
+	output_refs: Record<string, string>;
+	can_confirm: boolean;
+	confirmation_blockers: Array<{ code: string; message: string }>;
+	tool_runs: InterpretationToolRunView[];
+	updated_at: string;
+}
+
+export interface StageProgress {
+	task_id: string;
+	well_id: string;
+	well_name?: string | null;
+	execution_id: string;
+	execution_sequence: number;
+	run_mode: 'CONTINUOUS' | 'STAGED_CONFIRMATION';
+	execution_status: InterpretationExecutionStatus;
+	current_stage: InterpretationStageView['stage'] | null;
+	current_stage_run_id: string | null;
+	stage_status: InterpretationStageRuntime | null;
+	stage_validity: 'CURRENT' | 'STALE' | null;
+	confirmed_stages: InterpretationStageView['stage'][];
+	waiting_confirmation_stage: InterpretationStageView['stage'] | null;
+	next_stage: InterpretationStageView['stage'] | null;
+	started_at: string | null;
+	updated_at: string;
+	summary: string;
+	warnings: string[];
+	candidate_report_available: boolean;
+	stage_result: StageResultView | null;
 }
 
 export interface InterpretationStepView {
@@ -323,6 +372,7 @@ export interface LogPlotView {
 export interface InterpretationTaskView {
 	task_id: string;
 	well_id: string;
+	well_name?: string | null;
 	current_execution_id: string | null;
 	latest_successful_execution_id: string | null;
 	current_input_version_id: string | null;

@@ -1,7 +1,8 @@
 import type { Msg, ToolResultBlock } from '@agentscope-ai/agentscope/message';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { interpretationApi } from '@/api';
+import type { StageProgress } from '@/api/types';
 
 const TASK_TOOLS = new Set([
 	'run_well_interpretation',
@@ -90,9 +91,47 @@ export function useInterpretationTask(
 		queryFn: ({ signal }) => interpretationApi.getTaskView(agentId!, sessionId!, taskId!, signal),
 		refetchInterval: (query) => {
 			const status = query.state.data?.current_execution?.execution_status;
+			return status === 'QUEUED' || status === 'RUNNING' || status === 'WAITING_CONFIRMATION' ? 1_000 : false;
+		},
+		retry: false,
+	});
+}
+
+export function useStageProgress(
+	agentId: string | null,
+	sessionId: string | null,
+	taskId: string | null,
+	executionId: string | null,
+) {
+	return useQuery({
+		queryKey: ['interpretation-stage-progress', agentId, sessionId, taskId, executionId],
+		enabled: Boolean(agentId && sessionId && taskId && executionId),
+		queryFn: ({ signal }) => interpretationApi.getStageProgress(agentId!, sessionId!, taskId!, executionId!, signal),
+		refetchInterval: (query) => {
+			const status = query.state.data?.execution_status;
 			return status === 'QUEUED' || status === 'RUNNING' ? 1_000 : false;
 		},
 		retry: false,
+	});
+}
+
+export function useConfirmStage(
+	agentId: string | null,
+	sessionId: string | null,
+	taskId: string | null,
+	executionId: string | null,
+) {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: ({ stage, expectedStageRunId }: { stage: NonNullable<StageProgress['current_stage']>; expectedStageRunId: string }) =>
+			interpretationApi.confirmStage(agentId!, sessionId!, taskId!, executionId!, stage, expectedStageRunId),
+		onSuccess: async () => {
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: ['interpretation-stage-progress', agentId, sessionId, taskId, executionId] }),
+				queryClient.invalidateQueries({ queryKey: ['interpretation-task', agentId, sessionId, taskId] }),
+				queryClient.invalidateQueries({ queryKey: ['interpretation-execution', agentId, sessionId, taskId, executionId] }),
+			]);
+		},
 	});
 }
 

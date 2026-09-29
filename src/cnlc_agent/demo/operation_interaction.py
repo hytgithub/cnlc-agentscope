@@ -63,8 +63,19 @@ class SetActiveContextRequest(Contract):
     scope: PartialScope | None = None
 
 
+class ConfirmStageRequest(Contract):
+    """确认当前或指定井正在等待的阶段；阶段运行身份由服务端解析。"""
+
+    mode: Literal["CONFIRM_STAGE"]
+    task_reference: TaskReference = Field(default_factory=TaskReference)
+
+
 OperationRequest = Annotated[
-    PlanRequest | ClarificationReplyRequest | CancelRequest | SetActiveContextRequest,
+    PlanRequest
+    | ClarificationReplyRequest
+    | CancelRequest
+    | SetActiveContextRequest
+    | ConfirmStageRequest,
     Field(discriminator="mode"),
 ]
 
@@ -98,6 +109,9 @@ class OperationInteractionController:
             if isinstance(request, SetActiveContextRequest):
                 self.runner.clear_operation_clarification()
                 return await self._set_active(request)
+            if isinstance(request, ConfirmStageRequest):
+                self.runner.clear_operation_clarification()
+                return await self._confirm_stage(request)
             if isinstance(request, ClarificationReplyRequest):
                 pending = self.runner.apply_operation_clarification(request.patch)
                 source = pending.partial_plan
@@ -201,7 +215,23 @@ class OperationInteractionController:
                 # 同井历史 View 也必须清除，否则切回该井仍会被旧版本冲突挡住。
                 self.runner.clear_view_context()
         return OperationToolResult(
-            outcome="READ_ONLY", message=f"当前操作焦点已切换到 {task.well_id}，没有产生新的执行。"
+            outcome="READ_ONLY",
+            message=f"当前操作焦点已切换到 {task.well_name or task.well_id}，没有产生新的执行。",
+        )
+
+    async def _confirm_stage(self, request: ConfirmStageRequest) -> OperationToolResult:
+        """把按钮和自然语言确认收敛到同一 Runner 确认能力。"""
+
+        actor = self.runner.session_identity.user_id if self.runner.session_identity else "chat"
+        result = await self.runner.confirm_waiting_stage(
+            request.task_reference,
+            actor=actor,
+        )
+        return OperationToolResult(
+            outcome="SUCCESS",
+            message="阶段已确认，解释流程继续执行。",
+            task_results=[result],
+            created_execution_ids=[result.execution_id],
         )
 
     @staticmethod

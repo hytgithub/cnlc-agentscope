@@ -71,6 +71,8 @@ AgentScope ReAct 只理解用户意图，服务器解析、校验和执行。
 
 查看报告只更新 View，不切 Active。
 显式切井用 SET_ACTIVE_CONTEXT；
+用户说“确认”“可以，继续”或“继续下一步”时，使用 CONFIRM_STAGE；
+CONFIRM_STAGE 只提交 task_reference（默认 CURRENT），阶段运行 ID 由服务器解析；
 查看后隐式写冲突必须澄清。
 
 PLAN 接受 PartialOperationPlan。
@@ -472,6 +474,15 @@ class MockTaskShellModel(ChatModelBase):
             ref = {"kind": "PREVIOUS_TASK"}
         elif well:
             ref = {"kind": "WELL_ID", "value": well.group(1)}
+        if "不确认" not in instruction and any(
+            word in instruction for word in ("确认", "继续", "可以，继续", "没问题，继续")
+        ):
+            return tool, {
+                "request": {
+                    "mode": "CONFIRM_STAGE",
+                    "task_reference": ref or {"kind": "CURRENT"},
+                }
+            }
         if any(word in instruction for word in ("算了", "取消")):
             return tool, {"request": {"mode": "CANCEL"}}
         if ref and any(word in instruction for word in ("切到", "切回", "接下来处理")):
@@ -669,6 +680,7 @@ class LoggingInterpretationDemoAgent(Agent):
         react_config: ReActConfig | None = None,
         stream_step_delay_seconds: float | None = None,
         stream_report_chunk_delay_seconds: float | None = None,
+        staged_upload_confirmation: bool = False,
         **kwargs: object,
     ) -> None:
         # 忽略前端自定义名称和提示词，保证 Demo 始终使用项目约束的系统提示。
@@ -723,6 +735,7 @@ class LoggingInterpretationDemoAgent(Agent):
         streamer = ExecutionReplyStreamer(
             runner.wait_for_execution_completion,
             runner.get_execution_report,
+            get_stage_progress=runner.get_stage_progress,
             step_delay_seconds=step_delay,
             report_chunk_delay_seconds=report_delay,
         )
@@ -736,6 +749,7 @@ class LoggingInterpretationDemoAgent(Agent):
                 UploadInterpretationReply(
                     tool,
                     streamer=streamer,
+                    staged_confirmation=staged_upload_confirmation,
                 ),
                 ExecutionStreamingMiddleware(streamer),
                 *(middlewares or []),

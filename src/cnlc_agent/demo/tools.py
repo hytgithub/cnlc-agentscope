@@ -23,6 +23,7 @@ from cnlc_agent.demo.presentation import DemoStep, present_steps
 from cnlc_agent.demo.uploads import GdsxUpload
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import ApplicationError
+from cnlc_agent.domain.execution import ExecutionRunMode
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import MockFixture, TaskRequest
 from cnlc_agent.domain.override import InterpretationOverride
@@ -220,7 +221,12 @@ class RunWellInterpretationTool(ToolBase):
 
             runner = TaskCommandRunner()
         self._runner = runner
-        self.upload: tuple[MockFixture, str] | tuple[GdsxUpload, str] | None = None
+        self.upload: (
+            tuple[MockFixture, str]
+            | tuple[MockFixture, str, ExecutionRunMode]
+            | tuple[GdsxUpload, str]
+            | None
+        ) = None
 
     async def check_permissions(self, *_args: Any, **_kwargs: Any) -> PermissionDecision:
         """用户主动提交解释请求后，允许执行本地单井解释流程。"""
@@ -270,7 +276,7 @@ class RunWellInterpretationTool(ToolBase):
         result: DemoToolResult | TaskCommandResult
         if self.upload is not None:
             # upload 只在当前回复期间设置，井号必须与 Tool 参数一致。
-            uploaded, context = self.upload
+            uploaded, context = self.upload[:2]
             if isinstance(uploaded, GdsxUpload):
                 from cnlc_agent.demo.task_tools import TaskCommandRunner
 
@@ -282,7 +288,20 @@ class RunWellInterpretationTool(ToolBase):
             else:
                 if uploaded.well.well_id != well_id:
                     raise ValueError("上传井与任务井标识不一致")
-                result = await self._runner.start_uploaded(uploaded, context)
+                run_mode = (
+                    self.upload[2]
+                    if len(self.upload) == 3
+                    else ExecutionRunMode.CONTINUOUS
+                )
+                from cnlc_agent.demo.task_tools import TaskCommandRunner
+
+                if isinstance(self._runner, TaskCommandRunner):
+                    result = await self._runner.start_uploaded(
+                        uploaded, context, run_mode=run_mode
+                    )
+                else:
+                    # 旧注入 Runner 没有阶段编排能力，保持其原有连续入口。
+                    result = await self._runner.start_uploaded(uploaded, context)
             payload = result.model_dump(mode="json")
         else:
             result = await self._runner.run(well_id)
@@ -317,3 +336,12 @@ class RunWellInterpretationTool(ToolBase):
         if not isinstance(self._runner, TaskCommandRunner):
             raise ApplicationError("REPORT_READ_UNAVAILABLE", "当前执行器不支持报告读取")
         return await self._runner.get_execution_report(task_id, execution_id)
+
+    async def get_stage_progress(self, task_id: str, execution_id: str):
+        """为聊天阶段结果提供与 Web 查询相同的安全阶段投影。"""
+
+        from cnlc_agent.demo.task_tools import TaskCommandRunner
+
+        if not isinstance(self._runner, TaskCommandRunner):
+            raise ApplicationError("STAGE_PROGRESS_UNAVAILABLE", "当前执行器不支持阶段查询")
+        return await self._runner.get_stage_progress(task_id, execution_id)

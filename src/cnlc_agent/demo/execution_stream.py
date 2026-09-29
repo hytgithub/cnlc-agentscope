@@ -25,6 +25,7 @@ from agentscope.middleware import MiddlewareBase
 from agentscope.types import ReplyFinishedReason
 
 from cnlc_agent.application.commands import TaskCommandResult
+from cnlc_agent.application.stage_orchestrator import StageProgress
 from cnlc_agent.demo.progress import ExecutionProgressProjector
 from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.models import JsonObject
@@ -32,7 +33,7 @@ from cnlc_agent.infrastructure.telemetry import event_observer
 from cnlc_agent.workflows.interpretation_workflow import step_observability
 
 _REPORT_SECTION_PATTERN = re.compile(r"(?=^#{1,3} )", re.MULTILINE)
-_EXECUTION_COMMANDS = frozenset({"START", "MODIFY", "FULL_RERUN"})
+_EXECUTION_COMMANDS = frozenset({"START", "MODIFY", "FULL_RERUN", "CONFIRM"})
 _ACTIVE_STATUSES = frozenset({"QUEUED", "RUNNING"})
 _PARAMETER_LABELS = {
     "sampling_interval": "采样间隔",
@@ -85,6 +86,7 @@ class ExecutionReplyStreamer:
         self,
         wait_for_completion: Callable[[str, str], Awaitable[TaskCommandResult]],
         get_report: Callable[[str, str], Awaitable[TaskCommandResult]],
+        get_stage_progress: Callable[[str, str], Awaitable[StageProgress]] | None = None,
         *,
         step_delay_seconds: float = 1.0,
         report_chunk_delay_seconds: float = 0.12,
@@ -94,6 +96,7 @@ class ExecutionReplyStreamer:
             raise ValueError("流式展示间隔不能为负数")
         self._wait_for_completion = wait_for_completion
         self._get_report = get_report
+        self._get_stage_progress = get_stage_progress
         self.step_delay_seconds = step_delay_seconds
         self.report_chunk_delay_seconds = report_chunk_delay_seconds
         self._sleep = sleep
@@ -110,6 +113,46 @@ class ExecutionReplyStreamer:
     async def _pace_report_chunk(self) -> None:
         if self.report_chunk_delay_seconds > 0:
             await self._sleep(self.report_chunk_delay_seconds)
+
+    async def _waiting_confirmation_text(self, task_id: str, execution_id: str) -> str:
+        """从既有阶段结果投影生成聊天正文和可识别的确认动作。"""
+
+        if self._get_stage_progress is None:
+            return "当前阶段已完成，请确认并继续。"
+        progress = await self._get_stage_progress(task_id, execution_id)
+        result = progress.stage_result
+        stage_names = {
+            "DATA_DECODE": "数据解编",
+            "PREPROCESS": "数据预处理",
+            "INTERPRET": "智能处理",
+            "REPORT": "报告生成",
+        }
+        stage = stage_names.get(
+            progress.waiting_confirmation_stage.value
+            if progress.waiting_confirmation_stage is not None
+            else "",
+            "当前阶段",
+        )
+        lines = [f"\n### {stage}阶段结果", f"井名：{progress.well_name or progress.well_id}"]
+        if result is not None:
+            lines.extend([f"**{result.headline}**", result.summary])
+            if result.metrics:
+                lines.append(
+                    "指标："
+                    + "；".join(f"{key}={value}" for key, value in result.metrics.items())
+                )
+            if result.items:
+                lines.append("结果明细：" + "；".join(str(item) for item in result.items[:6]))
+            if result.warnings:
+                lines.append("告警：" + "；".join(result.warnings))
+            if result.conflicts:
+                lines.append("冲突：" + "；".join(result.conflicts))
+            if result.missing_items:
+                lines.append("缺失：" + "；".join(result.missing_items))
+        action = "确认并生成报告" if stage == "报告生成" else "确认并继续"
+        lines.append(f"\n[{action}]")
+        lines.append(f"<!-- cnlc-stage-confirm:{'REPORT' if stage == '报告生成' else 'STAGE'} -->")
+        return "\n".join(lines)
 
     @staticmethod
     def _intro(payload: dict[str, Any]) -> str:
@@ -230,7 +273,7 @@ class ExecutionReplyStreamer:
                         raise
                     except Exception:
                         completion_error = True
-                    final_text = "解释报告暂不可用，请在右侧任务面板查看当前执行状态。"
+                    final_text = "解释报告暂不可用，请查看聊天中的当前执行状态。"
                 elif status == "BLOCKED":
                     yield ThinkingBlockDeltaEvent(
                         reply_id=reply_id,
@@ -238,6 +281,19 @@ class ExecutionReplyStreamer:
                         delta="\n解释流程已停止：缺少后续处理所需资料\n",
                     )
                     final_text = "解释流程已停止：缺少后续处理所需资料。"
+                elif status == "WAITING_CONFIRMATION":
+                    yield ThinkingBlockDeltaEvent(
+                        reply_id=reply_id,
+                        block_id=block_id,
+                        delta="\n⏸ 当前阶段已完成，结果已发送到聊天中，等待确认继续\n",
+                    )
+                    try:
+                        final_text = await self._waiting_confirmation_text(task_id, execution_id)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        completion_error = True
+                        final_text = "当前阶段已完成，请确认并继续。"
                 elif status == "REVIEW_REQUIRED":
                     yield ThinkingBlockDeltaEvent(
                         reply_id=reply_id,

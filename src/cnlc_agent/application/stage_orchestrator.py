@@ -41,6 +41,7 @@ class StageProgress(Contract):
 
     task_id: str
     well_id: str
+    well_name: str | None = None
     execution_id: str
     execution_sequence: int
     run_mode: ExecutionRunMode
@@ -91,7 +92,13 @@ class StageOrchestrator:
                 return stage
             if run.status == StageRunStatus.CONFIRMED and run.validity == StageValidity.CURRENT:
                 continue
-            if run.status == StageRunStatus.WAITING_CONFIRM:
+            if run.status in {
+                StageRunStatus.WAITING_CONFIRM,
+                StageRunStatus.PENDING,
+                StageRunStatus.RUNNING,
+                StageRunStatus.FAILED,
+            }:
+                # 阶段仍在执行或已失败时，进度读取保持成功且不虚报下一阶段。
                 return None
             raise WorkflowError("STAGE_DEPENDENCY_UNAVAILABLE", "当前阶段记录不能继续推进")
         return None
@@ -122,6 +129,11 @@ class StageOrchestrator:
         return StageProgress(
             task_id=task_id,
             well_id=task.well_id,
+            well_name=(
+                execution.state_snapshot.well.name
+                if execution.state_snapshot.well is not None
+                else task.well_id
+            ),
             execution_id=execution_id,
             execution_sequence=execution.sequence,
             run_mode=execution.run_mode,

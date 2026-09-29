@@ -33,6 +33,7 @@ class SessionTaskSummary(Contract):
 
     task_id: str
     well_id: str
+    well_name: str | None = None
     created_at: datetime
     current_execution_id: str | None = None
     latest_successful_execution_id: str | None = None
@@ -54,10 +55,20 @@ class SessionTaskResolver:
             task = await self.repository.get_task(task_id)
             if task is None:
                 continue
+            execution = (
+                await self.repository.get_execution(task.current_execution_id)
+                if task.current_execution_id
+                else None
+            )
             summaries.append(
                 SessionTaskSummary(
                     task_id=task.task_id,
                     well_id=task.well_id,
+                    well_name=(
+                        execution.state_snapshot.well.name
+                        if execution is not None and execution.state_snapshot.well is not None
+                        else task.well_id
+                    ),
                     created_at=task.created_at,
                     current_execution_id=task.current_execution_id,
                     latest_successful_execution_id=task.latest_successful_execution_id,
@@ -87,7 +98,11 @@ class SessionTaskResolver:
                 )
             return items[index - 1]
         if reference.kind == "WELL_ID":
-            matches = [item for item in items if item.well_id == reference.value]
+            matches = [
+                item
+                for item in items
+                if reference.value in {item.well_id, item.well_name}
+            ]
             if not matches:
                 raise ApplicationError(
                     "SESSION_WELL_NOT_FOUND",

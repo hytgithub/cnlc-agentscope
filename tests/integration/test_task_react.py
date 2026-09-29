@@ -347,6 +347,15 @@ def test_mock_status_query_variants(instruction):
     assert args["request"]["plan"]["operations"][0]["action"] == "STATUS"
 
 
+@pytest.mark.parametrize("instruction", ["确认并继续", "可以，继续", "继续下一步", "确认"])
+def test_mock_stage_confirmation_variants(instruction):
+    """按钮提交的固定文案和自然语言继续均进入同一结构化确认请求。"""
+
+    name, args = MockTaskShellModel._command(instruction)
+    assert name == "interpret_interpretation_operation"
+    assert args["request"] == {"mode": "CONFIRM_STAGE", "task_reference": {"kind": "CURRENT"}}
+
+
 async def test_modify_disconnect_does_not_cancel_shared_execution(data_dir, monkeypatch):
     runner = TaskCommandRunner(
         AppSettings(mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None),

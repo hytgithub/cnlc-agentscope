@@ -9,6 +9,7 @@ interface TaskToolResult {
 	command?: string;
 	task_id?: string;
 	well_id?: string;
+	well_name?: string | null;
 	execution_sequence?: number;
 	execution_status?: string;
 	current_step?: string | null;
@@ -43,7 +44,8 @@ function resultPayload(pair: ToolCallWithResult): TaskToolResult | null {
 function renderHeader(pair: ToolCallWithResult): ReactNode {
 	const input = parseInput(pair.call.input) as Record<string, unknown>;
 	const payload = resultPayload(pair);
-	const argument = payload?.well_id
+	const argument = payload?.well_name
+		?? payload?.well_id
 		?? (typeof input.well_id === 'string' ? input.well_id : payload?.task_id)
 		?? '任务';
 	return (

@@ -38,6 +38,7 @@ class ResolvedTaskReference(Contract):
 
     task_id: str
     well_id: str
+    well_name: str | None = None
     current_execution_id: str | None
     latest_successful_execution_id: str | None
     resolution_source: TaskResolutionSource
@@ -120,6 +121,7 @@ class OperationReferenceResolver:
         return ResolvedTaskReference(
             task_id=task.task_id,
             well_id=task.well_id,
+            well_name=selected.well_name or task.well_id,
             current_execution_id=task.current_execution_id,
             latest_successful_execution_id=task.latest_successful_execution_id,
             resolution_source=source,

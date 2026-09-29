@@ -214,6 +214,7 @@ const ChatContentComponent: React.FC<ChatContentProps> = ({
 											<ASMessageBubble
 												message={message}
 												onUserConfirm={onUserConfirm}
+												onSend={onSend}
 											/>
 										</MessageScrollerItem>
 									);

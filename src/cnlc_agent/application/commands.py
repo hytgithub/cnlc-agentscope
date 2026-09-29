@@ -46,9 +46,10 @@ class GetReportCommand(GetStatusCommand):
 class TaskCommandResult(Contract):
     """面向交互层的事实投影，不包含完整 State、曲线或 ToolRun 快照。"""
 
-    command: Literal["START", "MODIFY", "FULL_RERUN", "STATUS", "GET_REPORT"]
+    command: Literal["START", "MODIFY", "FULL_RERUN", "STATUS", "GET_REPORT", "CONFIRM"]
     task_id: str
     well_id: str
+    well_name: str | None = None
     execution_id: str
     current_execution_id: str | None
     execution_sequence: int
@@ -191,7 +192,9 @@ class TaskCommands:
         self,
         task_id: str,
         execution_id: str,
-        command: Literal["START", "MODIFY", "FULL_RERUN", "STATUS", "GET_REPORT"],
+        command: Literal[
+            "START", "MODIFY", "FULL_RERUN", "STATUS", "GET_REPORT", "CONFIRM"
+        ],
         include_report: bool = False,
     ) -> TaskCommandResult:
         """只挑选可信的标识、步骤与统计值，报告来自 Execution.markdown。"""
@@ -207,6 +210,7 @@ class TaskCommands:
             command=command,
             task_id=task_id,
             well_id=task.well_id,
+            well_name=state.well.name if state.well is not None else task.well_id,
             execution_id=execution_id,
             current_execution_id=task.current_execution_id,
             execution_sequence=execution.sequence,

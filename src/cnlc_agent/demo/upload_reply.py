@@ -32,6 +32,7 @@ from agentscope.types import ReplyFinishedReason
 from cnlc_agent.demo.execution_stream import ExecutionReplyStreamer, is_streaming_execution
 from cnlc_agent.demo.tools import RUN_TOOL_NAME, RunWellInterpretationTool
 from cnlc_agent.demo.uploads import GdsxUpload, UploadError, has_attachment, parse_any_upload
+from cnlc_agent.domain.execution import ExecutionRunMode
 from cnlc_agent.infrastructure.telemetry import event_observer
 
 
@@ -45,12 +46,15 @@ class UploadInterpretationReply(MiddlewareBase):
         streamer: ExecutionReplyStreamer | None = None,
         step_delay_seconds: float = 1.0,
         report_chunk_delay_seconds: float = 0.12,
+        staged_confirmation: bool = False,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.tool = tool
+        self.staged_confirmation = staged_confirmation
         self.streamer = streamer or ExecutionReplyStreamer(
             tool.wait_for_execution_completion,
             tool.get_execution_report,
+            get_stage_progress=tool.get_stage_progress,
             step_delay_seconds=step_delay_seconds,
             report_chunk_delay_seconds=report_chunk_delay_seconds,
             sleep=sleep,
@@ -105,7 +109,11 @@ class UploadInterpretationReply(MiddlewareBase):
         else:
             fixture, instruction = upload
             well_id = fixture.well.well_id
-            self.tool.upload = fixture, instruction
+            self.tool.upload = (
+                (fixture, instruction, ExecutionRunMode.STAGED_CONFIRMATION)
+                if self.staged_confirmation
+                else (fixture, instruction)
+            )
             description = f"开始解释井 {well_id}"
         yield ThinkingBlockStartEvent(reply_id=reply_id, block_id=block_id)
         yield ThinkingBlockDeltaEvent(

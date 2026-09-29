@@ -100,6 +100,7 @@ class InterpretationTaskView(Contract):
 
     task_id: str
     well_id: str
+    well_name: str | None = None
     current_execution_id: str | None
     latest_successful_execution_id: str | None
     current_input_version_id: str | None
@@ -217,6 +218,11 @@ async def present_task_view(
     return InterpretationTaskView(
         task_id=task.task_id,
         well_id=task.well_id,
+        well_name=(
+            current.state_snapshot.well.name
+            if current is not None and current.state_snapshot.well is not None
+            else task.well_id
+        ),
         current_execution_id=task.current_execution_id,
         latest_successful_execution_id=task.latest_successful_execution_id,
         current_input_version_id=task.current_input_version_id,

@@ -391,6 +391,7 @@ function summarizeToolGroup(calls: ToolCallWithResult[], t: TFunction) {
 
 interface MessageBubbleProps {
 	message: Msg;
+	onSend?: (content: ContentBlock[]) => void;
 	onUserConfirm: (
 		toolCallBlock: ToolCallBlock,
 		confirm: boolean,
@@ -416,7 +417,7 @@ interface MessageBubbleProps {
  * When `content` is empty and the message is still running, the bubble
  * body is omitted entirely so only the bottom status row renders.
  */
-function ASMessageBubbleComponent({ message }: MessageBubbleProps) {
+function ASMessageBubbleComponent({ message, onSend }: MessageBubbleProps) {
 	const isUser = message.role === 'user';
 	const { t } = useTranslation();
 
@@ -464,7 +465,7 @@ function ASMessageBubbleComponent({ message }: MessageBubbleProps) {
 					.map((block, index) => (
 						<Bubble key={index} variant={isUser ? 'muted' : 'ghost'}>
 							<BubbleContent>
-								<ASBlock block={block} interpretationReply={hasProgress} />
+									<ASBlock block={block} interpretationReply={hasProgress} onSend={onSend} />
 							</BubbleContent>
 						</Bubble>
 					))}
@@ -614,29 +615,78 @@ function ThinkingBlockView({ block }: { block: ThinkingBlock }) {
 interface ASBlockProps {
 	block: ExtendedContentBlock;
 	interpretationReply?: boolean;
+	onSend?: (content: ContentBlock[]) => void;
 }
 
-export function ASBlock({ block, interpretationReply = false, ...props }: ASBlockProps) {
+function StageConfirmButton({ onSend }: { onSend?: (content: ContentBlock[]) => void }) {
+	return <StageConfirmActionButton onSend={onSend} label="确认并继续" />;
+}
+
+function StageConfirmActionButton({
+	onSend,
+	label,
+}: {
+	onSend?: (content: ContentBlock[]) => void;
+	label: string;
+}) {
+	const [submitted, setSubmitted] = useState(false);
+	return (
+		<Button
+			type="button"
+			size="sm"
+			variant="outline"
+			disabled={submitted || !onSend}
+			onClick={() => {
+				if (!onSend) return;
+				setSubmitted(true);
+				onSend([
+					{
+						type: 'text',
+						text: '确认并继续',
+						created_at: new Date().toISOString(),
+					} as TextBlock,
+				]);
+			}}
+		>
+			{submitted ? '已提交确认' : `[${label}]`}
+		</Button>
+	);
+}
+
+export function ASBlock({ block, interpretationReply = false, onSend }: ASBlockProps) {
 	const { t } = useTranslation();
 
 	switch (block.type) {
 		case 'text':
-			return (
-				<section>
-					{interpretationReply && (
-						<h3 className="mb-3 font-medium">
-							{t(
-								block.text.trimStart().startsWith('#')
-									? 'messageBubble.interpretationReport'
-									: 'messageBubble.interpretationResult',
-							)}
-						</h3>
-					)}
-					<Markdown animated isAnimating={!block.finished_at} {...props}>
-						{block.text}
-					</Markdown>
-				</section>
-			);
+			{
+				const confirmation = block.text.match(
+					/<!-- cnlc-stage-confirm:(REPORT|STAGE) -->/,
+				);
+				const text = block.text.replace(/<!-- cnlc-stage-confirm:(REPORT|STAGE) -->/, '').trim();
+				return (
+					<section>
+						{interpretationReply && (
+							<h3 className="mb-3 font-medium">
+								{t(
+									text.trimStart().startsWith('#')
+										? 'messageBubble.interpretationReport'
+										: 'messageBubble.interpretationResult',
+									)}
+							</h3>
+						)}
+						<Markdown animated isAnimating={!block.finished_at}>
+							{text}
+						</Markdown>
+						{confirmation && (
+							confirmation[1] === 'REPORT' ? (
+								<StageConfirmActionButton onSend={onSend} label="确认并生成报告" />
+							) : (
+								<StageConfirmButton onSend={onSend} />
+							)
+						)}
+					</section>
+				);
+			}
 		case 'data': {
 			const dataType = block.source.media_type.split('/')[0];
 			if (dataType === 'audio') return null;

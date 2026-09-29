@@ -95,7 +95,9 @@ async def test_read_api_restores_durable_binding_before_any_new_chat(
 
     monkeypatch.setattr("cnlc_agent.demo.task_tools.application_runtime", runtime)
     monkeypatch.setenv("CNLC_MODEL_PROVIDER", "mock")
+    monkeypatch.setenv("CNLC_PROFESSIONAL_PROVIDER", "fixture")
     monkeypatch.setenv("CNLC_PERSISTENCE", "postgres-redis")
+    monkeypatch.setenv("CNLC_COMPANY_TOKEN", "test-token")
     redis = FakeRedis(decode_responses=True)
     monkeypatch.setattr(
         "cnlc_agent.demo.agentscope_app._redis_storage",
@@ -111,7 +113,7 @@ async def test_read_api_restores_durable_binding_before_any_new_chat(
     }
     started = await tools["run_well_interpretation"].call(well_id="WELL_MOCK_001")
     result = started.metadata["result"]
-    await tools["get_interpretation_status"].runner.wait_for_completion(
+    await tools["interpret_interpretation_operation"].runner.wait_for_completion(
         result["task_id"], result["execution_id"]
     )
     await first_factory.shutdown()

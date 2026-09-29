@@ -32,6 +32,7 @@ from cnlc_agent.application.gdsx_ingress import GdsxIngressService
 from cnlc_agent.application.ports import TaskRepository
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
+from cnlc_agent.application.stage_orchestrator import StageOrchestrator, StageProgress
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.demo.interaction_context import (
     InteractionContext,
@@ -55,11 +56,17 @@ from cnlc_agent.demo.task_context import SessionTaskResolver, TaskReference
 from cnlc_agent.demo.uploads import GdsxUpload
 from cnlc_agent.domain.artifacts import GdsxUploadReceipt
 from cnlc_agent.domain.errors import ApplicationError, InfrastructureError
-from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, ExecutionStatus
+from cnlc_agent.domain.execution import (
+    TERMINAL_EXECUTION_STATUSES,
+    Execution,
+    ExecutionRunMode,
+    ExecutionStatus,
+)
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
+from cnlc_agent.domain.stages import InterpretationStage
 from cnlc_agent.infrastructure.artifact_store import FilesystemArtifactStore
 from cnlc_agent.infrastructure.mock import (
     InMemoryStateStore,
@@ -351,10 +358,21 @@ class TaskCommandRunner:
         """Fixture 入口也保存 InputVersion，以支持后续受控重跑。"""
 
         fixture = await MockWellRepository(self.settings.mock_data_dir).load(well_id)
-        return await self.start_uploaded(fixture, instruction)
+        # CLI/旧兼容入口保持连续执行；Web 上传入口显式使用分阶段确认模式。
+        return await self.start_uploaded(
+            fixture,
+            instruction,
+            run_mode=ExecutionRunMode.CONTINUOUS,
+        )
 
-    async def start_uploaded(self, fixture: MockFixture, instruction: str) -> TaskCommandResult:
-        """提交首轮 QUEUED Execution 并立即返回，实际流程在请求外运行。"""
+    async def start_uploaded(
+        self,
+        fixture: MockFixture,
+        instruction: str,
+        *,
+        run_mode: ExecutionRunMode = ExecutionRunMode.CONTINUOUS,
+    ) -> TaskCommandResult:
+        """提交上传 Execution；Web 回复入口显式传入 staged，旧调用默认连续执行。"""
 
         self.clear_pending()
         InteractionPolicy.decide(await self.interaction_snapshot(), "START")
@@ -366,6 +384,7 @@ class TaskCommandRunner:
                     execution = await service.prepare_initial_with_input(
                         TaskRequest(well_id=fixture.well.well_id, instruction=instruction),
                         fixture,
+                        run_mode=run_mode,
                     )
                     if self.session_identity is not None:
                         await service.repository.bind_task_to_session(
@@ -382,6 +401,97 @@ class TaskCommandRunner:
             await self.dispatcher.submit(
                 execution.execution_id, self._executor(execution.execution_id)
             )
+            return result
+
+    async def get_stage_progress(self, task_id: str, execution_id: str) -> StageProgress:
+        """读取阶段事实投影；调用方须先通过 Session/Task ownership 校验。"""
+
+        with TemporaryDirectory(prefix="cnlc-stage-progress-") as directory:
+            async with self.context(Path(directory)) as service:
+                return await StageOrchestrator(service).get_progress(task_id, execution_id)
+
+    async def confirm_stage(
+        self,
+        task_id: str,
+        execution_id: str,
+        stage: InterpretationStage,
+        expected_stage_run_id: str,
+        *,
+        actor: str,
+    ) -> Execution:
+        """确认持久化阶段结果，并仅对非 REPORT 阶段重新提交同一 Execution。"""
+
+        async with self._lock:
+            with TemporaryDirectory(prefix="cnlc-stage-confirm-") as directory:
+                async with self.context(Path(directory)) as service:
+                    execution = await StageOrchestrator(service).confirm_stage(
+                        task_id,
+                        execution_id,
+                        stage,
+                        expected_stage_run_id,
+                        actor=actor,
+                    )
+            if stage != InterpretationStage.REPORT:
+                await self.dispatcher.submit(execution_id, self._executor(execution_id))
+            return execution
+
+    async def confirm_waiting_stage(
+        self, reference: TaskReference, *, actor: str
+    ) -> TaskCommandResult:
+        """解析当前/指定井最近的等待阶段，并复用同一个确认 API。"""
+
+        async with self._lock:
+            with TemporaryDirectory(prefix="cnlc-confirm-resolve-") as directory:
+                async with self.context(Path(directory)) as service:
+                    task_ids = (
+                        await service.repository.list_session_task_ids(self.session_identity)
+                        if self.session_identity is not None
+                        else list(self._observed_task_order)
+                    )
+                    resolver = SessionTaskResolver(service.repository, task_ids)
+                    selected = await resolver.resolve(reference, self.active_task_id)
+                    summaries = await resolver.summaries()
+                    ordered = [selected] + [
+                        item for item in reversed(summaries) if item.task_id != selected.task_id
+                    ]
+                    waiting: tuple[str, str, InterpretationStage, str] | None = None
+                    for item in ordered:
+                        if not item.current_execution_id:
+                            continue
+                        progress = await StageOrchestrator(service).get_progress(
+                            item.task_id, item.current_execution_id
+                        )
+                        if (
+                            progress.execution_status == ExecutionStatus.WAITING_CONFIRMATION
+                            and progress.waiting_confirmation_stage is not None
+                            and progress.current_stage_run_id is not None
+                        ):
+                            waiting = (
+                                item.task_id,
+                                item.current_execution_id,
+                                progress.waiting_confirmation_stage,
+                                progress.current_stage_run_id,
+                            )
+                            break
+                    if waiting is None:
+                        raise ApplicationError(
+                            "EXECUTION_NOT_WAITING_CONFIRMATION",
+                            "当前会话没有等待确认的阶段",
+                        )
+                    task_id, execution_id, stage, stage_run_id = waiting
+                    await StageOrchestrator(service).confirm_stage(
+                        task_id,
+                        execution_id,
+                        stage,
+                        stage_run_id,
+                        actor=actor,
+                    )
+                    result = await TaskCommands(service).project(
+                        task_id, execution_id, "CONFIRM"
+                    )
+            self.set_active_task(task_id)
+            if stage != InterpretationStage.REPORT:
+                await self.dispatcher.submit(execution_id, self._executor(execution_id))
             return result
 
     async def start_gdsx(self, upload: GdsxUpload, well_id: str | None) -> TaskCommandResult:
@@ -650,7 +760,10 @@ class TaskCommandRunner:
                     raise InfrastructureError(
                         "EXECUTION_NOT_FOUND", "指定执行不存在或不属于当前任务"
                     )
-                if execution.status not in TERMINAL_EXECUTION_STATUSES:
+                if (
+                    execution.status not in TERMINAL_EXECUTION_STATUSES
+                    and execution.status != ExecutionStatus.WAITING_CONFIRMATION
+                ):
                     if worker_error is not None:
                         raise InfrastructureError(
                             "BACKGROUND_EXECUTION_FAILED", "后台执行未形成可读取终态"

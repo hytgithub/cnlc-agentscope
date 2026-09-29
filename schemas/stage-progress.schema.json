@@ -559,6 +559,18 @@
     "well_id": {
       "title": "Well Id",
       "type": "string"
+    },
+    "well_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Well Name"
     }
   },
   "required": [

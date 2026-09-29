@@ -85,7 +85,7 @@ class InterpretInterpretationOperationTool(ToolBase):
     name = OPERATION_TOOL_NAME
     description = (
         "已有任务的唯一操作入口。PLAN 一次提交全部意图；"
-        "CLARIFICATION_REPLY 补齐待澄清槽；CANCEL 取消；"
+        "CLARIFICATION_REPLY 补齐待澄清槽；CONFIRM_STAGE 确认等待阶段；CANCEL 取消；"
         "SET_ACTIVE_CONTEXT 显式切井。层段使用层号，禁止编造 interval_id。"
     )
     input_schema = model_input_schema()

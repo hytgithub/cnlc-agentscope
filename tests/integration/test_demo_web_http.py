@@ -335,15 +335,46 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                 first = result["metadata"]["result"]
                 assert first["execution_status"] == "QUEUED"
                 runner = app.state.cnlc_task_tools.runners[("upload-test", agent_id, session_id)]
+                execution_path = (
+                    f"/cnlc/interpretation/agents/{agent_id}/sessions/{session_id}"
+                    f"/tasks/{first['task_id']}/executions/{first['execution_id']}"
+                )
+                waiting_stages = []
+                for expected_stage in ("DATA_DECODE", "PREPROCESS", "INTERPRET", "REPORT"):
+                    async with asyncio.timeout(5):
+                        while True:
+                            progress_response = await client.get(
+                                execution_path + "/stage-progress"
+                            )
+                            assert progress_response.status_code == 200
+                            progress = progress_response.json()
+                            if progress["waiting_confirmation_stage"] == expected_stage:
+                                break
+                            await asyncio.sleep(0.01)
+                    waiting_stages.append(progress["waiting_confirmation_stage"])
+                    assert progress["execution_status"] == "WAITING_CONFIRMATION"
+                    if expected_stage == "DATA_DECODE":
+                        assert progress["confirmed_stages"] == []
+                        assert progress["stage_status"] == "WAITING_CONFIRM"
+                    if expected_stage == "REPORT":
+                        assert progress["candidate_report_available"] is True
+                        before_confirm = await client.get(execution_path)
+                        assert before_confirm.status_code == 200
+                        assert before_confirm.json()["report_ready"] is False
+                        assert before_confirm.json()["report_markdown"] is None
+                    confirmed = await client.post(
+                        execution_path + f"/stages/{expected_stage}/confirm",
+                        json={"expected_stage_run_id": progress["current_stage_run_id"]},
+                    )
+                    assert confirmed.status_code == 200, confirmed.text
+                    assert confirmed.json()["execution_id"] == first["execution_id"]
+                assert waiting_stages == ["DATA_DECODE", "PREPROCESS", "INTERPRET", "REPORT"]
                 completed = await runner.wait_for_completion(
                     first["task_id"], first["execution_id"]
                 )
                 assert completed.execution_status == "SUCCESS"
                 report = await runner.repository.get_execution_report(first["execution_id"])
-                report_chunks = [
-                    e["delta"] for e in events if e["type"] == EventType.TEXT_BLOCK_DELTA
-                ]
-                assert "".join(report_chunks) == report
+                assert report
                 tool_result_index = next(
                     index
                     for index, event in enumerate(events)
@@ -360,18 +391,16 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                     for event in events[tool_result_index + 1 : reply_end_index]
                     if event["type"] == EventType.THINKING_BLOCK_DELTA
                 )
-                positions = [progress.index(f"  ▶ W{i:02}") for i in range(1, 11)]
-                assert positions == sorted(positions)
-                for tool in (
-                    "get_well_data",
-                    "check_curve_quality",
-                    "identify_lithology",
-                    "evaluate_petrophysics",
-                    "calculate_sw",
-                    "merge_intervals",
-                ):
-                    assert f"调用工具：{tool}" in progress
-                    assert f"✓ {tool} 执行成功" in progress
+                assistant_text = "".join(
+                    event["delta"]
+                    for event in events
+                    if event["type"] == EventType.TEXT_BLOCK_DELTA
+                )
+                assert "▶ W01" in progress
+                assert "当前阶段已完成，结果已发送到聊天中，等待确认继续" in progress
+                assert "数据解编阶段结果" in assistant_text
+                assert "确认并继续" in assistant_text
+                assert "cnlc-stage-confirm" in assistant_text
                 assert "api_key" not in json.dumps(events)
                 # The service persists the same projected Assistant message after REPLY_END.
                 async with asyncio.timeout(5):
@@ -382,7 +411,7 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                         if any(m.role == "assistant" for m in messages):
                             break
                         await asyncio.sleep(0.01)
-                assert any((m.get_text_content() or "") == report for m in messages)
+                assert not any((m.get_text_content() or "") == report for m in messages)
                 # 每轮官方服务重新创建 Agent/Tools，内存仓库仍由同一会话 runner 持有。
                 for text, command in [
                     ("只重新算Sw", None),
