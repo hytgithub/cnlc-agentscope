@@ -124,11 +124,16 @@ def finish_stage(
             errors=errors,
         )
     else:
-        # 尚未建设 Revision 实体；引用指向包含结果的不可变 Execution 快照字段。
-        output = {OUTPUT_KEY[stage]: f"execution:{state.workflow_execution_id}:{stage.value}"}
-        target = (
-            StageRunStatus.CONFIRMED if auto_confirm else StageRunStatus.WAITING_CONFIRM
-        )
+        if stage == InterpretationStage.DECODE and state.dataset_revision_id is not None:
+            output = {OUTPUT_KEY[stage]: state.dataset_revision_id}
+        else:
+            output = {OUTPUT_KEY[stage]: f"execution:{state.workflow_execution_id}:{stage.value}"}
+        if stage == InterpretationStage.PREPROCESS:
+            if state.source_artifact_id is not None:
+                output["source_artifact_id"] = state.source_artifact_id
+            if state.processed_artifact_id is not None:
+                output["processed_artifact_id"] = state.processed_artifact_id
+        target = StageRunStatus.CONFIRMED if auto_confirm else StageRunStatus.WAITING_CONFIRM
         updated = run.transition(
             target,
             actor="system",

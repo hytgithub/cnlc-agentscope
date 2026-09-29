@@ -3,8 +3,11 @@
 import asyncio
 import base64
 import json
+from pathlib import Path
 
+import h5py
 import httpx
+import numpy as np
 from agentscope.app.storage import RedisStorage
 from agentscope.event import EventType
 from fakeredis.aioredis import FakeRedis
@@ -15,6 +18,200 @@ from cnlc_agent.demo.agentscope_app import (
     BACKEND_MODEL_OWNER_ID,
     create_demo_app,
 )
+
+
+def _minimal_gdsx(path: Path) -> bytes:
+    """构造只含已知 pygdsx 元数据形状的动态测试文件。"""
+
+    def encoded(value):
+        return np.frombuffer(json.dumps(value).encode(), dtype=np.uint8).reshape(-1, 1)
+
+    with h5py.File(path, "w") as file:
+        well = file.create_group("well-visit")
+        info = well.create_group("info")
+        info.create_dataset("wellinfo", data=encoded({"name": "pending"}))
+        curves = well.create_group("curve")
+        curve = curves.create_group("GR")
+        curve.create_dataset(
+            "meta",
+            data=encoded(
+                {
+                    "name": "GR",
+                    "standardName": "GR",
+                    "dimension": 1,
+                    "dimension1Length": 1,
+                }
+            ),
+        )
+        well.create_group("table")
+    return path.read_bytes()
+
+
+async def test_multipart_gdsx_ingress_does_not_create_conversation_message(tmp_path, monkeypatch):
+    monkeypatch.setenv("CNLC_MODEL_PROVIDER", "mock")
+    monkeypatch.setenv("CNLC_PROFESSIONAL_PROVIDER", "company_real")
+    monkeypatch.setenv("CNLC_PERSISTENCE", "memory")
+    monkeypatch.setenv("CNLC_ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("CNLC_COMPANY_WELL_NAME", "explicit")
+    monkeypatch.setenv("CNLC_COMPANY_SERVICE_ID", "service")
+    monkeypatch.setenv("CNLC_COMPANY_TASK_CONFIG", "{}")
+    monkeypatch.setenv("CNLC_COMPANY_PREPROCESS_OPERATIONS", '{"resample":{"enable":false}}')
+    monkeypatch.setenv("CNLC_COMPANY_PREPROCESSING_URL", "http://unused/preprocess")
+    monkeypatch.setenv("CNLC_COMPANY_PREDICTION_URL", "http://unused/predict")
+    monkeypatch.setenv("CNLC_COMPANY_TOKEN", "unused")
+    redis = FakeRedis(decode_responses=True)
+    monkeypatch.setattr(
+        "cnlc_agent.demo.agentscope_app._redis_storage",
+        lambda _: RedisStorage(connection_pool=redis.connection_pool),
+    )
+    app = create_demo_app(workspace_dir=tmp_path / "workspaces")
+    headers = {"X-User-ID": "gdsx-user"}
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers
+        ) as client:
+            agent = await client.post("/agent/", json={"name": "GDSX"})
+            agent_id = agent.json()["agent_id"]
+            session = await client.post(
+                "/sessions/",
+                json={
+                    "agent_id": agent_id,
+                    "name": "GDSX ingress",
+                    "chat_model_config": {
+                        "type": "cnlc_mock_shell_model",
+                        "credential_id": BACKEND_MODEL_CREDENTIAL_ID,
+                        "model": "qwen-plus",
+                        "parameters": {},
+                    },
+                },
+            )
+            session_id = session.json()["session_id"]
+            content = _minimal_gdsx(tmp_path / "minimal.gdsx")
+            response = await client.post(
+                "/cnlc/interpretation/artifacts/gdsx",
+                data={"agent_id": agent_id, "session_id": session_id, "instruction": "decode"},
+                files={"file": ("minimal.gdsx", content, "application/x-hdf5")},
+            )
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["size"] == len(content)
+            assert "data" not in payload and "base64" not in response.text.lower()
+
+            # 同一用户的另一会话也不能消费该收据。
+            other_session = await client.post(
+                "/sessions/",
+                json={
+                    "agent_id": agent_id,
+                    "name": "Other session",
+                    "chat_model_config": {
+                        "type": "cnlc_mock_shell_model",
+                        "credential_id": BACKEND_MODEL_CREDENTIAL_ID,
+                        "model": "qwen-plus",
+                        "parameters": {},
+                    },
+                },
+            )
+            other_session_id = other_session.json()["session_id"]
+            cross_session = await client.post(
+                "/cnlc/interpretation/tasks/gdsx",
+                json={
+                    "artifact_id": payload["artifact_id"],
+                    "agent_id": agent_id,
+                    "session_id": other_session_id,
+                },
+            )
+            assert cross_session.status_code == 404
+            assert cross_session.json()["detail"] == "ARTIFACT_NOT_FOUND"
+
+            # 其他用户上传同一 bytes 会复用 blob，但 receipt 和授权必须独立。
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+                headers={"X-User-ID": "other-user"},
+            ) as other_client:
+                other_agent = await other_client.post("/agent/", json={"name": "Other"})
+                other_agent_id = other_agent.json()["agent_id"]
+                other_session_response = await other_client.post(
+                    "/sessions/",
+                    json={
+                        "agent_id": other_agent_id,
+                        "name": "Other owner",
+                        "chat_model_config": {
+                            "type": "cnlc_mock_shell_model",
+                            "credential_id": BACKEND_MODEL_CREDENTIAL_ID,
+                            "model": "qwen-plus",
+                            "parameters": {},
+                        },
+                    },
+                )
+                other_owner_session_id = other_session_response.json()["session_id"]
+                other_upload = await other_client.post(
+                    "/cnlc/interpretation/artifacts/gdsx",
+                    data={"agent_id": other_agent_id, "session_id": other_owner_session_id},
+                    files={"file": ("same.gdsx", content, "application/x-hdf5")},
+                )
+                assert other_upload.status_code == 200, other_upload.text
+                other_payload = other_upload.json()
+                assert other_payload["sha256"] == payload["sha256"]
+                assert other_payload["artifact_id"] != payload["artifact_id"]
+
+                cross_user = await other_client.post(
+                    "/cnlc/interpretation/tasks/gdsx",
+                    json={
+                        "artifact_id": payload["artifact_id"],
+                        "agent_id": other_agent_id,
+                        "session_id": other_owner_session_id,
+                    },
+                )
+                assert cross_user.status_code == 404
+                assert cross_user.json()["detail"] == "ARTIFACT_NOT_FOUND"
+
+                reverse_cross_user = await client.post(
+                    "/cnlc/interpretation/tasks/gdsx",
+                    json={
+                        "artifact_id": other_payload["artifact_id"],
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                    },
+                )
+                assert reverse_cross_user.status_code == 404
+                assert reverse_cross_user.json()["detail"] == "ARTIFACT_NOT_FOUND"
+
+                task_request = {
+                    "artifact_id": other_payload["artifact_id"],
+                    "agent_id": other_agent_id,
+                    "session_id": other_owner_session_id,
+                    "instruction": "decode once",
+                }
+                first, second = await asyncio.gather(
+                    other_client.post("/cnlc/interpretation/tasks/gdsx", json=task_request),
+                    other_client.post("/cnlc/interpretation/tasks/gdsx", json=task_request),
+                )
+                assert sorted([first.status_code, second.status_code]) == [200, 409]
+                conflict = first if first.status_code == 409 else second
+                assert conflict.json()["detail"] == "GDSX_INGRESS_CONFLICT"
+
+            task = await client.post(
+                "/cnlc/interpretation/tasks/gdsx",
+                json={
+                    "artifact_id": payload["artifact_id"],
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "instruction": "decode",
+                },
+            )
+            assert task.status_code == 200, task.text
+            duplicate = await client.post(
+                "/cnlc/interpretation/tasks/gdsx",
+                json={
+                    "artifact_id": payload["artifact_id"],
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                },
+            )
+            assert duplicate.status_code == 409
+            messages, _ = await app.state.storage.list_messages("gdsx-user", session_id, limit=20)
+            assert messages == []
 
 
 async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, monkeypatch):

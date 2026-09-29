@@ -118,7 +118,8 @@ class ValidationResult(StageResult):
 class DataRequirements(Contract):
     """临时输入资料契约，不代表正式专业解释标准。"""
 
-    required_curves: list[str] = Field(min_length=1)
+    # 未配置正式必需曲线时保持空集合，禁止用占位名称冒充专业规则。
+    required_curves: list[str] = Field(default_factory=list)
     recommended_sources: list[str] = Field(default_factory=list)
 
 

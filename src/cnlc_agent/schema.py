@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from cnlc_agent.application.stage_orchestrator import StageProgress
 from cnlc_agent.application.stage_results import StageResultView
 from cnlc_agent.application.stage_tool_runs import StageToolRunView
+from cnlc_agent.domain.artifacts import Artifact, GdsxDatasetManifest
 from cnlc_agent.domain.company_provider import CompanyProviderCall
 from cnlc_agent.domain.dataset_revision import (
     DatasetChangeSet,
@@ -17,6 +18,7 @@ from cnlc_agent.domain.dataset_revision import (
     DatasetRevision,
 )
 from cnlc_agent.domain.execution import Execution
+from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import (
     Contract,
     MockFixture,
@@ -40,6 +42,9 @@ CONTRACTS: dict[str, type[Contract]] = {
     "dataset-change-set": DatasetChangeSet,
     "dataset-revision": DatasetRevision,
     "company-provider-call": CompanyProviderCall,
+    "artifact": Artifact,
+    "gdsx-dataset-manifest": GdsxDatasetManifest,
+    "interpretation-input-version": InterpretationInputVersion,
     "execution": Execution,
     "stage-run": StageRun,
     "stage-progress": StageProgress,

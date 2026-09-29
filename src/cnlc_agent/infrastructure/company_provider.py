@@ -8,7 +8,8 @@ from pydantic import Field, JsonValue, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from cnlc_agent.application.company_results import project_prediction
-from cnlc_agent.application.ports import TaskRepository
+from cnlc_agent.application.ports import ArtifactStore, TaskRepository
+from cnlc_agent.domain.artifacts import Artifact, ArtifactKind, StoredArtifact
 from cnlc_agent.domain.company_provider import (
     CompanyProviderCall,
     CompanyProviderCallStatus,
@@ -20,6 +21,7 @@ from cnlc_agent.domain.errors import ApplicationError, ToolError
 from cnlc_agent.domain.models import JsonObject, StageResult
 from cnlc_agent.domain.tool_run import ToolExecutionMode
 from cnlc_agent.infrastructure.company_api import CompanyApiClient, CompanyCallResult
+from cnlc_agent.infrastructure.gdsx_manifest import inspect_gdsx
 from cnlc_agent.tools.company_batches import CompanyBatchResponse
 from cnlc_agent.tools.contracts import ToolInput
 
@@ -39,6 +41,8 @@ class CompanyInputResolver(Protocol):
         self, task_id: str, execution_id: str, input_version_id: str
     ) -> RealPredictionContext: ...
 
+    async def release_gdsx(self, path: Path) -> None: ...
+
 
 class CompanyArtifactSink(Protocol):
     """处理后 GDSX 的临时扩展点；返回逻辑引用，当前不写 PostgreSQL。"""
@@ -49,6 +53,8 @@ class CompanyArtifactSink(Protocol):
         execution_id: str,
         input_version_id: str,
         content: bytes,
+        source_artifact_id: str,
+        provider_call_id: str,
     ) -> str: ...
 
 
@@ -57,7 +63,7 @@ class CompanyProviderSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="CNLC_COMPANY_", env_file=".env", extra="ignore")
 
-    gdsx_path: Path
+    gdsx_path: Path | None = None
     well_name: str = Field(min_length=1, max_length=128)
     service_id: str = Field(min_length=1, max_length=128)
     task_config: JsonObject
@@ -72,6 +78,8 @@ class ConfiguredCompanyInputResolver:
 
     async def resolve_gdsx(self, task_id: str, execution_id: str, input_version_id: str) -> Path:
         del task_id, execution_id, input_version_id
+        if self.settings.gdsx_path is None:
+            raise ToolError("COMPANY_FILE_INVALID", "未配置 GDSX 输入")
         path = self.settings.gdsx_path.expanduser().resolve()
         if not path.is_file() or path.suffix.casefold() != ".gdsx":
             raise ToolError("COMPANY_FILE_INVALID", "配置的 GDSX 输入不存在或类型错误")
@@ -94,6 +102,116 @@ class ConfiguredCompanyInputResolver:
             service_id=self.settings.service_id,
             task_config=self.settings.task_config,
         )
+
+    async def release_gdsx(self, path: Path) -> None:
+        """配置文件由调用方管理生命周期，Provider 不删除。"""
+
+        del path
+
+
+class ArtifactCompanyInputResolver:
+    """按 Task/InputVersion 归属从 ArtifactStore 物化源 GDSX。"""
+
+    def __init__(
+        self,
+        repository: TaskRepository,
+        store: ArtifactStore,
+        settings: CompanyProviderSettings,
+    ) -> None:
+        self.repository = repository
+        self.store = store
+        self.settings = settings
+        self._contexts: dict[Path, object] = {}
+
+    async def resolve_gdsx(self, task_id: str, execution_id: str, input_version_id: str) -> Path:
+        execution = await self.repository.get_execution(execution_id)
+        version = await self.repository.get_input_version(input_version_id)
+        if (
+            execution is None
+            or execution.task_id != task_id
+            or execution.input_version_id != input_version_id
+            or version is None
+            or version.task_id != task_id
+            or version.source_artifact_id is None
+        ):
+            raise ToolError("ARTIFACT_TASK_MISMATCH", "执行、输入版本或源制品归属无效")
+        artifact = await self.repository.get_artifact(task_id, version.source_artifact_id)
+        if artifact is None or artifact.well_id != version.well_id:
+            raise ToolError("ARTIFACT_TASK_MISMATCH", "源制品不属于当前任务或井")
+        context = self.store.materialize(
+            StoredArtifact(
+                storage_key=artifact.storage_key,
+                size_bytes=artifact.size_bytes,
+                content_sha256=artifact.content_sha256,
+            )
+        )
+        path = await context.__aenter__()
+        try:
+            inspect_gdsx(path, artifact.artifact_id)
+        except BaseException:
+            await context.__aexit__(None, None, None)
+            raise
+        self._contexts[path] = context
+        return path
+
+    async def release_gdsx(self, path: Path) -> None:
+        context = self._contexts.pop(path, None)
+        if context is not None:
+            await context.__aexit__(None, None, None)  # type: ignore[attr-defined]
+
+    async def resolve_preprocess_operations(
+        self, task_id: str, execution_id: str, input_version_id: str
+    ) -> JsonObject:
+        del task_id, execution_id, input_version_id
+        return dict(self.settings.preprocess_operations)
+
+    async def resolve_prediction_context(
+        self, task_id: str, execution_id: str, input_version_id: str
+    ) -> RealPredictionContext:
+        del task_id, execution_id, input_version_id
+        return RealPredictionContext(
+            well_name=self.settings.well_name,
+            service_id=self.settings.service_id,
+            task_config=self.settings.task_config,
+        )
+
+
+class ArtifactCompanySink:
+    """把预处理下载结果保存为 PROCESSED_GDSX Artifact。"""
+
+    def __init__(self, repository: TaskRepository, store: ArtifactStore) -> None:
+        self.repository = repository
+        self.store = store
+
+    async def save_processed_gdsx(
+        self,
+        task_id: str,
+        execution_id: str,
+        input_version_id: str,
+        content: bytes,
+        source_artifact_id: str,
+        provider_call_id: str,
+    ) -> str:
+        del input_version_id
+        task = await self.repository.get_task(task_id)
+        if task is None:
+            raise ToolError("TASK_NOT_FOUND", "任务不存在")
+        stored = await self.store.put(content)
+        artifact = Artifact(
+            task_id=task_id,
+            well_id=task.well_id,
+            kind=ArtifactKind.PROCESSED_GDSX,
+            media_type="application/x-hdf5",
+            original_filename="processed.gdsx",
+            size_bytes=stored.size_bytes,
+            content_sha256=stored.content_sha256,
+            storage_key=stored.storage_key,
+            source_artifact_id=source_artifact_id,
+            created_from_execution_id=execution_id,
+            provider_call_id=provider_call_id,
+        )
+        await self.repository.create_artifact(artifact)
+        return artifact.artifact_id
 
 
 class RealCompanyBatchProvider:
@@ -328,11 +446,19 @@ class RealCompanyBatchProvider:
             )
             artifact_ref = None
             if self.artifact_sink is not None:
+                input_version = await self.repository.get_input_version(input_version_id)
+                if input_version is None:
+                    raise ToolError(
+                        "INPUT_VERSION_NOT_FOUND",
+                        "真实预处理输入版本不存在",
+                    )
                 artifact_ref = await self.artifact_sink.save_processed_gdsx(
                     request.task_id,
                     execution_id,
                     input_version_id,
                     result.gdsx_content,
+                    source_artifact_id=input_version.source_artifact_id or "legacy-fixture",
+                    provider_call_id=call.provider_call_id,
                 )
             call_data = result.call.data
             raw_log_request = call_data.get("logReqJson") if isinstance(call_data, dict) else None
@@ -358,6 +484,10 @@ class RealCompanyBatchProvider:
             if stored is not None and stored.status == CompanyProviderCallStatus.RUNNING:
                 await self._finish_failed(call, exc.code)
             raise
+        finally:
+            release = getattr(self.resolver, "release_gdsx", None)
+            if release is not None:
+                await release(path)
         return self._preprocess_response(persisted)
 
     async def _interpret(

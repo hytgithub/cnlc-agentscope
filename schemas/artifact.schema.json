@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "ArtifactKind": {
+      "description": "当前 GDSX 制品类型。",
+      "enum": [
+        "SOURCE_GDSX",
+        "PROCESSED_GDSX"
+      ],
+      "title": "ArtifactKind",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "数据库只保存制品元数据和逻辑 storage key，不保存文件字节。",
+  "properties": {
+    "artifact_id": {
+      "minLength": 1,
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "created_from_execution_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created From Execution Id"
+    },
+    "kind": {
+      "$ref": "#/$defs/ArtifactKind"
+    },
+    "media_type": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Media Type",
+      "type": "string"
+    },
+    "original_filename": {
+      "maxLength": 255,
+      "minLength": 1,
+      "title": "Original Filename",
+      "type": "string"
+    },
+    "provider_call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider Call Id"
+    },
+    "size_bytes": {
+      "exclusiveMinimum": 0,
+      "title": "Size Bytes",
+      "type": "integer"
+    },
+    "source_artifact_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Artifact Id"
+    },
+    "storage_key": {
+      "pattern": "^[a-z0-9][a-z0-9._/-]{1,511}$",
+      "title": "Storage Key",
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    },
+    "well_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+      "title": "Well Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "well_id",
+    "kind",
+    "media_type",
+    "original_filename",
+    "size_bytes",
+    "content_sha256",
+    "storage_key"
+  ],
+  "title": "Artifact",
+  "type": "object"
+}

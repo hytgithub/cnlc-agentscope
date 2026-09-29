@@ -15,14 +15,10 @@
           "items": {
             "type": "string"
           },
-          "minItems": 1,
           "title": "Required Curves",
           "type": "array"
         }
       },
-      "required": [
-        "required_curves"
-      ],
       "title": "DataRequirements",
       "type": "object"
     },

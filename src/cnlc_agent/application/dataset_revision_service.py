@@ -13,6 +13,7 @@ from cnlc_agent.domain.dataset_revision import (
     root_lineage,
 )
 from cnlc_agent.domain.errors import DataError
+from cnlc_agent.domain.inputs import InputPayloadKind
 from cnlc_agent.domain.models import RawData
 
 
@@ -86,6 +87,12 @@ class DatasetRevisionService:
             or root.lineage_sha256 != root_lineage(root_input.content_sha256)
         ):
             raise DataError("INVALID_DATASET_REVISION_CHAIN", "根版本 lineage 无效")
+        if root_input.payload_kind == InputPayloadKind.GDSX_ARTIFACT:
+            raise DataError(
+                "ARTIFACT_DATASET_MATERIALIZATION_UNSUPPORTED",
+                "当前不支持把 Artifact-backed GDSX 全量物化为 RawData",
+            )
+        assert root_input.payload is not None
         raw_data = root_input.payload.raw_data.model_copy(deep=True)
         for item in reversed(chain[:-1]):
             if item.change_set_id is None:
@@ -103,10 +110,10 @@ class DatasetRevisionService:
                 for candidate in chain
                 if candidate.dataset_revision_id == item.parent_revision_id
             )
-            if (
-                change_set.content_sha256 != change_set_digest(change_set.curve_changes)
-                or item.lineage_sha256
-                != child_lineage(parent.lineage_sha256, change_set.content_sha256)
+            if change_set.content_sha256 != change_set_digest(
+                change_set.curve_changes
+            ) or item.lineage_sha256 != child_lineage(
+                parent.lineage_sha256, change_set.content_sha256
             ):
                 raise DataError("INVALID_DATASET_REVISION_CHAIN", "ChangeSet 摘要或 lineage 无效")
             raw_data = apply_curve_changes(raw_data, change_set.curve_changes)

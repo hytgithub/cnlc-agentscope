@@ -75,12 +75,8 @@ class StageResultView(Contract):
     input_refs: dict[str, str] = Field(default_factory=dict, max_length=64)
     output_refs: dict[str, str] = Field(default_factory=dict, max_length=64)
     can_confirm: bool
-    confirmation_blockers: list[ConfirmationBlocker] = Field(
-        default_factory=list, max_length=4
-    )
-    tool_runs: list[StageToolRunView] = Field(
-        default_factory=list, max_length=MAX_STAGE_TOOL_RUNS
-    )
+    confirmation_blockers: list[ConfirmationBlocker] = Field(default_factory=list, max_length=4)
+    tool_runs: list[StageToolRunView] = Field(default_factory=list, max_length=MAX_STAGE_TOOL_RUNS)
     updated_at: datetime
 
     @model_validator(mode="after")
@@ -256,6 +252,37 @@ def _decode_projection(state: InterpretationState, run: StageRun) -> _Projection
         )
     if dataset_ref := run.output_refs.get("dataset_revision_id"):
         metrics["dataset_revision_id"] = dataset_ref
+    if state.source_artifact_id is not None:
+        metrics["source_artifact_id"] = state.source_artifact_id
+    if state.dataset_manifest is not None:
+        manifest = state.dataset_manifest
+        metrics.update(
+            {
+                "curve_count": manifest.curve_count,
+                "table_count": manifest.table_count,
+                "depth_summary": manifest.depth_summary,
+                "artifact_size_bytes": manifest.size_bytes,
+                "artifact_sha256_prefix": manifest.content_sha256[:12],
+            }
+        )
+        items.extend(
+            {
+                "raw_name": curve.raw_name,
+                "standard_name": curve.standard_name,
+                "unit": curve.unit,
+                "point_count": curve.point_count,
+            }
+            for curve in manifest.curves[:MAX_ITEMS]
+        )
+        return _Projection(
+            f"GDSX 数据解编完成，共识别 {manifest.curve_count} 条曲线。",
+            f"已读取 {manifest.table_count} 张表；曲线采样值未进入结果视图。",
+            metrics,
+            items,
+            _bounded_strings(warnings + manifest.warnings),
+            [],
+            missing,
+        )
     if raw is None:
         missing.append("well_curve_summary: 当前阶段没有可展示的数据摘要")
         return _Projection(
@@ -306,10 +333,7 @@ def _decode_projection(state: InterpretationState, run: StageRun) -> _Projection
         )
     else:
         headline = f"数据解编完成，共识别 {len(curve_names)} 条曲线。"
-    summary = (
-        f"统一深度轴包含 {len(raw.depths)} 个采样点；"
-        f"必需曲线缺失 {len(absent)} 条。"
-    )
+    summary = f"统一深度轴包含 {len(raw.depths)} 个采样点；必需曲线缺失 {len(absent)} 条。"
     return _Projection(
         headline,
         summary,
@@ -370,6 +394,10 @@ def _preprocess_projection(state: InterpretationState, run: StageRun) -> _Projec
         "resampling_applied": resampling,
         "preprocess_result_ref": run.output_refs.get("preprocess_revision_id"),
     }
+    if state.source_artifact_id is not None:
+        metrics["source_artifact_id"] = state.source_artifact_id
+    if state.processed_artifact_id is not None:
+        metrics["processed_artifact_id"] = state.processed_artifact_id
     if raw is not None:
         metrics["input_missing_sample_count"] = sum(
             value is None for curve in raw.curves.values() for value in curve.values
@@ -394,9 +422,7 @@ def _preprocess_projection(state: InterpretationState, run: StageRun) -> _Projec
     warnings, conflicts, evidence_missing, _ = _result_details([qc])
     missing.extend(evidence_missing)
     warnings = _bounded_strings([*run.warnings, *warnings])
-    quality = _safe_scalar(result.get("quality")) or _safe_scalar(
-        result.get("overall_quality")
-    )
+    quality = _safe_scalar(result.get("quality")) or _safe_scalar(result.get("overall_quality"))
     if quality is not None:
         metrics["quality"] = quality
     headline = (
@@ -574,9 +600,7 @@ def _report_projection(
         "report_ref": run.output_refs.get("report_revision_id"),
     }
     if conclusions:
-        conclusion_values: list[JsonValue] = [
-            item for item in _bounded_strings(conclusions)
-        ]
+        conclusion_values: list[JsonValue] = [item for item in _bounded_strings(conclusions)]
         metrics["core_conclusion_summary"] = conclusion_values
     results = (
         state.lithology_result,
@@ -588,12 +612,12 @@ def _report_projection(
         state.final_check,
     )
     warnings, conflicts, missing, _ = _result_details(results)
-    headline = "候选报告已生成，等待确认。" if candidate_exists and not is_formal else (
-        "正式报告已生成。" if is_formal else "报告尚未生成。"
+    headline = (
+        "候选报告已生成，等待确认。"
+        if candidate_exists and not is_formal
+        else ("正式报告已生成。" if is_formal else "报告尚未生成。")
     )
-    summary = (
-        f"报告样式为 {style or '当前未提供'}，包含 {len(intervals)} 个解释层段的现有结果。"
-    )
+    summary = f"报告样式为 {style or '当前未提供'}，包含 {len(intervals)} 个解释层段的现有结果。"
     return _Projection(
         headline,
         summary,
@@ -611,9 +635,7 @@ class StageResultProjector:
     def __init__(self, repository: TaskRepository) -> None:
         self.repository = repository
 
-    async def project(
-        self, task_id: str, execution_id: str, stage_run_id: str
-    ) -> StageResultView:
+    async def project(self, task_id: str, execution_id: str, stage_run_id: str) -> StageResultView:
         """读取历史或当前执行；任何跨任务组合都按不存在处理。"""
 
         task = await self.repository.get_task(task_id)
@@ -641,8 +663,7 @@ class StageResultProjector:
             (
                 item
                 for item in execution.state_snapshot.stage_runs
-                if item.id == stage_run_id
-                and item.task_id == task.task_id
+                if item.id == stage_run_id and item.task_id == task.task_id
             ),
             None,
         )
@@ -681,9 +702,7 @@ class StageResultProjector:
             )
         if run.validity != StageValidity.CURRENT:
             blockers.append(
-                ConfirmationBlocker(
-                    code="STAGE_RESULT_STALE", message="阶段结果已经失效"
-                )
+                ConfirmationBlocker(code="STAGE_RESULT_STALE", message="阶段结果已经失效")
             )
         timestamps = [
             value

@@ -1,10 +1,17 @@
 """基础设施适配器实现这些端口，核心业务不直接持有第三方 SDK 连接。"""
 
 from collections.abc import Awaitable, Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol
 
+from cnlc_agent.domain.artifacts import (
+    Artifact,
+    GdsxDatasetManifest,
+    GdsxUploadReceipt,
+    StoredArtifact,
+)
 from cnlc_agent.domain.company_provider import (
     CompanyProviderCall,
     CompanyProviderCallStatus,
@@ -35,6 +42,24 @@ class WellRepository(Protocol):
     async def load(self, well_id: str) -> WellData: ...
 
 
+class ArtifactStore(Protocol):
+    """大文件字节端口；应用层不依赖 Filesystem 实现。"""
+
+    async def put(self, content: bytes) -> StoredArtifact: ...
+
+    async def exists(self, storage_key: str) -> bool: ...
+
+    async def verify(self, stored: StoredArtifact) -> bool: ...
+
+    async def save_upload_receipt(self, receipt: GdsxUploadReceipt) -> None: ...
+
+    async def get_upload_receipt(
+        self, artifact_id: str, *, user_id: str, agent_id: str, session_id: str
+    ) -> GdsxUploadReceipt | None: ...
+
+    def materialize(self, stored: StoredArtifact) -> AbstractAsyncContextManager[Path]: ...
+
+
 class TaskRepository(Protocol):
     """持续任务、版本化执行与旧版当前快照读取的长期存储端口。"""
 
@@ -53,6 +78,29 @@ class TaskRepository(Protocol):
     async def create_input_version(
         self, task_id: str, fixture: MockFixture, source_type: InputSource = "UPLOAD"
     ) -> InterpretationInputVersion: ...
+
+    async def create_artifact_input_version(
+        self,
+        task_id: str,
+        *,
+        well_id: str,
+        artifact: Artifact,
+        manifest: GdsxDatasetManifest,
+        source_type: InputSource = "UPLOAD",
+    ) -> InterpretationInputVersion: ...
+
+    async def create_artifact(self, artifact: Artifact) -> Artifact: ...
+
+    async def get_artifact(self, task_id: str, artifact_id: str) -> Artifact | None: ...
+
+    async def list_artifacts(self, task_id: str) -> list[Artifact]: ...
+
+    async def create_gdsx_ingress(
+        self,
+        state: InterpretationState,
+        artifact: Artifact,
+        manifest: GdsxDatasetManifest,
+    ) -> tuple[InterpretationInputVersion, DatasetRevision, Execution]: ...
 
     async def get_input_version(
         self, input_version_id: str

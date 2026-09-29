@@ -20,6 +20,7 @@ from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
 from cnlc_agent.demo.presentation import DemoStep, present_steps
+from cnlc_agent.demo.uploads import GdsxUpload
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.errors import ApplicationError
 from cnlc_agent.domain.inputs import InterpretationInputVersion
@@ -140,6 +141,8 @@ async def run_uploaded_well(fixture: MockFixture, instruction: str) -> DemoToolR
         async def materialize(version: InterpretationInputVersion) -> None:
             """只从仓库读回的规范化快照生成本次执行的临时 Fixture。"""
 
+            if version.payload is None:
+                raise ValueError("Fixture InputVersion 缺少 payload")
             await asyncio.to_thread(
                 (root / f"{version.well_id}.json").write_text,
                 version.payload.model_dump_json(),
@@ -194,9 +197,7 @@ class RunWellInterpretationTool(ToolBase):
     """``run_well_interpretation`` 的 AgentScope Tool 包装器。"""
 
     name = RUN_TOOL_NAME
-    description = (
-        "为 well_id 提交单井常规测井解释后台任务，立即返回 task_id、execution_id 和状态。"
-    )
+    description = "为 well_id 提交单井常规测井解释后台任务，立即返回 task_id、execution_id 和状态。"
     input_schema: dict[str, Any] = {
         "type": "object",
         "properties": {
@@ -219,7 +220,7 @@ class RunWellInterpretationTool(ToolBase):
 
             runner = TaskCommandRunner()
         self._runner = runner
-        self.upload: tuple[MockFixture, str] | None = None
+        self.upload: tuple[MockFixture, str] | tuple[GdsxUpload, str] | None = None
 
     async def check_permissions(self, *_args: Any, **_kwargs: Any) -> PermissionDecision:
         """用户主动提交解释请求后，允许执行本地单井解释流程。"""
@@ -246,9 +247,7 @@ class RunWellInterpretationTool(ToolBase):
                     state=ToolResultState.ERROR,
                     metadata=payload,
                 )
-            logging.getLogger(__name__).warning(
-                "Demo tool failed: %s", type(exc).__name__
-            )
+            logging.getLogger(__name__).warning("Demo tool failed: %s", type(exc).__name__)
             return ToolChunk(
                 content=[TextBlock(text="解释任务失败，请检查井资料或服务配置后重试。")],
                 state=ToolResultState.ERROR,
@@ -268,12 +267,22 @@ class RunWellInterpretationTool(ToolBase):
         if args or set(kwargs) != {"well_id"}:
             raise TypeError("run_well_interpretation 只接受关键字参数")
         well_id = cast(str, kwargs["well_id"])
+        result: DemoToolResult | TaskCommandResult
         if self.upload is not None:
             # upload 只在当前回复期间设置，井号必须与 Tool 参数一致。
-            fixture, instruction = self.upload
-            if fixture.well.well_id != well_id:
-                raise ValueError("上传井与任务井标识不一致")
-            result = await self._runner.start_uploaded(fixture, instruction)
+            uploaded, context = self.upload
+            if isinstance(uploaded, GdsxUpload):
+                from cnlc_agent.demo.task_tools import TaskCommandRunner
+
+                if context != well_id:
+                    raise ValueError("上传井与任务井标识不一致")
+                if not isinstance(self._runner, TaskCommandRunner):
+                    raise ApplicationError("GDSX_INGRESS_UNAVAILABLE", "当前执行器不支持 GDSX")
+                result = await self._runner.start_gdsx(uploaded, well_id)
+            else:
+                if uploaded.well.well_id != well_id:
+                    raise ValueError("上传井与任务井标识不一致")
+                result = await self._runner.start_uploaded(uploaded, context)
             payload = result.model_dump(mode="json")
         else:
             result = await self._runner.run(well_id)
@@ -300,9 +309,7 @@ class RunWellInterpretationTool(ToolBase):
             raise ApplicationError("EXECUTION_WAIT_UNAVAILABLE", "当前执行器不支持后台等待")
         return await self._runner.wait_for_execution_completion(task_id, execution_id)
 
-    async def get_execution_report(
-        self, task_id: str, execution_id: str
-    ) -> TaskCommandResult:
+    async def get_execution_report(self, task_id: str, execution_id: str) -> TaskCommandResult:
         """严格读取本轮 Execution 报告，禁止跟随 Task 当前指针。"""
 
         from cnlc_agent.demo.task_tools import TaskCommandRunner

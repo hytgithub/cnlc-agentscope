@@ -19,7 +19,7 @@ from cnlc_agent.domain.execution import (
     ExecutionStatus,
     execution_status_from_state,
 )
-from cnlc_agent.domain.inputs import InterpretationInputVersion
+from cnlc_agent.domain.inputs import InputPayloadKind, InterpretationInputVersion
 from cnlc_agent.domain.models import ErrorDetail, MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.stage_runtime import begin_stage, fail_running_stages, finish_stage
@@ -386,11 +386,12 @@ class InterpretationTaskService:
                 version = await self.repository.get_input_version(execution.input_version_id)
                 if version is None:
                     raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "输入版本不存在")
-                if materialize is None:
+                if version.payload_kind == InputPayloadKind.FIXTURE and materialize is None:
                     raise InfrastructureError(
                         "INPUT_MATERIALIZER_REQUIRED", "输入执行需要受控物化适配器"
                     )
-                await materialize(version)
+                if version.payload_kind == InputPayloadKind.FIXTURE and materialize is not None:
+                    await materialize(version)
             state, markdown = await self._run_execution(
                 request,
                 execution.state_snapshot.model_copy(deep=True),

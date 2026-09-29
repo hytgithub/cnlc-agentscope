@@ -28,6 +28,7 @@ from cnlc_agent.application.commands import (
     TaskCommands,
 )
 from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispatcher
+from cnlc_agent.application.gdsx_ingress import GdsxIngressService
 from cnlc_agent.application.ports import TaskRepository
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.service import InterpretationTaskService
@@ -51,12 +52,15 @@ from cnlc_agent.demo.operation_clarification import (
 from cnlc_agent.demo.operation_models import OperationScope
 from cnlc_agent.demo.operation_parser import ClarificationIssue, PartialOperationPlan
 from cnlc_agent.demo.task_context import SessionTaskResolver, TaskReference
+from cnlc_agent.demo.uploads import GdsxUpload
+from cnlc_agent.domain.artifacts import GdsxUploadReceipt
 from cnlc_agent.domain.errors import ApplicationError, InfrastructureError
 from cnlc_agent.domain.execution import TERMINAL_EXECUTION_STATUSES, ExecutionStatus
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
+from cnlc_agent.infrastructure.artifact_store import FilesystemArtifactStore
 from cnlc_agent.infrastructure.mock import (
     InMemoryStateStore,
     InMemoryTaskRepository,
@@ -380,6 +384,108 @@ class TaskCommandRunner:
             )
             return result
 
+    async def start_gdsx(self, upload: GdsxUpload, well_id: str | None) -> TaskCommandResult:
+        """保存真实 GDSX 引用并提交默认分阶段执行，不把 bytes 放入后台闭包。"""
+
+        self.clear_pending()
+        InteractionPolicy.decide(await self.interaction_snapshot(), "START")
+        async with self._lock:
+            with TemporaryDirectory(prefix="cnlc-submit-") as directory:
+                root = Path(directory)
+                async with self.context(root) as service:
+                    ingress = GdsxIngressService(
+                        service.repository,
+                        FilesystemArtifactStore(self.settings.artifact_root),
+                        max_upload_bytes=self.settings.max_gdsx_upload_bytes,
+                    )
+                    execution = await ingress.ingest(
+                        upload.content,
+                        filename=upload.filename,
+                        media_type=upload.media_type,
+                        instruction=upload.instruction,
+                        well_id=well_id,
+                    )
+                    if self.session_identity is not None:
+                        await service.repository.bind_task_to_session(
+                            SessionTaskBinding(
+                                **self.session_identity.model_dump(mode="python"),
+                                task_id=execution.task_id,
+                            )
+                        )
+                    self._remember_task(execution.task_id)
+                    self.set_active_task(execution.task_id)
+                    result = await TaskCommands(service).project(
+                        execution.task_id, execution.execution_id, "START"
+                    )
+            await self.dispatcher.submit(
+                execution.execution_id, self._executor(execution.execution_id)
+            )
+            return result
+
+    async def stage_gdsx(self, upload: GdsxUpload) -> GdsxUploadReceipt:
+        """正式 multipart 入口只落 blob/receipt，不把正文交给 Conversation。"""
+
+        if self.session_identity is None:
+            raise InfrastructureError("SESSION_IDENTITY_REQUIRED", "GDSX 上传缺少会话归属")
+        with TemporaryDirectory(prefix="cnlc-stage-") as directory:
+            async with self.context(Path(directory)) as service:
+                return await GdsxIngressService(
+                    service.repository,
+                    FilesystemArtifactStore(self.settings.artifact_root),
+                    max_upload_bytes=self.settings.max_gdsx_upload_bytes,
+                ).stage(
+                    upload.content,
+                    filename=upload.filename,
+                    media_type=upload.media_type,
+                    user_id=self.session_identity.user_id,
+                    agent_id=self.session_identity.agent_id,
+                    session_id=self.session_identity.session_id,
+                )
+
+    async def start_gdsx_artifact(
+        self, artifact_id: str, instruction: str, well_id: str | None
+    ) -> TaskCommandResult:
+        """正式任务入口只接收 artifact_id，再由 Store 校验会话收据和 blob。"""
+
+        if self.session_identity is None:
+            raise InfrastructureError("SESSION_IDENTITY_REQUIRED", "GDSX 任务缺少会话归属")
+        self.clear_pending()
+        InteractionPolicy.decide(await self.interaction_snapshot(), "START")
+        async with self._lock:
+            with TemporaryDirectory(prefix="cnlc-submit-") as directory:
+                async with self.context(Path(directory)) as service:
+                    store = FilesystemArtifactStore(self.settings.artifact_root)
+                    receipt = await store.get_upload_receipt(
+                        artifact_id,
+                        user_id=self.session_identity.user_id,
+                        agent_id=self.session_identity.agent_id,
+                        session_id=self.session_identity.session_id,
+                    )
+                    if receipt is None:
+                        raise InfrastructureError(
+                            "ARTIFACT_NOT_FOUND", "上传制品不存在或不属于会话"
+                        )
+                    execution = await GdsxIngressService(
+                        service.repository,
+                        store,
+                        max_upload_bytes=self.settings.max_gdsx_upload_bytes,
+                    ).create_task(receipt, instruction=instruction, well_id=well_id)
+                    await service.repository.bind_task_to_session(
+                        SessionTaskBinding(
+                            **self.session_identity.model_dump(mode="python"),
+                            task_id=execution.task_id,
+                        )
+                    )
+                    self._remember_task(execution.task_id)
+                    self.set_active_task(execution.task_id)
+                    result = await TaskCommands(service).project(
+                        execution.task_id, execution.execution_id, "START"
+                    )
+            await self.dispatcher.submit(
+                execution.execution_id, self._executor(execution.execution_id)
+            )
+            return result
+
     def _executor(self, execution_id: str) -> Callable[[str], Awaitable[None]]:
         """每个后台 Worker 自建服务与临时输入目录，避免跨请求复用连接。"""
 
@@ -445,6 +551,8 @@ class TaskCommandRunner:
         """仅从已校验的 InputVersion 物化数据；不使用上传文件名或旧临时路径。"""
 
         async def materialize(version: InterpretationInputVersion) -> None:
+            if version.payload is None:
+                raise ValueError("Fixture InputVersion 缺少 payload")
             await asyncio.to_thread(
                 (root / f"{version.well_id}.json").write_text,
                 version.payload.model_dump_json(),

@@ -35,6 +35,7 @@ METADATA_KEYS = {
     "fixture_source",
     "execution_id",
     "input_version_id",
+    "artifact_id",
     "prediction_model",
     "prediction_source",
     "effective_parameters",

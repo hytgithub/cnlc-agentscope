@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from cnlc_agent.domain.artifacts import Artifact, ArtifactKind, GdsxDatasetManifest
 from cnlc_agent.domain.company_provider import (
     CompanyProviderCall,
     CompanyProviderCallStatus,
@@ -47,6 +48,7 @@ from cnlc_agent.domain.execution import (
     execution_status_from_state,
 )
 from cnlc_agent.domain.inputs import (
+    InputPayloadKind,
     InputSource,
     InterpretationInputVersion,
     fixture_digest,
@@ -130,8 +132,17 @@ class InputVersionRow(Base):
     well_id: Mapped[str] = mapped_column(String(64), nullable=False)
     sequence: Mapped[int] = mapped_column(nullable=False)
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=InputPayloadKind.FIXTURE.value
+    )
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload: Mapped[JsonObject] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[JsonObject | None] = mapped_column(JSONB, nullable=True)
+    source_artifact_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("interpretation_artifact.artifact_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    dataset_manifest: Mapped[JsonObject | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -225,7 +236,9 @@ class ExecutionRow(Base):
     sequence: Mapped[int] = mapped_column(nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     run_mode: Mapped[str] = mapped_column(
-        String(32), nullable=False, default=ExecutionRunMode.CONTINUOUS.value,
+        String(32),
+        nullable=False,
+        default=ExecutionRunMode.CONTINUOUS.value,
         server_default=ExecutionRunMode.CONTINUOUS.value,
     )
     state_snapshot: Mapped[JsonObject] = mapped_column(JSONB, nullable=False)
@@ -331,6 +344,43 @@ class CompanyProviderCallRow(Base):
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
+class ArtifactRow(Base):
+    """GDSX Artifact 元数据；文件字节只进入 ArtifactStore。"""
+
+    __tablename__ = "interpretation_artifact"
+
+    artifact_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("interpretation_task.task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    well_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    source_artifact_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("interpretation_artifact.artifact_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_from_execution_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("interpretation_execution.execution_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    provider_call_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("interpretation_company_provider_call.provider_call_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 def _as_tool_run(row: ToolRunRow) -> ToolRun:
     """读回持久审计时重新校验生命周期与字段。"""
 
@@ -409,7 +459,8 @@ def _confirm_waiting_stage_snapshot(
 
     state = InterpretationState.model_validate(row.state_snapshot)
     matches = [
-        (index, run) for index, run in enumerate(state.stage_runs)
+        (index, run)
+        for index, run in enumerate(state.stage_runs)
         if run.task_id == row.task_id
         and run.execution_id == row.execution_id
         and run.stage == stage
@@ -437,8 +488,35 @@ def _as_input_version(row: InputVersionRow) -> InterpretationInputVersion:
         well_id=row.well_id,
         sequence=row.sequence,
         source_type=row.source_type,  # type: ignore[arg-type]
+        payload_kind=InputPayloadKind(row.payload_kind),
         content_sha256=row.content_sha256,
-        payload=MockFixture.model_validate(row.payload),
+        payload=MockFixture.model_validate(row.payload) if row.payload is not None else None,
+        source_artifact_id=row.source_artifact_id,
+        dataset_manifest=(
+            GdsxDatasetManifest.model_validate(row.dataset_manifest)
+            if row.dataset_manifest is not None
+            else None
+        ),
+        created_at=row.created_at,
+    )
+
+
+def _as_artifact(row: ArtifactRow) -> Artifact:
+    """读回 Artifact 元数据时重新校验逻辑 storage key 和归属字段。"""
+
+    return Artifact(
+        artifact_id=row.artifact_id,
+        task_id=row.task_id,
+        well_id=row.well_id,
+        kind=ArtifactKind(row.kind),
+        media_type=row.media_type,
+        original_filename=row.original_filename,
+        size_bytes=row.size_bytes,
+        content_sha256=row.content_sha256,
+        storage_key=row.storage_key,
+        source_artifact_id=row.source_artifact_id,
+        created_from_execution_id=row.created_from_execution_id,
+        provider_call_id=row.provider_call_id,
         created_at=row.created_at,
     )
 
@@ -496,23 +574,25 @@ class PostgreSQLTaskRepository:
                 execution = await session.get(ExecutionRow, run.execution_id)
                 if execution is None or execution.task_id != run.task_id:
                     raise InfrastructureError("TOOL_RUN_EXECUTION_MISMATCH", "工具调用不属于该执行")
-                session.add(ToolRunRow(
-                    tool_run_id=run.tool_run_id,
-                    task_id=run.task_id,
-                    execution_id=run.execution_id,
-                    step_id=run.step_id.value,
-                    tool_code=run.tool_code,
-                    status=run.status.value,
-                    execution_mode=run.execution_mode.value,
-                    source=run.source,
-                    input_snapshot=run.input_snapshot,
-                    output_snapshot=run.output_snapshot,
-                    source_external_call_id=run.source_external_call_id,
-                    started_at=run.started_at,
-                    finished_at=None,
-                    error_code=None,
-                    error_message=None,
-                ))
+                session.add(
+                    ToolRunRow(
+                        tool_run_id=run.tool_run_id,
+                        task_id=run.task_id,
+                        execution_id=run.execution_id,
+                        step_id=run.step_id.value,
+                        tool_code=run.tool_code,
+                        status=run.status.value,
+                        execution_mode=run.execution_mode.value,
+                        source=run.source,
+                        input_snapshot=run.input_snapshot,
+                        output_snapshot=run.output_snapshot,
+                        source_external_call_id=run.source_external_call_id,
+                        started_at=run.started_at,
+                        finished_at=None,
+                        error_code=None,
+                        error_message=None,
+                    )
+                )
             return run.model_copy(deep=True)
         except IntegrityError:
             raise InfrastructureError("TOOL_RUN_EXISTS", "工具调用标识已存在") from None
@@ -545,16 +625,18 @@ class PostgreSQLTaskRepository:
                     raise InfrastructureError("TOOL_RUN_ALREADY_FINISHED", "工具调用已结束")
                 if status == ToolRunStatus.RUNNING:
                     raise InfrastructureError("TOOL_RUN_INVALID_STATUS", "结束调用必须使用终态")
-                finished = ToolRun.model_validate({
-                    **_as_tool_run(row).model_dump(mode="python"),
-                    "status": status,
-                    "source": source,
-                    "output_snapshot": output_snapshot,
-                    "finished_at": utc_now(),
-                    "error_code": error_code,
-                    "error_message": error_message,
-                    "source_external_call_id": source_external_call_id,
-                })
+                finished = ToolRun.model_validate(
+                    {
+                        **_as_tool_run(row).model_dump(mode="python"),
+                        "status": status,
+                        "source": source,
+                        "output_snapshot": output_snapshot,
+                        "finished_at": utc_now(),
+                        "error_code": error_code,
+                        "error_message": error_message,
+                        "source_external_call_id": source_external_call_id,
+                    }
+                )
                 row.status = finished.status.value
                 row.source = finished.source
                 row.output_snapshot = finished.output_snapshot
@@ -579,10 +661,13 @@ class PostgreSQLTaskRepository:
     async def list_tool_runs(self, execution_id: str) -> list[ToolRun]:
         try:
             async with self.sessions() as session:
-                rows = (await session.scalars(
-                    select(ToolRunRow).where(ToolRunRow.execution_id == execution_id)
-                    .order_by(ToolRunRow.started_at, ToolRunRow.tool_run_id)
-                )).all()
+                rows = (
+                    await session.scalars(
+                        select(ToolRunRow)
+                        .where(ToolRunRow.execution_id == execution_id)
+                        .order_by(ToolRunRow.started_at, ToolRunRow.tool_run_id)
+                    )
+                ).all()
                 return [_as_tool_run(row) for row in rows]
         except (ValidationError, ValueError):
             raise InfrastructureError("INVALID_STORED_TOOL_RUN", "数据库工具审计结构无效") from None
@@ -591,9 +676,7 @@ class PostgreSQLTaskRepository:
                 "DATABASE_READ_FAILED", "数据库工具审计列表读取失败"
             ) from None
 
-    async def create_company_provider_call(
-        self, call: CompanyProviderCall
-    ) -> CompanyProviderCall:
+    async def create_company_provider_call(self, call: CompanyProviderCall) -> CompanyProviderCall:
         """在单事务内核对 Execution 与 InputVersion 归属并创建运行态。"""
 
         try:
@@ -612,29 +695,29 @@ class PostgreSQLTaskRepository:
                         "COMPANY_RESULT_VERSION_MISMATCH",
                         "公司调用不属于当前执行及输入版本",
                     )
-                session.add(CompanyProviderCallRow(
-                    provider_call_id=call.provider_call_id,
-                    external_call_id=call.external_call_id,
-                    task_id=call.task_id,
-                    execution_id=call.execution_id,
-                    input_version_id=call.input_version_id,
-                    provider_operation=call.provider_operation.value,
-                    status=call.status.value,
-                    request_summary=call.request_summary,
-                    normalized_result=call.normalized_result,
-                    started_at=call.started_at,
-                    finished_at=None,
-                    error_code=None,
-                ))
+                session.add(
+                    CompanyProviderCallRow(
+                        provider_call_id=call.provider_call_id,
+                        external_call_id=call.external_call_id,
+                        task_id=call.task_id,
+                        execution_id=call.execution_id,
+                        input_version_id=call.input_version_id,
+                        provider_operation=call.provider_operation.value,
+                        status=call.status.value,
+                        request_summary=call.request_summary,
+                        normalized_result=call.normalized_result,
+                        started_at=call.started_at,
+                        finished_at=None,
+                        error_code=None,
+                    )
+                )
             return call.model_copy(deep=True)
         except IntegrityError:
             raise InfrastructureError(
                 "COMPANY_PROVIDER_CALL_EXISTS", "公司调用标识已存在"
             ) from None
         except (SQLAlchemyError, OSError, TimeoutError):
-            raise InfrastructureError(
-                "DATABASE_WRITE_FAILED", "数据库公司调用创建失败"
-            ) from None
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库公司调用创建失败") from None
 
     async def finish_company_provider_call(
         self,
@@ -654,34 +737,28 @@ class PostgreSQLTaskRepository:
                     .with_for_update()
                 )
                 if row is None:
-                    raise InfrastructureError(
-                        "COMPANY_PROVIDER_CALL_NOT_FOUND", "公司调用不存在"
-                    )
+                    raise InfrastructureError("COMPANY_PROVIDER_CALL_NOT_FOUND", "公司调用不存在")
                 current = _as_company_provider_call(row)
                 if current.status != CompanyProviderCallStatus.RUNNING:
-                    raise InfrastructureError(
-                        "COMPANY_PROVIDER_CALL_FINISHED", "公司调用已经结束"
-                    )
-                finished = CompanyProviderCall.model_validate({
-                    **current.model_dump(mode="python"),
-                    "status": status,
-                    "normalized_result": normalized_result,
-                    "finished_at": utc_now(),
-                    "error_code": error_code,
-                })
+                    raise InfrastructureError("COMPANY_PROVIDER_CALL_FINISHED", "公司调用已经结束")
+                finished = CompanyProviderCall.model_validate(
+                    {
+                        **current.model_dump(mode="python"),
+                        "status": status,
+                        "normalized_result": normalized_result,
+                        "finished_at": utc_now(),
+                        "error_code": error_code,
+                    }
+                )
                 row.status = finished.status.value
                 row.normalized_result = finished.normalized_result
                 row.finished_at = finished.finished_at
                 row.error_code = finished.error_code
             return finished
         except (SQLAlchemyError, OSError, TimeoutError):
-            raise InfrastructureError(
-                "DATABASE_WRITE_FAILED", "数据库公司调用结束失败"
-            ) from None
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库公司调用结束失败") from None
 
-    async def get_company_provider_call(
-        self, external_call_id: str
-    ) -> CompanyProviderCall | None:
+    async def get_company_provider_call(self, external_call_id: str) -> CompanyProviderCall | None:
         try:
             async with self.sessions() as session:
                 row = await session.scalar(
@@ -710,9 +787,7 @@ class PostgreSQLTaskRepository:
                     CompanyProviderCallRow.task_id == task_id
                 )
                 if execution_id is not None:
-                    statement = statement.where(
-                        CompanyProviderCallRow.execution_id == execution_id
-                    )
+                    statement = statement.where(CompanyProviderCallRow.execution_id == execution_id)
                 if operation is not None:
                     statement = statement.where(
                         CompanyProviderCallRow.provider_operation == operation.value
@@ -768,6 +843,118 @@ class PostgreSQLTaskRepository:
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库任务创建失败") from None
 
+    async def create_gdsx_ingress(
+        self,
+        state: InterpretationState,
+        artifact: Artifact,
+        manifest: GdsxDatasetManifest,
+    ) -> tuple[InterpretationInputVersion, DatasetRevision, Execution]:
+        """一个数据库事务创建首个 GDSX Task、Artifact、Input、R1 与 Execution。"""
+
+        task_id = state.task.task_id
+        if artifact.task_id != task_id or artifact.well_id != state.task.well_id:
+            raise InfrastructureError("ARTIFACT_TASK_MISMATCH", "源制品归属无效")
+        version = InterpretationInputVersion(
+            task_id=task_id,
+            well_id=state.task.well_id,
+            sequence=1,
+            source_type="UPLOAD",
+            payload_kind=InputPayloadKind.GDSX_ARTIFACT,
+            content_sha256=artifact.content_sha256,
+            source_artifact_id=artifact.artifact_id,
+            dataset_manifest=manifest,
+        )
+        revision = DatasetRevision(
+            task_id=task_id,
+            well_id=state.task.well_id,
+            sequence=1,
+            root_input_version_id=version.input_version_id,
+            lineage_sha256=root_lineage(version.content_sha256),
+        )
+        state.input_version_id = version.input_version_id
+        state.source_artifact_id = artifact.artifact_id
+        state.dataset_manifest = manifest
+        state.dataset_revision_id = revision.dataset_revision_id
+        now = utc_now()
+        execution = Execution(
+            execution_id=state.workflow_execution_id,
+            task_id=task_id,
+            sequence=1,
+            status=ExecutionStatus.QUEUED,
+            run_mode=ExecutionRunMode.STAGED_CONFIRMATION,
+            state_snapshot=state.model_copy(deep=True),
+            trigger_type="INITIAL",
+            input_version_id=version.input_version_id,
+            planning_reason="INITIAL",
+            created_at=now,
+            updated_at=now,
+        )
+        try:
+            async with self.sessions.begin() as session:
+                if await session.get(TaskRow, task_id) is not None:
+                    raise InfrastructureError("TASK_EXISTS", "任务标识已存在，请创建新任务")
+                task = TaskRow(
+                    task_id=task_id,
+                    well_id=state.task.well_id,
+                    status=state.status.value,
+                    snapshot=state.model_dump(mode="json"),
+                    markdown="",
+                    created_at=state.created_at,
+                    updated_at=now,
+                )
+                session.add(task)
+                await session.flush()
+                session.add(
+                    ArtifactRow(
+                        **artifact.model_dump(mode="python", exclude={"kind"}),
+                        kind=artifact.kind.value,
+                    )
+                )
+                await session.flush()
+                session.add(
+                    InputVersionRow(
+                        input_version_id=version.input_version_id,
+                        task_id=task_id,
+                        well_id=version.well_id,
+                        sequence=1,
+                        source_type="UPLOAD",
+                        payload_kind=version.payload_kind.value,
+                        content_sha256=version.content_sha256,
+                        payload=None,
+                        source_artifact_id=artifact.artifact_id,
+                        dataset_manifest=manifest.model_dump(mode="json"),
+                        created_at=version.created_at,
+                    )
+                )
+                await session.flush()
+                session.add(DatasetRevisionRow(**revision.model_dump(mode="python")))
+                session.add(
+                    ExecutionRow(
+                        execution_id=execution.execution_id,
+                        task_id=task_id,
+                        sequence=1,
+                        status=execution.status.value,
+                        run_mode=execution.run_mode.value,
+                        state_snapshot=state.model_dump(mode="json"),
+                        markdown="",
+                        trigger_type="INITIAL",
+                        input_version_id=version.input_version_id,
+                        override_snapshot=execution.override_snapshot.model_dump(mode="json"),
+                        start_step=StepId.W01.value,
+                        source_execution_id=None,
+                        planning_reason="INITIAL",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                task.current_execution_id = execution.execution_id
+                task.current_input_version_id = version.input_version_id
+            return version, revision, execution
+        except IntegrityError:
+            raise InfrastructureError("GDSX_INGRESS_CONFLICT", "GDSX 首次导入事实冲突") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库 GDSX 导入失败") from None
+
     async def get_task(self, task_id: str) -> InterpretationTask | None:
         """读取任务元信息；不把一次运行快照误作持续任务实体。"""
 
@@ -799,14 +986,18 @@ class PostgreSQLTaskRepository:
                 task = await session.get(TaskRow, binding.task_id)
                 if task is None:
                     raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
-                statement = postgresql_insert(SessionTaskBindingRow).values(
-                    user_id=binding.user_id,
-                    agent_id=binding.agent_id,
-                    session_id=binding.session_id,
-                    task_id=binding.task_id,
-                    created_at=binding.created_at,
-                ).on_conflict_do_nothing(
-                    index_elements=["user_id", "agent_id", "session_id", "task_id"]
+                statement = (
+                    postgresql_insert(SessionTaskBindingRow)
+                    .values(
+                        user_id=binding.user_id,
+                        agent_id=binding.agent_id,
+                        session_id=binding.session_id,
+                        task_id=binding.task_id,
+                        created_at=binding.created_at,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=["user_id", "agent_id", "session_id", "task_id"]
+                    )
                 )
                 await session.execute(statement)
         except InfrastructureError:
@@ -842,9 +1033,7 @@ class PostgreSQLTaskRepository:
                 "SESSION_TASK_BINDING_READ_FAILED", "会话任务归属读取失败"
             ) from None
 
-    async def task_belongs_to_session(
-        self, identity: TaskSessionIdentity, task_id: str
-    ) -> bool:
+    async def task_belongs_to_session(self, identity: TaskSessionIdentity, task_id: str) -> bool:
         """查询完整四元组；单独存在的 task_id 不构成访问授权。"""
 
         identity = TaskSessionIdentity.model_validate(identity.model_dump(mode="python"))
@@ -897,8 +1086,11 @@ class PostgreSQLTaskRepository:
                     well_id=task.well_id,
                     sequence=version.sequence,
                     source_type=version.source_type,
+                    payload_kind=version.payload_kind.value,
                     content_sha256=version.content_sha256,
                     payload=fixture.model_dump(mode="json"),
+                    source_artifact_id=None,
+                    dataset_manifest=None,
                     created_at=version.created_at,
                 )
                 session.add(row)
@@ -906,6 +1098,137 @@ class PostgreSQLTaskRepository:
                 task.current_input_version_id = row.input_version_id
                 task.updated_at = utc_now()
             return version.model_copy(deep=True)
+        except IntegrityError:
+            raise InfrastructureError(
+                "INPUT_VERSION_CONFLICT", "输入版本标识或序号已存在"
+            ) from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库输入版本创建失败") from None
+
+    async def create_artifact(self, artifact: Artifact) -> Artifact:
+        """只保存经过归属检查的 Artifact metadata。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                task = await session.get(TaskRow, artifact.task_id)
+                if task is None or task.well_id != artifact.well_id:
+                    raise InfrastructureError("ARTIFACT_TASK_MISMATCH", "制品不属于当前任务或井")
+                if artifact.source_artifact_id is not None:
+                    source = await session.get(ArtifactRow, artifact.source_artifact_id)
+                    if source is None or source.task_id != artifact.task_id:
+                        raise InfrastructureError("ARTIFACT_TASK_MISMATCH", "源制品不属于当前任务")
+                if artifact.created_from_execution_id is not None:
+                    execution = await session.get(ExecutionRow, artifact.created_from_execution_id)
+                    if execution is None or execution.task_id != artifact.task_id:
+                        raise InfrastructureError(
+                            "ARTIFACT_TASK_MISMATCH", "来源执行不属于当前任务"
+                        )
+                if artifact.provider_call_id is not None:
+                    provider_call = await session.get(
+                        CompanyProviderCallRow, artifact.provider_call_id
+                    )
+                    if provider_call is None or provider_call.task_id != artifact.task_id:
+                        raise InfrastructureError(
+                            "ARTIFACT_TASK_MISMATCH", "ProviderCall 不属于任务"
+                        )
+                session.add(
+                    ArtifactRow(
+                        **artifact.model_dump(mode="python", exclude={"kind"}),
+                        kind=artifact.kind.value,
+                    )
+                )
+            return artifact.model_copy(deep=True)
+        except IntegrityError:
+            raise InfrastructureError("ARTIFACT_CONFLICT", "制品元数据已存在或引用无效") from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_WRITE_FAILED", "数据库制品元数据写入失败") from None
+
+    async def get_artifact(self, task_id: str, artifact_id: str) -> Artifact | None:
+        """task_id 与 artifact_id 必须同时匹配，禁止跨任务读取。"""
+
+        try:
+            async with self.sessions() as session:
+                row = await session.scalar(
+                    select(ArtifactRow).where(
+                        ArtifactRow.task_id == task_id, ArtifactRow.artifact_id == artifact_id
+                    )
+                )
+                return _as_artifact(row) if row is not None else None
+        except (ValidationError, ValueError):
+            raise InfrastructureError("INVALID_STORED_ARTIFACT", "数据库制品元数据无效") from None
+
+    async def list_artifacts(self, task_id: str) -> list[Artifact]:
+        try:
+            async with self.sessions() as session:
+                rows = (
+                    await session.scalars(
+                        select(ArtifactRow)
+                        .where(ArtifactRow.task_id == task_id)
+                        .order_by(ArtifactRow.created_at, ArtifactRow.artifact_id)
+                    )
+                ).all()
+                return [_as_artifact(row) for row in rows]
+        except (ValidationError, ValueError):
+            raise InfrastructureError("INVALID_STORED_ARTIFACT", "数据库制品元数据无效") from None
+
+    async def create_artifact_input_version(
+        self,
+        task_id: str,
+        *,
+        well_id: str,
+        artifact: Artifact,
+        manifest: GdsxDatasetManifest,
+        source_type: InputSource = "UPLOAD",
+    ) -> InterpretationInputVersion:
+        """任务行锁内创建只引用 Artifact 的 InputVersion，不复制 bytes。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                task = await session.scalar(
+                    select(TaskRow).where(TaskRow.task_id == task_id).with_for_update()
+                )
+                artifact_row = await session.get(ArtifactRow, artifact.artifact_id)
+                if (
+                    task is None
+                    or task.well_id != well_id
+                    or artifact_row is None
+                    or artifact_row.task_id != task_id
+                    or artifact_row.well_id != well_id
+                ):
+                    raise InfrastructureError("ARTIFACT_TASK_MISMATCH", "制品输入归属无效")
+                last_sequence = await session.scalar(
+                    select(func.max(InputVersionRow.sequence)).where(
+                        InputVersionRow.task_id == task_id
+                    )
+                )
+                version = InterpretationInputVersion(
+                    task_id=task_id,
+                    well_id=well_id,
+                    sequence=(last_sequence or 0) + 1,
+                    source_type=source_type,
+                    payload_kind=InputPayloadKind.GDSX_ARTIFACT,
+                    content_sha256=artifact.content_sha256,
+                    source_artifact_id=artifact.artifact_id,
+                    dataset_manifest=manifest,
+                )
+                session.add(
+                    InputVersionRow(
+                        input_version_id=version.input_version_id,
+                        task_id=task_id,
+                        well_id=well_id,
+                        sequence=version.sequence,
+                        source_type=source_type,
+                        payload_kind=version.payload_kind.value,
+                        content_sha256=version.content_sha256,
+                        payload=None,
+                        source_artifact_id=artifact.artifact_id,
+                        dataset_manifest=manifest.model_dump(mode="json"),
+                        created_at=version.created_at,
+                    )
+                )
+                task.current_input_version_id = version.input_version_id
+                task.updated_at = utc_now()
+            return version
         except IntegrityError:
             raise InfrastructureError(
                 "INPUT_VERSION_CONFLICT", "输入版本标识或序号已存在"
@@ -930,11 +1253,13 @@ class PostgreSQLTaskRepository:
 
         try:
             async with self.sessions() as session:
-                rows = (await session.scalars(
-                    select(InputVersionRow)
-                    .where(InputVersionRow.task_id == task_id)
-                    .order_by(InputVersionRow.sequence)
-                )).all()
+                rows = (
+                    await session.scalars(
+                        select(InputVersionRow)
+                        .where(InputVersionRow.task_id == task_id)
+                        .order_by(InputVersionRow.sequence)
+                    )
+                ).all()
                 return [_as_input_version(row) for row in rows]
         except (ValidationError, ValueError):
             raise InfrastructureError("INVALID_STORED_INPUT", "数据库输入版本结构无效") from None
@@ -958,9 +1283,7 @@ class PostgreSQLTaskRepository:
                     )
                 )
                 if task is None or input_row is None:
-                    raise InfrastructureError(
-                        "DATASET_REVISION_TASK_MISMATCH", "根版本归属无效"
-                    )
+                    raise InfrastructureError("DATASET_REVISION_TASK_MISMATCH", "根版本归属无效")
                 if (
                     input_row.task_id != revision.task_id
                     or input_row.well_id != revision.well_id
@@ -980,9 +1303,7 @@ class PostgreSQLTaskRepository:
                         "INVALID_DATASET_REVISION_CHAIN", "根版本摘要或序号无效"
                     )
                 if revision.created_from_execution_id is not None:
-                    execution = await session.get(
-                        ExecutionRow, revision.created_from_execution_id
-                    )
+                    execution = await session.get(ExecutionRow, revision.created_from_execution_id)
                     if execution is None or execution.task_id != revision.task_id:
                         raise InfrastructureError(
                             "EXECUTION_TASK_MISMATCH", "来源执行不属于当前任务"
@@ -1017,9 +1338,7 @@ class PostgreSQLTaskRepository:
                 )
                 parent = await session.get(DatasetRevisionRow, revision.parent_revision_id)
                 if task is None or parent is None or parent.task_id != revision.task_id:
-                    raise InfrastructureError(
-                        "DATASET_REVISION_TASK_MISMATCH", "父版本归属无效"
-                    )
+                    raise InfrastructureError("DATASET_REVISION_TASK_MISMATCH", "父版本归属无效")
                 if (
                     task.well_id != revision.well_id
                     or parent.well_id != revision.well_id
@@ -1038,15 +1357,11 @@ class PostgreSQLTaskRepository:
                         "INVALID_DATASET_REVISION_CHAIN", "版本 lineage 引用不一致"
                     )
                 if change_set.content_sha256 != change_set_digest(change_set.curve_changes):
-                    raise InfrastructureError(
-                        "INVALID_CHANGE_SET_DIGEST", "ChangeSet 摘要无效"
-                    )
+                    raise InfrastructureError("INVALID_CHANGE_SET_DIGEST", "ChangeSet 摘要无效")
                 if revision.lineage_sha256 != child_lineage(
                     parent.lineage_sha256, change_set.content_sha256
                 ):
-                    raise InfrastructureError(
-                        "INVALID_DATASET_REVISION_CHAIN", "子版本摘要无效"
-                    )
+                    raise InfrastructureError("INVALID_DATASET_REVISION_CHAIN", "子版本摘要无效")
                 for execution_id in (
                     revision.created_from_execution_id,
                     change_set.source_execution_id,
@@ -1075,9 +1390,7 @@ class PostgreSQLTaskRepository:
                         well_id=change_set.well_id,
                         base_revision_id=change_set.base_revision_id,
                         change_type=change_set.change_type.value,
-                        payload=[
-                            item.model_dump(mode="json") for item in change_set.curve_changes
-                        ],
+                        payload=[item.model_dump(mode="json") for item in change_set.curve_changes],
                         content_sha256=change_set.content_sha256,
                         created_by=change_set.created_by,
                         source_execution_id=change_set.source_execution_id,
@@ -1206,10 +1519,12 @@ class PostgreSQLTaskRepository:
                     raise InfrastructureError("EXECUTION_EXISTS", "执行标识已存在")
                 current = (
                     await session.get(ExecutionRow, task.current_execution_id)
-                    if task.current_execution_id is not None else None
+                    if task.current_execution_id is not None
+                    else None
                 )
                 if current is not None and current.status in {
-                    ExecutionStatus.QUEUED.value, ExecutionStatus.RUNNING.value
+                    ExecutionStatus.QUEUED.value,
+                    ExecutionStatus.RUNNING.value,
                 }:
                     raise InfrastructureError("TASK_EXECUTION_ACTIVE", "当前任务已有执行正在处理")
                 last_sequence = await session.scalar(
@@ -1279,11 +1594,13 @@ class PostgreSQLTaskRepository:
     async def list_executions(self, task_id: str) -> list[Execution]:
         try:
             async with self.sessions() as session:
-                rows = (await session.scalars(
-                    select(ExecutionRow)
-                    .where(ExecutionRow.task_id == task_id)
-                    .order_by(ExecutionRow.sequence)
-                )).all()
+                rows = (
+                    await session.scalars(
+                        select(ExecutionRow)
+                        .where(ExecutionRow.task_id == task_id)
+                        .order_by(ExecutionRow.sequence)
+                    )
+                ).all()
                 return [_as_execution(row) for row in rows]
         except (ValidationError, ValueError):
             raise InfrastructureError("INVALID_STORED_EXECUTION", "数据库执行结构无效") from None
@@ -1432,7 +1749,8 @@ class PostgreSQLTaskRepository:
                 if row.lease_expires_at is None or row.lease_expires_at <= utc_now():
                     raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
                 waiting = [
-                    run for run in state.stage_runs
+                    run
+                    for run in state.stage_runs
                     if run.execution_id == execution_id
                     and run.status == StageRunStatus.WAITING_CONFIRM
                     and run.validity == StageValidity.CURRENT
@@ -1487,9 +1805,7 @@ class PostgreSQLTaskRepository:
                     raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不能确认")
                 if row.status != ExecutionStatus.WAITING_CONFIRMATION.value:
                     raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "执行不在等待确认态")
-                state = _confirm_waiting_stage_snapshot(
-                    row, stage, expected_stage_run_id, actor
-                )
+                state = _confirm_waiting_stage_snapshot(row, stage, expected_stage_run_id, actor)
                 now = utc_now()
                 payload = state.model_dump(mode="json")
                 row.status = ExecutionStatus.QUEUED.value
@@ -1559,13 +1875,17 @@ class PostgreSQLTaskRepository:
 
         try:
             async with self.sessions.begin() as session:
-                rows = (await session.scalars(
-                    select(ExecutionRow).where(
-                        ExecutionRow.status == ExecutionStatus.RUNNING.value,
-                        ExecutionRow.lease_expires_at.is_not(None),
-                        ExecutionRow.lease_expires_at <= now,
-                    ).with_for_update(skip_locked=True)
-                )).all()
+                rows = (
+                    await session.scalars(
+                        select(ExecutionRow)
+                        .where(
+                            ExecutionRow.status == ExecutionStatus.RUNNING.value,
+                            ExecutionRow.lease_expires_at.is_not(None),
+                            ExecutionRow.lease_expires_at <= now,
+                        )
+                        .with_for_update(skip_locked=True)
+                    )
+                ).all()
                 for row in rows:
                     row.status = ExecutionStatus.FAILED.value
                     row.finished_at = now
@@ -1598,9 +1918,7 @@ class PostgreSQLTaskRepository:
                     raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
                 if row.status != ExecutionStatus.RUNNING.value:
                     raise InfrastructureError("EXECUTION_NOT_RUNNING", "执行不在运行态")
-                if (
-                    row.lease_expires_at is None or row.lease_expires_at <= utc_now()
-                ):
+                if row.lease_expires_at is None or row.lease_expires_at <= utc_now():
                     raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
                 payload = state.model_dump(mode="json")
                 now = utc_now()

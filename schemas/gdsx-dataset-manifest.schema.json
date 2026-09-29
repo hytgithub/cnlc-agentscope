@@ -1,0 +1,171 @@
+{
+  "$defs": {
+    "CurveManifest": {
+      "additionalProperties": false,
+      "description": "单条曲线的只读摘要，不包含 values。",
+      "properties": {
+        "depth_end": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth End"
+        },
+        "depth_start": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Start"
+        },
+        "depth_step": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Step"
+        },
+        "dimension": {
+          "maximum": 4,
+          "minimum": 1,
+          "title": "Dimension",
+          "type": "integer"
+        },
+        "point_count": {
+          "minimum": 0,
+          "title": "Point Count",
+          "type": "integer"
+        },
+        "raw_name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Raw Name",
+          "type": "string"
+        },
+        "standard_name": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Standard Name"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "raw_name",
+        "point_count",
+        "dimension"
+      ],
+      "title": "CurveManifest",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "GDSX 解编后可持久化的小型清单；字段映射等待真实样本确认。",
+  "properties": {
+    "artifact_id": {
+      "minLength": 1,
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "curve_count": {
+      "minimum": 0,
+      "title": "Curve Count",
+      "type": "integer"
+    },
+    "curves": {
+      "items": {
+        "$ref": "#/$defs/CurveManifest"
+      },
+      "title": "Curves",
+      "type": "array"
+    },
+    "depth_summary": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Depth Summary",
+      "type": "object"
+    },
+    "size_bytes": {
+      "exclusiveMinimum": 0,
+      "title": "Size Bytes",
+      "type": "integer"
+    },
+    "table_count": {
+      "minimum": 0,
+      "title": "Table Count",
+      "type": "integer"
+    },
+    "table_names": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Table Names",
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    },
+    "well_info_summary": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Well Info Summary",
+      "type": "object"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "size_bytes",
+    "content_sha256",
+    "curve_count",
+    "table_count"
+  ],
+  "title": "GdsxDatasetManifest",
+  "type": "object"
+}

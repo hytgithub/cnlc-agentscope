@@ -13,11 +13,13 @@ class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CNLC_", env_file=".env", extra="ignore")
 
     mode: Literal["mock", "demo"] = "mock"
-    # company_real 只表示真实传输/规范化已装配，GDSX Web ingress 留给 11G。
+    # company_real 的 W01/W03 通过持久 Artifact 引用恢复，不依赖进程临时路径。
     professional_provider: Literal["fixture", "company_mock", "company_real"] = "fixture"
     model_provider: Literal["mock", "openai_compatible", "openai-compatible", "real"] = "mock"
     mock_data_dir: Path = Path("mock_data")
     output_dir: Path = Path("outputs")
+    artifact_root: Path = Path(".cnlc-artifacts")
+    max_gdsx_upload_bytes: int = Field(default=50 * 1024 * 1024, gt=0)
     report_style: ReportStyle = ReportStyle.STANDARD
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     tool_timeout_seconds: float = Field(default=10, gt=0)

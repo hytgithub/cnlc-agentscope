@@ -67,8 +67,16 @@ class TestArtifactSink:
 
     saved_length = 0
 
-    async def save_processed_gdsx(self, task_id, execution_id, input_version_id, content):
-        del task_id, execution_id, input_version_id
+    async def save_processed_gdsx(
+        self,
+        task_id,
+        execution_id,
+        input_version_id,
+        content,
+        source_artifact_id,
+        provider_call_id,
+    ):
+        del task_id, execution_id, input_version_id, source_artifact_id, provider_call_id
         self.saved_length = len(content)
         return "artifact:processed:test"
 

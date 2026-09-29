@@ -196,6 +196,26 @@ Execution 没有 `PENDING` 和 `SKIPPED`；这两个值属于 Workflow 步骤状
 | `UNSUPPORTED_OPERATION` | 请求属于测井领域，但当前版本尚未开放该操作能力。 |
 | `UNSUPPORTED_PARAMETER` | 请求修改的参数不在当前受支持参数契约中。 |
 
+## 44. ArtifactKind / InputPayloadKind（GDSX 制品与输入正文类型）
+
+| 代码值 | 中文名称 | 含义 |
+| --- | --- | --- |
+| `SOURCE_GDSX` | 源 GDSX 制品 | 用户上传并通过只读文件校验的原始制品。 |
+| `PROCESSED_GDSX` | 处理后 GDSX 制品 | 公司预处理返回的 GDSX；关联源制品、Execution 与 ProviderCall。 |
+| `FIXTURE` | Fixture 正文输入 | 兼容既有 JSON Demo，InputVersion 自身保存规范化 fixture。 |
+| `GDSX_ARTIFACT` | GDSX 制品引用输入 | InputVersion 只保存 Artifact 引用和无曲线采样值的 manifest。 |
+
+## 45. Task 11G 稳定错误码
+
+| 错误码 | 中文含义 |
+| --- | --- |
+| `GDSX_UPLOAD_TOO_LARGE` | GDSX Base64 在解码前或正文在保存前超过独立大小限制。 |
+| `GDSX_FILE_INVALID` | 后缀、媒体类型、HDF5 magic 或实际 HDF5 打开校验失败。 |
+| `ARTIFACT_TASK_MISMATCH` | Artifact、Task、井、InputVersion、Execution 或 ProviderCall 归属不一致。 |
+| `ARTIFACT_DATASET_MATERIALIZATION_UNSUPPORTED` | 当前不支持把 artifact-backed DatasetRevision 伪造成 RawData。 |
+| `ARTIFACT_INTEGRITY_FAILED` | 物理 blob 缺失、size 不符或 SHA-256 不符，禁止继续物化或外发。 |
+| `GDSX_DURABLE_DATABLOCK_UNSUPPORTED` | 正式持久模式拒绝可能进入 Conversation Storage 的 Base64 GDSX。 |
+
 ## 17. 文档维护规则
 
 1. 代码值保持英文，方便与日志、API、数据库和测试一一对应。

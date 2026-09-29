@@ -3,8 +3,16 @@
 from cnlc_agent.agents.interpretation_agent import InterpretationAgent
 from cnlc_agent.agents.validation_agent import ValidationAgent
 from cnlc_agent.application.ports import ModelRequest
+from cnlc_agent.domain.artifacts import GdsxDatasetManifest
 from cnlc_agent.domain.enums import StepId, StepStatus, ValidationStatus
-from cnlc_agent.domain.models import MissingData, StageResult, ValidationResult, WellData
+from cnlc_agent.domain.models import (
+    DataRequirements,
+    MissingData,
+    StageResult,
+    ValidationResult,
+    Well,
+    WellData,
+)
 from cnlc_agent.domain.state import InterpretationState, StatePatch, StepOutcome
 from cnlc_agent.tools.contracts import Tool, ToolCaller, ToolInput
 from cnlc_agent.workflows.node import WorkflowNode
@@ -104,6 +112,20 @@ def build_steps(
         """W01：通过正式 Tool Contract 加载井资料。"""
 
         output = await caller.call(tools["get_well_data"], tool_request(state, StepId.W01))
+        if "dataset_manifest" in output.data:
+            return StepOutcome(
+                status=output.status,
+                patch=StatePatch(
+                    well=Well.model_validate(output.data["well"]),
+                    data_requirements=DataRequirements.model_validate(output.data["requirements"]),
+                    dataset_manifest=GdsxDatasetManifest.model_validate(
+                        output.data["dataset_manifest"]
+                    ),
+                    source_artifact_id=str(output.data["source_artifact_id"]),
+                ),
+                warnings=output.warnings,
+                reason="通过 Artifact-backed get_well_data 解编 GDSX manifest",
+            )
         data = WellData.model_validate(output.data)
         return StepOutcome(
             patch=StatePatch(
@@ -115,16 +137,48 @@ def build_steps(
     async def completeness(state: InterpretationState) -> StepOutcome:
         """W02：检查必需曲线和推荐辅助资料。"""
 
-        assert state.raw_data is not None and state.data_requirements is not None
+        assert state.data_requirements is not None
+        if state.dataset_manifest is not None:
+            available = {
+                item.standard_name or item.raw_name for item in state.dataset_manifest.curves
+            }
+            required = [
+                item
+                for item in state.data_requirements.required_curves
+                if not item.startswith("__")
+            ]
+            missing = [
+                MissingData(
+                    field=f"dataset_manifest.curves.{name}",
+                    importance="Required",
+                    affected_step=StepId.W03,
+                )
+                for name in required
+                if name not in available
+            ]
+            warnings = list(state.dataset_manifest.warnings)
+            if not required:
+                warnings.append("真实 GDSX 必需曲线集合尚未配置，仅完成 manifest 结构检查")
+            return StepOutcome(
+                status=StepStatus.BLOCKED
+                if missing
+                else StepStatus.WARNING
+                if warnings
+                else StepStatus.SUCCESS,
+                missing_data=missing,
+                warnings=warnings,
+                reason="按显式 required curve code 检查 GDSX manifest，不进行别名猜测",
+            )
+        assert state.raw_data is not None
         if demo_mode and StepId.W01 not in company_batch_steps:
             # Demo Fixture 已在上传入口完成 Schema 校验，此处保持主链路可演示。
             return StepOutcome(
                 reason="Demo Mode：将演示井资料视为完整，继续执行 W03–W10",
             )
         raw = state.raw_data
-        missing: list[MissingData] = []
+        fixture_missing: list[MissingData] = []
         if not raw.depths:
-            missing.append(
+            fixture_missing.append(
                 MissingData(
                     field="raw_data.depths",
                     importance="Required",
@@ -134,7 +188,7 @@ def build_steps(
         for name in state.data_requirements.required_curves:
             curve = raw.curves.get(name)
             if curve is None or not any(value is not None for value in curve.values):
-                missing.append(
+                fixture_missing.append(
                     MissingData(
                         field=f"raw_data.curves.{name}",
                         importance="Required",
@@ -143,7 +197,7 @@ def build_steps(
                 )
         for name in state.data_requirements.recommended_sources:
             if not raw.auxiliary.get(name):
-                missing.append(
+                fixture_missing.append(
                     MissingData(
                         field=f"raw_data.auxiliary.{name}",
                         importance="Recommended",
@@ -151,15 +205,17 @@ def build_steps(
                     )
                 )
         warnings = [
-            f"缺少推荐资料：{item.field}" for item in missing if item.importance == "Recommended"
+            f"缺少推荐资料：{item.field}"
+            for item in fixture_missing
+            if item.importance == "Recommended"
         ]
         return StepOutcome(
             status=StepStatus.BLOCKED
-            if any(item.importance == "Required" for item in missing)
+            if any(item.importance == "Required" for item in fixture_missing)
             else StepStatus.WARNING
             if warnings
             else StepStatus.SUCCESS,
-            missing_data=missing,
+            missing_data=fixture_missing,
             warnings=warnings,
             reason="检查当前 Mock Fixture 声明的数据要求（正式业务字段表待确认）",
         )
@@ -169,7 +225,17 @@ def build_steps(
 
         output = await caller.call(tools["check_curve_quality"], tool_request(state, StepId.W03))
         result = StageResult.model_validate(output.data)
-        return outcome_for(result, StatePatch(qc_result=result, processed_data=state.raw_data))
+        processed_artifact_id = result.result.get("processed_artifact_ref")
+        return outcome_for(
+            result,
+            StatePatch(
+                qc_result=result,
+                processed_data=state.raw_data,
+                processed_artifact_id=(
+                    processed_artifact_id if isinstance(processed_artifact_id, str) else None
+                ),
+            ),
+        )
 
     async def lithology(state: InterpretationState) -> StepOutcome:
         """W04：调用岩性识别 Tool。"""
@@ -278,9 +344,9 @@ def build_steps(
 
     return [
         WorkflowNode(StepId.W01, load),
-        WorkflowNode(StepId.W02, completeness, ("well", "raw_data", "data_requirements")),
-        WorkflowNode(StepId.W03, qc, ("raw_data",)),
-        WorkflowNode(StepId.W04, lithology, ("processed_data", "qc_result")),
+        WorkflowNode(StepId.W02, completeness, ("well", "data_requirements")),
+        WorkflowNode(StepId.W03, qc),
+        WorkflowNode(StepId.W04, lithology, ("qc_result",)),
         WorkflowNode(StepId.W05, petrophysics, ("lithology_result", "qc_result")),
         WorkflowNode(StepId.W06, fluid, ("lithology_result", "petrophysics_result")),
         WorkflowNode(StepId.W07, classification, ("fluid_result", "petrophysics_result")),

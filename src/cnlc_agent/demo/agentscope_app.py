@@ -1,12 +1,13 @@
 """把测井解释 Demo Tool 接入官方 AgentScope Agent Service。"""
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import unquote, urlsplit
 
 import uvicorn
@@ -17,14 +18,17 @@ from agentscope.app.access import (
     ResourcePermission,
     ResourceRef,
 )
+from agentscope.app.deps import get_current_user_id
 from agentscope.app.message_bus import InMemoryMessageBus
 from agentscope.app.storage import RedisStorage, StorageBase
 from agentscope.app.workspace_manager import LocalWorkspaceManager
 from agentscope.credential import DashScopeCredential
 from agentscope.tool import ToolBase, Toolkit
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from redis.asyncio.connection import SSLConnection
 
 from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispatcher
@@ -43,8 +47,94 @@ from cnlc_agent.demo.read_models import (
     present_task_view,
 )
 from cnlc_agent.demo.task_tools import TaskCommandRunner
+from cnlc_agent.demo.uploads import GdsxUpload
+from cnlc_agent.domain.errors import InfrastructureError
 from cnlc_agent.domain.session_binding import TaskSessionIdentity
 from cnlc_agent.infrastructure.conversation import DurableConversationStorage
+
+
+class GdsxIngressResponse(BaseModel):
+    """正式 multipart ingress 的小型响应，不包含文件正文。"""
+
+    artifact_id: str
+    filename: str
+    size: int
+    sha256: str
+
+
+class GdsxTaskCreateRequest(BaseModel):
+    """正式任务创建只接受 Artifact 身份和小型业务参数。"""
+
+    artifact_id: str
+    agent_id: str
+    session_id: str
+    instruction: str = "解编上传的 GDSX 井资料"
+    well_id: str | None = None
+
+
+class GdsxTaskCreateResponse(BaseModel):
+    task_id: str
+    execution_id: str
+
+
+class RejectDurableGdsxDataBlockMiddleware:
+    """正式持久模式在 ChatService 保存用户消息前拒绝 Base64 GDSX。"""
+
+    def __init__(self, app: Any, *, enabled: bool) -> None:
+        self.app = app
+        self.enabled = enabled
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if not self.enabled or scope.get("type") != "http" or scope.get("path") != "/chat/":
+            await self.app(scope, receive, send)
+            return
+        body_parts: list[bytes] = []
+        more = True
+        while more:
+            message = await receive()
+            body_parts.append(message.get("body", b""))
+            more = bool(message.get("more_body", False))
+        body = b"".join(body_parts)
+        try:
+            payload = json.loads(body)
+            raw_input = payload.get("input", {})
+            messages = raw_input if isinstance(raw_input, list) else [raw_input]
+            blocks = [
+                block
+                for message in messages
+                if isinstance(message, dict)
+                for block in message.get("content", [])
+                if isinstance(block, dict) and block.get("type") == "data"
+            ]
+            is_gdsx = any(
+                str(block.get("name", "")).casefold().endswith(".gdsx")
+                or str(block.get("source", {}).get("media_type", "")).casefold()
+                == "application/x-hdf5"
+                for block in blocks
+            )
+        except (TypeError, ValueError, UnicodeError):
+            is_gdsx = False
+        if is_gdsx:
+            response = JSONResponse(
+                status_code=415,
+                content={
+                    "detail": "GDSX_DURABLE_DATABLOCK_UNSUPPORTED",
+                    "message": "正式模式请使用 multipart GDSX ingress。",
+                },
+            )
+            await response(scope, receive, send)
+            return
+        sent = False
+
+        async def replay() -> dict[str, Any]:
+            nonlocal sent
+            if sent:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, replay, send)
+
 
 BACKEND_MODEL_CREDENTIAL_ID = "cnlc-backend-model"
 BACKEND_MODEL_OWNER_ID = "__cnlc_backend_model__"
@@ -372,11 +462,15 @@ def create_demo_app(
         ),
         extra_middlewares=[
             Middleware(
+                RejectDurableGdsxDataBlockMiddleware,
+                enabled=persistence.persistence == "postgres-redis",
+            ),
+            Middleware(
                 CORSMiddleware,
                 allow_origins=["*"],
                 allow_methods=["*"],
                 allow_headers=["*"],
-            )
+            ),
         ],
         enable_scheduler=False,
         title="CNLC Well Interpretation Demo",
@@ -403,6 +497,75 @@ def create_demo_app(
                 await task_tools.shutdown()
 
     app.router.lifespan_context = execution_lifespan
+
+    @app.post(
+        "/cnlc/interpretation/artifacts/gdsx",
+        response_model=GdsxIngressResponse,
+    )
+    async def upload_gdsx_artifact(
+        file: Annotated[UploadFile, File()],
+        agent_id: Annotated[str, Form(min_length=1)],
+        session_id: Annotated[str, Form(min_length=1)],
+        user_id: str = Depends(get_current_user_id),
+    ) -> GdsxIngressResponse:
+        """multipart 直接进入 ArtifactStore；不会构造 AgentScope DataBlock。"""
+
+        session = await storage.get_session(user_id, agent_id, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="SESSION_NOT_FOUND")
+        content = bytearray()
+        while chunk := await file.read(1024 * 1024):
+            content.extend(chunk)
+            if len(content) > settings.max_gdsx_upload_bytes:
+                raise HTTPException(status_code=413, detail="GDSX_UPLOAD_TOO_LARGE")
+        await task_tools(user_id, agent_id, session_id)
+        runner = task_tools.get_existing_runner(user_id, agent_id, session_id)
+        assert runner is not None
+        upload = GdsxUpload(
+            content=bytes(content),
+            filename=file.filename or "upload.gdsx",
+            media_type=file.content_type or "application/octet-stream",
+            instruction="multipart artifact staging",
+        )
+        receipt = await runner.stage_gdsx(upload)
+        return GdsxIngressResponse(
+            artifact_id=receipt.artifact_id,
+            filename=receipt.filename,
+            size=receipt.size_bytes,
+            sha256=receipt.content_sha256,
+        )
+
+    @app.post(
+        "/cnlc/interpretation/tasks/gdsx",
+        response_model=GdsxTaskCreateResponse,
+    )
+    async def create_gdsx_task(
+        payload: GdsxTaskCreateRequest,
+        user_id: str = Depends(get_current_user_id),
+    ) -> GdsxTaskCreateResponse:
+        """消费 artifact_id 创建 Task；请求体不接受 bytes、Base64 或文件路径。"""
+
+        session = await storage.get_session(user_id, payload.agent_id, payload.session_id)
+        if session is None:
+            # 任务入口不区分“会话不存在”与“收据不属于会话”，避免侧信道。
+            raise HTTPException(status_code=404, detail="ARTIFACT_NOT_FOUND")
+        await task_tools(user_id, payload.agent_id, payload.session_id)
+        runner = task_tools.get_existing_runner(user_id, payload.agent_id, payload.session_id)
+        assert runner is not None
+        try:
+            result = await runner.start_gdsx_artifact(
+                payload.artifact_id, payload.instruction, payload.well_id
+            )
+        except InfrastructureError as exc:
+            if exc.code == "ARTIFACT_NOT_FOUND":
+                raise HTTPException(status_code=404, detail="ARTIFACT_NOT_FOUND") from None
+            if exc.code == "GDSX_INGRESS_CONFLICT":
+                raise HTTPException(status_code=409, detail="GDSX_INGRESS_CONFLICT") from None
+            raise
+        return GdsxTaskCreateResponse(
+            task_id=result.task_id,
+            execution_id=result.execution_id,
+        )
 
     async def owned_runner(
         request: Request, agent_id: str, session_id: str, task_id: str

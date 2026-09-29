@@ -1,5 +1,97 @@
 {
   "$defs": {
+    "CurveManifest": {
+      "additionalProperties": false,
+      "description": "单条曲线的只读摘要，不包含 values。",
+      "properties": {
+        "depth_end": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth End"
+        },
+        "depth_start": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Start"
+        },
+        "depth_step": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Step"
+        },
+        "dimension": {
+          "maximum": 4,
+          "minimum": 1,
+          "title": "Dimension",
+          "type": "integer"
+        },
+        "point_count": {
+          "minimum": 0,
+          "title": "Point Count",
+          "type": "integer"
+        },
+        "raw_name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Raw Name",
+          "type": "string"
+        },
+        "standard_name": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Standard Name"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "raw_name",
+        "point_count",
+        "dimension"
+      ],
+      "title": "CurveManifest",
+      "type": "object"
+    },
     "DataRequirements": {
       "additionalProperties": false,
       "description": "临时输入资料契约，不代表正式专业解释标准。",
@@ -21,6 +113,90 @@
       },
       "title": "DataRequirements",
       "type": "object"
+    },
+    "GdsxDatasetManifest": {
+      "additionalProperties": false,
+      "description": "GDSX 解编后可持久化的小型清单；字段映射等待真实样本确认。",
+      "properties": {
+        "artifact_id": {
+          "minLength": 1,
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "curve_count": {
+          "minimum": 0,
+          "title": "Curve Count",
+          "type": "integer"
+        },
+        "curves": {
+          "items": {
+            "$ref": "#/$defs/CurveManifest"
+          },
+          "title": "Curves",
+          "type": "array"
+        },
+        "depth_summary": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Depth Summary",
+          "type": "object"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "table_count": {
+          "minimum": 0,
+          "title": "Table Count",
+          "type": "integer"
+        },
+        "table_names": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Table Names",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        },
+        "well_info_summary": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Well Info Summary",
+          "type": "object"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "size_bytes",
+        "content_sha256",
+        "curve_count",
+        "table_count"
+      ],
+      "title": "GdsxDatasetManifest",
+      "type": "object"
+    },
+    "InputPayloadKind": {
+      "description": "输入正文位置；历史行默认解释为 FIXTURE。",
+      "enum": [
+        "FIXTURE",
+        "GDSX_ARTIFACT"
+      ],
+      "title": "InputPayloadKind",
+      "type": "string"
     },
     "JsonValue": {},
     "LogCurve": {
@@ -52,6 +228,52 @@
         "values"
       ],
       "title": "LogCurve",
+      "type": "object"
+    },
+    "MockFixture": {
+      "additionalProperties": false,
+      "description": "Demo Fixture，要求所有预设专业结果明确标记 ``is_mock=true``。",
+      "properties": {
+        "is_mock": {
+          "const": true,
+          "default": true,
+          "title": "Is Mock",
+          "type": "boolean"
+        },
+        "outputs": {
+          "additionalProperties": {
+            "$ref": "#/$defs/StageResult"
+          },
+          "title": "Outputs",
+          "type": "object"
+        },
+        "raw_data": {
+          "$ref": "#/$defs/RawData"
+        },
+        "requirements": {
+          "$ref": "#/$defs/DataRequirements"
+        },
+        "schema_version": {
+          "const": "0.1-skeleton",
+          "default": "0.1-skeleton",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "validation": {
+          "$ref": "#/$defs/ValidationResult"
+        },
+        "well": {
+          "$ref": "#/$defs/Well"
+        }
+      },
+      "required": [
+        "well",
+        "raw_data",
+        "requirements",
+        "outputs",
+        "validation"
+      ],
+      "title": "MockFixture",
       "type": "object"
     },
     "RawData": {
@@ -314,47 +536,92 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Demo Fixture，要求所有预设专业结果明确标记 ``is_mock=true``。",
+  "description": "持续任务下的输入事实；Fixture 与 Artifact 路径互斥并保持旧数据兼容。",
   "properties": {
-    "is_mock": {
-      "const": true,
-      "default": true,
-      "title": "Is Mock",
-      "type": "boolean"
-    },
-    "outputs": {
-      "additionalProperties": {
-        "$ref": "#/$defs/StageResult"
-      },
-      "title": "Outputs",
-      "type": "object"
-    },
-    "raw_data": {
-      "$ref": "#/$defs/RawData"
-    },
-    "requirements": {
-      "$ref": "#/$defs/DataRequirements"
-    },
-    "schema_version": {
-      "const": "0.1-skeleton",
-      "default": "0.1-skeleton",
-      "title": "Schema Version",
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
       "type": "string"
     },
-    "validation": {
-      "$ref": "#/$defs/ValidationResult"
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
     },
-    "well": {
-      "$ref": "#/$defs/Well"
+    "dataset_manifest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GdsxDatasetManifest"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "input_version_id": {
+      "minLength": 1,
+      "title": "Input Version Id",
+      "type": "string"
+    },
+    "payload": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MockFixture"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "payload_kind": {
+      "$ref": "#/$defs/InputPayloadKind",
+      "default": "FIXTURE"
+    },
+    "sequence": {
+      "minimum": 1,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "source_artifact_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Artifact Id"
+    },
+    "source_type": {
+      "enum": [
+        "UPLOAD",
+        "FIXTURE"
+      ],
+      "title": "Source Type",
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    },
+    "well_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+      "title": "Well Id",
+      "type": "string"
     }
   },
   "required": [
-    "well",
-    "raw_data",
-    "requirements",
-    "outputs",
-    "validation"
+    "task_id",
+    "well_id",
+    "sequence",
+    "source_type",
+    "content_sha256"
   ],
-  "title": "MockFixture",
+  "title": "InterpretationInputVersion",
   "type": "object"
 }

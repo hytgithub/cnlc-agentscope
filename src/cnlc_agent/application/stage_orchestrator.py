@@ -17,7 +17,7 @@ from cnlc_agent.domain.execution import (
     ExecutionStatus,
     execution_status_from_state,
 )
-from cnlc_agent.domain.inputs import InterpretationInputVersion
+from cnlc_agent.domain.inputs import InputPayloadKind, InterpretationInputVersion
 from cnlc_agent.domain.models import Contract, utc_now
 from cnlc_agent.domain.stage_runtime import begin_stage, finish_stage
 from cnlc_agent.domain.stages import (
@@ -73,7 +73,8 @@ class StageOrchestrator:
         """历史或复用 StageRun 不参与当前 Execution 的推进判断。"""
 
         return [
-            run for run in execution.state_snapshot.stage_runs
+            run
+            for run in execution.state_snapshot.stage_runs
             if run.execution_id == execution.execution_id
         ]
 
@@ -105,7 +106,8 @@ class StageOrchestrator:
         runs = self._execution_runs(execution)
         waiting = next(
             (
-                run for run in runs
+                run
+                for run in runs
                 if run.status == StageRunStatus.WAITING_CONFIRM
                 and run.validity == StageValidity.CURRENT
             ),
@@ -129,9 +131,9 @@ class StageOrchestrator:
             stage_status=current.status if current else None,
             stage_validity=current.validity if current else None,
             confirmed_stages=[
-                run.stage for run in runs
-                if run.status == StageRunStatus.CONFIRMED
-                and run.validity == StageValidity.CURRENT
+                run.stage
+                for run in runs
+                if run.status == StageRunStatus.CONFIRMED and run.validity == StageValidity.CURRENT
             ],
             waiting_confirmation_stage=waiting.stage if waiting else None,
             next_stage=self._next_stage(execution),
@@ -228,11 +230,12 @@ class StageOrchestrator:
                 version = await self.repository.get_input_version(execution.input_version_id)
                 if version is None:
                     raise InfrastructureError("INPUT_VERSION_NOT_FOUND", "输入版本不存在")
-                if materialize is None:
+                if version.payload_kind == InputPayloadKind.FIXTURE and materialize is None:
                     raise InfrastructureError(
                         "INPUT_MATERIALIZER_REQUIRED", "输入执行需要受控物化适配器"
                     )
-                await materialize(version)
+                if version.payload_kind == InputPayloadKind.FIXTURE and materialize is not None:
+                    await materialize(version)
             state = execution.state_snapshot.model_copy(deep=True)
             markdown = execution.markdown
             if stage == InterpretationStage.REPORT:

@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import json
+from dataclasses import dataclass
 
 from agentscope.message import Base64Source, DataBlock, Msg, TextBlock
 from pydantic import ValidationError
@@ -12,6 +13,17 @@ from cnlc_agent.demo.upload_adapters import adapt_synthetic_context
 from cnlc_agent.domain.models import MockFixture
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+MAX_GDSX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class GdsxUpload:
+    """当前回合解码出的 GDSX；仅在提交 ArtifactStore 前短暂存在。"""
+
+    content: bytes
+    filename: str
+    media_type: str
+    instruction: str
 
 
 class UploadError(ValueError):
@@ -23,7 +35,9 @@ def has_attachment(messages: list[Msg]) -> bool:
 
     return any(
         not isinstance(block, TextBlock) or block.text.startswith("[File: ")
-        for message in messages if message.role == "user" for block in message.content
+        for message in messages
+        if message.role == "user"
+        for block in message.content
     )
 
 
@@ -84,3 +98,49 @@ def parse_upload(messages: list[Msg]) -> tuple[MockFixture, str]:
     if not fixture.raw_data.depths or not fixture.raw_data.curves:
         raise UploadError("井资料中没有深度采样或测井曲线，请检查上传文件。")
     return fixture, "\n".join(instructions).strip() or "执行上传井资料的测井解释演示"
+
+
+def parse_any_upload(messages: list[Msg]) -> tuple[MockFixture, str] | GdsxUpload:
+    """按附件类型区分 JSON/GDSX，并在 Base64 解码前限制 GDSX 大小。"""
+
+    blocks = [
+        block
+        for message in messages
+        if message.role == "user"
+        for block in message.content
+        if isinstance(block, DataBlock)
+    ]
+    if len(blocks) != 1:
+        return parse_upload(messages)
+    block = blocks[0]
+    filename = block.name or "upload"
+    is_gdsx = filename.casefold().endswith(".gdsx") or (
+        isinstance(block.source, Base64Source)
+        and block.source.media_type.casefold() == "application/x-hdf5"
+    )
+    if not is_gdsx:
+        return parse_upload(messages)
+    if not isinstance(block.source, Base64Source):
+        raise UploadError("GDSX 附件当前只支持浏览器 Base64 DataBlock。")
+    encoded_limit = ((MAX_GDSX_UPLOAD_BYTES + 2) // 3) * 4
+    if len(block.source.data) > encoded_limit:
+        raise UploadError("GDSX_UPLOAD_TOO_LARGE：GDSX 文件不能超过 50 MiB。")
+    try:
+        content = base64.b64decode(block.source.data, validate=True)
+    except (ValueError, binascii.Error):
+        raise UploadError("GDSX 附件编码无效，请重新上传。") from None
+    if len(content) > MAX_GDSX_UPLOAD_BYTES:
+        raise UploadError("GDSX_UPLOAD_TOO_LARGE：GDSX 文件不能超过 50 MiB。")
+    instruction = "\n".join(
+        item.text
+        for message in messages
+        if message.role == "user"
+        for item in message.content
+        if isinstance(item, TextBlock) and not item.text.startswith("[File: ")
+    ).strip()
+    return GdsxUpload(
+        content=content,
+        filename=filename,
+        media_type=block.source.media_type,
+        instruction=instruction or "解编上传的 GDSX 井资料",
+    )

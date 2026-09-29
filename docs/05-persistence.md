@@ -8,7 +8,8 @@ Execution、Workflow 和 ToolRun 状态的中文含义见 [11-status-enum-glossa
 
 正式持久模式使用 SQLAlchemy asyncio + asyncpg 访问 PostgreSQL，使用 redis-py asyncio 访问 Redis，使用 Alembic 显式管理 migration。Repository 和 StateStore 隔离 SDK；Agent、Workflow 和专业 Tool 不直接持有数据库连接。
 
-- PostgreSQL 保存 Task、InputVersion、DatasetRevision / DatasetChangeSet、Execution、ToolRun、SessionTaskBinding、报告、执行租约、Conversation Session / Message 及审计事实，是长期 canonical source。
+- PostgreSQL 保存 Task、Artifact 元数据、InputVersion、DatasetRevision / DatasetChangeSet、Execution、ToolRun、SessionTaskBinding、报告、执行租约、Conversation Session / Message 及审计事实，是长期 canonical source。GDSX bytes 与曲线 values 明确不进入 PostgreSQL。
+- `FilesystemArtifactStore` 第一版在 `CNLC_ARTIFACT_ROOT` 下使用 SHA-256 内容寻址；数据库只保存逻辑 `storage_key`、大小、摘要和归属。相同 bytes 可复用物理对象，但每个 Task 仍创建独立 Artifact 身份，不能跨 Task 授权。
 - Redis 保存可丢弃的 `InterpretationState` 运行检查点和有滑动 TTL 的 AgentScope 活跃聊天缓存；服务凭证等非 Conversation 资源不使用 Session TTL。
 - 进程内 `observed_task_ids` 和 dispatcher task 仅用于加速与调度，不是业务事实。
 
@@ -16,7 +17,33 @@ Redis 过期或清空不会删除 PostgreSQL 中的版本、报告或任务归�
 
 ## 2. 版本和写入路径
 
-首次上传先校验并规范化输入，创建 Task、InputVersion 和 `QUEUED`（排队等待）Execution，再保存 SessionTaskBinding。局部或全量重跑读取 Task 当前指针、最近成功 Execution 和输入摘要，经 DependencyResolver 得到计划，并原子追加新 Execution。历史输入、执行、参数快照、ToolRun 和报告不会被当前版本覆盖。
+JSON 首次上传先校验并规范化输入，创建 Task、InputVersion 和 `QUEUED`（排队等待）Execution，再保存 SessionTaskBinding。GDSX 首次上传在内容存储成功并通过 HDF5/pygdsx 只读检查后，以一个 PostgreSQL 事务创建 Task、`SOURCE_GDSX`（源 GDSX 制品）、artifact-backed InputVersion、Root DatasetRevision 与 `STAGED_CONFIRMATION`（分阶段确认）Execution；若数据库失败，内容寻址对象是无授权 orphan，可由后续清理回收，不会形成可用但不完整的 Task。局部或全量重跑读取 Task 当前指针、最近成功 Execution 和输入摘要，经 DependencyResolver 得到计划，并原子追加新 Execution。历史输入、执行、参数快照、ToolRun 和报告不会被当前版本覆盖。
+
+当前 AgentScope 聊天附件采用 Base64，编码约膨胀 33%。`CNLC_MAX_GDSX_UPLOAD_BYTES` 独立于 5 MiB JSON 限制，默认 50 MiB，并在 Base64 解码前检查编码长度。本路径用于 V0.1 验证；生产大文件应升级为 multipart 或 direct object upload。
+
+AgentScope `ChatService` 会在进入 Agent `reply_stream` / `UploadInterpretationReply`
+middleware 之前调用 Conversation Storage 保存用户消息，因此 middleware 无法安全删除已经
+durable 的 GDSX DataBlock。正式 `postgres-redis` 模式在路由进入 ChatService 前拒绝 GDSX
+Base64 DataBlock，使用 `POST /cnlc/interpretation/artifacts/gdsx` multipart ingress；该入口
+直接写 ArtifactStore 并返回无 bytes 的上传收据。随后
+`POST /cnlc/interpretation/tasks/gdsx` 只接收 `artifact_id` 和小型业务参数，再原子创建
+Task/Artifact metadata/InputVersion/R1/Execution。Conversation PostgreSQL/Redis 不保存 GDSX
+Base64。JSON Demo Upload 保持原路径；GDSX Base64 仅保留 memory/test 验证模式。
+
+上述流程明确分为三层：SHA-256 定位的物理 blob 不带 Task 归属；
+`GdsxUploadReceipt` 在 Task 尚未创建时只绑定可信的
+`(user_id, agent_id, session_id)`，且不包含 `task_id`；消费 receipt 后才在事务中
+创建带 `task_id` 的 Artifact metadata。两个会话上传相同 bytes 可共享
+`storage_key`，但各自生成独立 receipt/artifact ID，所有权不共享。任务入口
+在创建前按完整三元组重新授权，不匹配统一作为不存在。
+第一版采用“一个 receipt 只创建一个 Task”：Artifact 主键（内存实现为同锁检查）
+是原子消费标识，并发重复请求只有一个成功，其余返回冲突。
+
+`FilesystemArtifactStore.materialize` 在返回临时 Path 前校验实际 size 与 SHA-256；GDSX
+解析/公司调用边界还会校验 HDF5 magic 并实际打开文件。失败统一阻断为
+`ARTIFACT_INTEGRITY_FAILED`（制品完整性失败）或 `GDSX_FILE_INVALID`（GDSX 文件无效）。
+内容寻址 blob 可被多个 Task 的独立 Artifact metadata 引用，因此数据库事务失败时绝不
+unlink blob；无 metadata 的 orphan blob 暂时保留，定期 orphan GC 属于后续维护任务。
 
 Workflow 检查点先写 PostgreSQL，再尝试写 Redis。Redis 写失败会被分类并使流程形成明确失败事实；数据库检查点失败时不写缓存，避免 Redis 出现比 durable fact 更新的假状态。PostgreSQL 与 Redis 没有分布式事务，读取业务历史始终以 PostgreSQL 为准。
 
@@ -56,7 +83,7 @@ AgentScope Session / Message 长期副本由 PostgreSQL Conversation 表保存�
 
 正式模式设置 `CNLC_PERSISTENCE=postgres-redis`，并提供 `DATABASE_URL` 与 `REDIS_URL`。数据库连接必须使用 `postgresql+asyncpg`。密码、Token 和 API Key 只从未纳入版本控制的环境配置读取，使用 SecretStr 包装，日志不得输出连接串、驱动原文或密钥。
 
-Alembic migration `0001`～`0007` 必须由部署或开发者显式执行；应用启动不自动改表。迁移顺序和含义见数据库设计。内存模式只用于离线 Demo 和单元测试，不能冒充跨进程持久化。
+Alembic migration `0001`～`0011` 必须由部署或开发者显式执行；应用启动不自动改表。`0011` 增加 Artifact metadata 及 artifact-backed InputVersion，旧行按 `FIXTURE`（夹具正文）兼容。迁移顺序和含义见数据库设计。内存模式只用于离线 Demo 和单元测试，不能冒充跨进程持久化。
 
 示例：
 

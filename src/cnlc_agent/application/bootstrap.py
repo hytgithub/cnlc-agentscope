@@ -6,17 +6,24 @@ from cnlc_agent.agents.interpretation_agent import InterpretationAgent
 from cnlc_agent.agents.main_agent import MainAgent
 from cnlc_agent.agents.validation_agent import ValidationAgent
 from cnlc_agent.application.checkpoints import CheckpointStore
-from cnlc_agent.application.ports import InterpretationStateStore, ModelGateway, TaskRepository
+from cnlc_agent.application.ports import (
+    ArtifactStore,
+    InterpretationStateStore,
+    ModelGateway,
+    TaskRepository,
+)
 from cnlc_agent.application.prediction import MockPredictionProvider
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings
 from cnlc_agent.domain.enums import StepId
+from cnlc_agent.infrastructure.artifact_store import FilesystemArtifactStore
 from cnlc_agent.infrastructure.company_api import CompanyApiClient, CompanyApiSettings
 from cnlc_agent.infrastructure.company_provider import (
+    ArtifactCompanyInputResolver,
+    ArtifactCompanySink,
     CompanyArtifactSink,
     CompanyInputResolver,
     CompanyProviderSettings,
-    ConfiguredCompanyInputResolver,
     RealCompanyBatchProvider,
 )
 from cnlc_agent.infrastructure.mock import (
@@ -31,6 +38,7 @@ from cnlc_agent.reports.assembler import ReportAssembler
 from cnlc_agent.tools.catalog import validate_injected_tools
 from cnlc_agent.tools.company_batches import build_company_mock_tools, build_company_real_tools
 from cnlc_agent.tools.contracts import Tool, ToolCaller
+from cnlc_agent.tools.gdsx import GdsxArtifactWellDataTool
 from cnlc_agent.tools.mock import GetWellDataTool, MockResultTool
 from cnlc_agent.workflows.interpretation_workflow import InterpretationWorkflow
 from cnlc_agent.workflows.steps import build_steps
@@ -53,6 +61,7 @@ def build_application(
     company_api_client: CompanyApiClient | None = None,
     company_input_resolver: CompanyInputResolver | None = None,
     company_artifact_sink: CompanyArtifactSink | None = None,
+    artifact_store: ArtifactStore | None = None,
 ) -> InterpretationTaskService:
     """按配置装配任务服务及其 Agent、Workflow、Tool 和基础设施依赖。"""
 
@@ -75,9 +84,19 @@ def build_application(
     if settings.professional_provider == "company_mock":
         tools = dict(build_company_mock_tools(repository, caller))
     elif settings.professional_provider == "company_real":
+        store = artifact_store or FilesystemArtifactStore(settings.artifact_root)
         client = company_api_client or CompanyApiClient(CompanyApiSettings())  # type: ignore[call-arg]
-        resolver = company_input_resolver or ConfiguredCompanyInputResolver(
-            CompanyProviderSettings()  # type: ignore[call-arg]
+        resolver: CompanyInputResolver
+        sink: CompanyArtifactSink | None
+        if company_input_resolver is None:
+            provider_settings = CompanyProviderSettings()  # type: ignore[call-arg]
+            resolver = ArtifactCompanyInputResolver(active_tasks, store, provider_settings)
+            sink = company_artifact_sink or ArtifactCompanySink(active_tasks, store)
+        else:
+            resolver = company_input_resolver
+            sink = company_artifact_sink
+        tools["get_well_data"] = GdsxArtifactWellDataTool(
+            active_tasks, store, tools["get_well_data"]
         )
         tools.update(
             build_company_real_tools(
@@ -85,7 +104,7 @@ def build_application(
                     client,
                     active_tasks,
                     resolver,
-                    company_artifact_sink,
+                    sink,
                 ),
                 caller,
             )

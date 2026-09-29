@@ -281,3 +281,10 @@ PostgreSQL 是 canonical source。Redis 写入使用带 TTL 的 SET，Key 中的
 | `0008` | metadata-only DatasetRevision、稀疏 DatasetChangeSet、lineage 与受限外键 |
 
 Migration 必须显式执行，应用启动不自动改表。正式井数据字段仍为 **Pending final well-data schema**。
+
+Task 11G 的 `0011_gdsx_artifacts` 新增 `interpretation_artifact`，并为
+`interpretation_input_version` 增加 `payload_kind`、`source_artifact_id` 与
+`dataset_manifest`。Artifact 表只保存归属、逻辑 storage key、size、SHA-256 及来源关联；
+GDSX bytes、curve values、worker 临时绝对路径均禁止进入 PostgreSQL。历史 InputVersion
+通过 `FIXTURE`（夹具正文）server default 保持兼容；`GDSX_ARTIFACT`（制品引用）要求
+payload 为空且 Artifact/manifest 引用完整。

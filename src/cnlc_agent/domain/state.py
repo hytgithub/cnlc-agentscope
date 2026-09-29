@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from pydantic import Field
 
+from cnlc_agent.domain.artifacts import GdsxDatasetManifest
 from cnlc_agent.domain.enums import StepId, StepStatus
 from cnlc_agent.domain.models import (
     Contract,
@@ -28,6 +29,10 @@ class StatePatch(Contract):
     """Workflow 节点只能通过这些字段返回状态变更，不能原地修改全局状态。"""
 
     well: Well | None = None
+    dataset_manifest: GdsxDatasetManifest | None = None
+    source_artifact_id: str | None = None
+    dataset_revision_id: str | None = None
+    processed_artifact_id: str | None = None
     raw_data: RawData | None = None
     data_requirements: DataRequirements | None = None
     processed_data: RawData | None = None

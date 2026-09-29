@@ -31,7 +31,7 @@ from agentscope.types import ReplyFinishedReason
 
 from cnlc_agent.demo.execution_stream import ExecutionReplyStreamer, is_streaming_execution
 from cnlc_agent.demo.tools import RUN_TOOL_NAME, RunWellInterpretationTool
-from cnlc_agent.demo.uploads import UploadError, has_attachment, parse_upload
+from cnlc_agent.demo.uploads import GdsxUpload, UploadError, has_attachment, parse_any_upload
 from cnlc_agent.infrastructure.telemetry import event_observer
 
 
@@ -90,7 +90,7 @@ class UploadInterpretationReply(MiddlewareBase):
         session_id = agent.state.session_id
         yield ReplyStartEvent(session_id=session_id, reply_id=reply_id, name=agent.name)
         try:
-            fixture, instruction = parse_upload(messages)
+            upload = parse_any_upload(messages)
         except UploadError as exc:
             yield TextBlockStartEvent(reply_id=reply_id, block_id=block_id)
             yield TextBlockDeltaEvent(reply_id=reply_id, block_id=block_id, delta=str(exc))
@@ -98,18 +98,26 @@ class UploadInterpretationReply(MiddlewareBase):
             yield ReplyEndEvent(session_id=session_id, reply_id=reply_id)
             return
 
+        if isinstance(upload, GdsxUpload):
+            well_id = f"GDSX_{uuid4().hex[:24].upper()}"
+            self.tool.upload = upload, well_id
+            description = f"开始解编 GDSX 技术井 {well_id}"
+        else:
+            fixture, instruction = upload
+            well_id = fixture.well.well_id
+            self.tool.upload = fixture, instruction
+            description = f"开始解释井 {well_id}"
         yield ThinkingBlockStartEvent(reply_id=reply_id, block_id=block_id)
         yield ThinkingBlockDeltaEvent(
             reply_id=reply_id,
             block_id=block_id,
-            delta=f"开始解释井 {fixture.well.well_id}\n\n✓ 上传资料读取与校验完成\n\n"
+            delta=f"{description}\n\n✓ 上传资料读取与校验完成\n\n"
             "Demo / Mock：使用上传资料中的预设专业结果，不能作为真实测井解释结论。\n\n",
         )
-        self.tool.upload = fixture, instruction
         call = ToolCallBlock(
             id=uuid4().hex,
             name=RUN_TOOL_NAME,
-            input=json.dumps({"well_id": fixture.well.well_id}),
+            input=json.dumps({"well_id": well_id}),
         )
         yield ToolCallStartEvent(reply_id=reply_id, tool_call_id=call.id, tool_call_name=call.name)
         yield ToolCallDeltaEvent(reply_id=reply_id, tool_call_id=call.id, delta=call.input)

@@ -9,6 +9,7 @@ from typing import Protocol
 from pydantic import ValidationError as SchemaError
 
 from cnlc_agent.application.ports import ModelRequest
+from cnlc_agent.domain.artifacts import Artifact, GdsxDatasetManifest
 from cnlc_agent.domain.company_provider import (
     CompanyProviderCall,
     CompanyProviderCallStatus,
@@ -34,6 +35,7 @@ from cnlc_agent.domain.execution import (
     execution_status_from_state,
 )
 from cnlc_agent.domain.inputs import (
+    InputPayloadKind,
     InputSource,
     InterpretationInputVersion,
     fixture_digest,
@@ -131,15 +133,14 @@ class InMemoryTaskRepository:
         self._tool_runs: dict[str, ToolRun] = {}
         self._execution_tool_runs: dict[str, list[str]] = {}
         self._company_provider_calls: dict[str, CompanyProviderCall] = {}
+        self._artifacts: dict[str, Artifact] = {}
         self._task_inputs: dict[str, list[str]] = {}
         self._dataset_revisions: dict[str, DatasetRevision] = {}
         self._dataset_change_sets: dict[str, DatasetChangeSet] = {}
         self._task_dataset_revisions: dict[str, list[str]] = {}
         self._states: dict[str, InterpretationState] = {}
         self.reports: dict[str, str] = {}
-        self._session_task_bindings: dict[
-            tuple[str, str, str, str], SessionTaskBinding
-        ] = {}
+        self._session_task_bindings: dict[tuple[str, str, str, str], SessionTaskBinding] = {}
 
     async def create_task(self, state: InterpretationState) -> None:
         """保留旧当前快照读接口，同时建立持续任务。"""
@@ -159,6 +160,84 @@ class InMemoryTaskRepository:
             self._task_executions[task_id] = []
             self._task_inputs[task_id] = []
             self._task_dataset_revisions[task_id] = []
+
+    async def create_gdsx_ingress(
+        self,
+        state: InterpretationState,
+        artifact: Artifact,
+        manifest: GdsxDatasetManifest,
+    ) -> tuple[InterpretationInputVersion, DatasetRevision, Execution]:
+        """单锁提交 Task、Artifact、InputVersion、R1 和分阶段 Execution。"""
+
+        async with self._lock:
+            task_id = state.task.task_id
+            if task_id in self._tasks:
+                raise InfrastructureError("TASK_EXISTS", "任务标识已存在，请创建新任务")
+            # artifact_id 同时是上传收据的一次性消费标识；必须在同一锁内检查，
+            # 否则并发请求会将一份 receipt 绑定到两个 Task。
+            if artifact.artifact_id in self._artifacts:
+                raise InfrastructureError(
+                    "GDSX_INGRESS_CONFLICT", "GDSX 上传收据已用于创建任务"
+                )
+            if artifact.task_id != task_id or artifact.well_id != state.task.well_id:
+                raise InfrastructureError("ARTIFACT_TASK_MISMATCH", "源制品归属无效")
+            version = InterpretationInputVersion(
+                task_id=task_id,
+                well_id=state.task.well_id,
+                sequence=1,
+                source_type="UPLOAD",
+                payload_kind=InputPayloadKind.GDSX_ARTIFACT,
+                content_sha256=artifact.content_sha256,
+                source_artifact_id=artifact.artifact_id,
+                dataset_manifest=manifest,
+            )
+            revision = DatasetRevision(
+                task_id=task_id,
+                well_id=state.task.well_id,
+                sequence=1,
+                root_input_version_id=version.input_version_id,
+                lineage_sha256=root_lineage(version.content_sha256),
+            )
+            state.input_version_id = version.input_version_id
+            state.source_artifact_id = artifact.artifact_id
+            state.dataset_manifest = manifest
+            state.dataset_revision_id = revision.dataset_revision_id
+            now = utc_now()
+            execution = Execution(
+                execution_id=state.workflow_execution_id,
+                task_id=task_id,
+                sequence=1,
+                status=ExecutionStatus.QUEUED,
+                run_mode=ExecutionRunMode.STAGED_CONFIRMATION,
+                state_snapshot=state.model_copy(deep=True),
+                trigger_type="INITIAL",
+                input_version_id=version.input_version_id,
+                planning_reason="INITIAL",
+                created_at=now,
+                updated_at=now,
+            )
+            self._tasks[task_id] = InterpretationTask(
+                task_id=task_id,
+                well_id=state.task.well_id,
+                current_execution_id=execution.execution_id,
+                current_input_version_id=version.input_version_id,
+                created_at=state.created_at,
+                updated_at=now,
+            )
+            self._states[task_id] = state.model_copy(deep=True)
+            self.reports[task_id] = ""
+            self._task_executions[task_id] = [execution.execution_id]
+            self._task_inputs[task_id] = [version.input_version_id]
+            self._task_dataset_revisions[task_id] = [revision.dataset_revision_id]
+            self._artifacts[artifact.artifact_id] = artifact.model_copy(deep=True)
+            self._inputs[version.input_version_id] = version
+            self._dataset_revisions[revision.dataset_revision_id] = revision
+            self._executions[execution.execution_id] = execution
+            return (
+                version.model_copy(deep=True),
+                revision.model_copy(deep=True),
+                execution.model_copy(deep=True),
+            )
 
     async def get_task(self, task_id: str) -> InterpretationTask | None:
         task = self._tasks.get(task_id)
@@ -190,16 +269,15 @@ class InMemoryTaskRepository:
                 binding.user_id,
                 binding.agent_id,
                 binding.session_id,
-            ) == (identity.user_id, identity.agent_id, identity.session_id)
+            )
+            == (identity.user_id, identity.agent_id, identity.session_id)
         ]
         return [
             binding.task_id
             for binding in sorted(bindings, key=lambda item: (item.created_at, item.task_id))
         ]
 
-    async def task_belongs_to_session(
-        self, identity: TaskSessionIdentity, task_id: str
-    ) -> bool:
+    async def task_belongs_to_session(self, identity: TaskSessionIdentity, task_id: str) -> bool:
         """只检查四元组绑定，不能因任务真实存在而放行。"""
 
         identity = TaskSessionIdentity.model_validate(identity.model_dump(mode="python"))
@@ -221,9 +299,10 @@ class InMemoryTaskRepository:
                 raise InfrastructureError("TASK_NOT_FOUND", "任务尚未创建")
             if task.well_id != fixture.well.well_id:
                 raise InfrastructureError("TASK_WELL_MISMATCH", "输入井号与任务不一致")
-            sequence = max(
-                (self._inputs[item].sequence for item in self._task_inputs[task_id]), default=0
-            ) + 1
+            sequence = (
+                max((self._inputs[item].sequence for item in self._task_inputs[task_id]), default=0)
+                + 1
+            )
             version = InterpretationInputVersion(
                 task_id=task_id,
                 well_id=task.well_id,
@@ -231,6 +310,92 @@ class InMemoryTaskRepository:
                 source_type=source_type,
                 content_sha256=fixture_digest(fixture),
                 payload=fixture.model_copy(deep=True),
+            )
+            self._inputs[version.input_version_id] = version
+            self._task_inputs[task_id].append(version.input_version_id)
+            task.current_input_version_id = version.input_version_id
+            task.updated_at = utc_now()
+            return version.model_copy(deep=True)
+
+    async def create_artifact(self, artifact: Artifact) -> Artifact:
+        """进程内保存 metadata；相同 bytes 在不同 Task 仍有独立 artifact_id。"""
+
+        async with self._lock:
+            task = self._tasks.get(artifact.task_id)
+            if task is None or task.well_id != artifact.well_id:
+                raise InfrastructureError("ARTIFACT_TASK_MISMATCH", "制品不属于当前任务或井")
+            if artifact.source_artifact_id is not None:
+                source = self._artifacts.get(artifact.source_artifact_id)
+                if source is None or source.task_id != artifact.task_id:
+                    raise InfrastructureError("ARTIFACT_TASK_MISMATCH", "源制品不属于当前任务")
+            if artifact.created_from_execution_id is not None:
+                execution = self._executions.get(artifact.created_from_execution_id)
+                if execution is None or execution.task_id != artifact.task_id:
+                    raise InfrastructureError("ARTIFACT_TASK_MISMATCH", "来源执行不属于当前任务")
+            if artifact.provider_call_id is not None:
+                call = next(
+                    (
+                        item
+                        for item in self._company_provider_calls.values()
+                        if item.provider_call_id == artifact.provider_call_id
+                    ),
+                    None,
+                )
+                if call is None or call.task_id != artifact.task_id:
+                    raise InfrastructureError("ARTIFACT_TASK_MISMATCH", "ProviderCall 不属于任务")
+            if artifact.artifact_id in self._artifacts:
+                raise InfrastructureError("ARTIFACT_CONFLICT", "制品元数据已存在")
+            self._artifacts[artifact.artifact_id] = artifact.model_copy(deep=True)
+            return artifact.model_copy(deep=True)
+
+    async def get_artifact(self, task_id: str, artifact_id: str) -> Artifact | None:
+        artifact = self._artifacts.get(artifact_id)
+        if artifact is None or artifact.task_id != task_id:
+            return None
+        return artifact.model_copy(deep=True)
+
+    async def list_artifacts(self, task_id: str) -> list[Artifact]:
+        return [
+            artifact.model_copy(deep=True)
+            for artifact in sorted(
+                (item for item in self._artifacts.values() if item.task_id == task_id),
+                key=lambda item: (item.created_at, item.artifact_id),
+            )
+        ]
+
+    async def create_artifact_input_version(
+        self,
+        task_id: str,
+        *,
+        well_id: str,
+        artifact: Artifact,
+        manifest: GdsxDatasetManifest,
+        source_type: InputSource = "UPLOAD",
+    ) -> InterpretationInputVersion:
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            stored = self._artifacts.get(artifact.artifact_id)
+            if (
+                task is None
+                or task.well_id != well_id
+                or stored is None
+                or stored.task_id != task_id
+                or stored.well_id != well_id
+            ):
+                raise InfrastructureError("ARTIFACT_TASK_MISMATCH", "制品输入归属无效")
+            sequence = (
+                max((self._inputs[item].sequence for item in self._task_inputs[task_id]), default=0)
+                + 1
+            )
+            version = InterpretationInputVersion(
+                task_id=task_id,
+                well_id=well_id,
+                sequence=sequence,
+                source_type=source_type,
+                payload_kind=InputPayloadKind.GDSX_ARTIFACT,
+                content_sha256=artifact.content_sha256,
+                source_artifact_id=artifact.artifact_id,
+                dataset_manifest=manifest,
             )
             self._inputs[version.input_version_id] = version
             self._task_inputs[task_id].append(version.input_version_id)
@@ -263,9 +428,7 @@ class InMemoryTaskRepository:
                 input_version.task_id != revision.task_id
                 or input_version.well_id != revision.well_id
             ):
-                raise InfrastructureError(
-                    "DATASET_REVISION_TASK_MISMATCH", "根输入不属于任务或井"
-                )
+                raise InfrastructureError("DATASET_REVISION_TASK_MISMATCH", "根输入不属于任务或井")
             if revision.parent_revision_id is not None or revision.change_set_id is not None:
                 raise InfrastructureError("INVALID_DATASET_REVISION_CHAIN", "根版本引用无效")
             if revision.sequence != 1 or revision.lineage_sha256 != root_lineage(
@@ -275,9 +438,7 @@ class InMemoryTaskRepository:
             if revision.created_from_execution_id is not None:
                 execution = self._executions.get(revision.created_from_execution_id)
                 if execution is None or execution.task_id != revision.task_id:
-                    raise InfrastructureError(
-                        "EXECUTION_TASK_MISMATCH", "来源执行不属于当前任务"
-                    )
+                    raise InfrastructureError("EXECUTION_TASK_MISMATCH", "来源执行不属于当前任务")
             if self._task_dataset_revisions[revision.task_id]:
                 raise InfrastructureError("DATASET_ROOT_EXISTS", "任务已存在根数据集版本")
             self._dataset_revisions[revision.dataset_revision_id] = revision.model_copy(deep=True)
@@ -412,7 +573,8 @@ class InMemoryTaskRepository:
                 raise InfrastructureError("EXECUTION_EXISTS", "执行标识已存在")
             current = self._executions.get(task.current_execution_id or "")
             if current is not None and current.status in {
-                ExecutionStatus.QUEUED, ExecutionStatus.RUNNING
+                ExecutionStatus.QUEUED,
+                ExecutionStatus.RUNNING,
             }:
                 raise InfrastructureError("TASK_EXECUTION_ACTIVE", "当前任务已有执行正在处理")
             existing = [self._executions[item].sequence for item in self._task_executions[task_id]]
@@ -468,14 +630,16 @@ class InMemoryTaskRepository:
             if execution.status != ExecutionStatus.QUEUED:
                 return False
             now = utc_now()
-            self._executions[execution_id] = Execution.model_validate({
-                **execution.model_dump(mode="python"),
-                "status": ExecutionStatus.RUNNING,
-                "started_at": execution.started_at or now,
-                "lease_owner": worker_id,
-                "lease_expires_at": lease_expires_at,
-                "updated_at": now,
-            })
+            self._executions[execution_id] = Execution.model_validate(
+                {
+                    **execution.model_dump(mode="python"),
+                    "status": ExecutionStatus.RUNNING,
+                    "started_at": execution.started_at or now,
+                    "lease_owner": worker_id,
+                    "lease_expires_at": lease_expires_at,
+                    "updated_at": now,
+                }
+            )
             return True
 
     async def renew_execution_lease(
@@ -524,15 +688,17 @@ class InMemoryTaskRepository:
                 execution.lease_expires_at is None or execution.lease_expires_at <= now
             ):
                 raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
-            execution = Execution.model_validate({
-                **execution.model_dump(mode="python"),
-                "status": status,
-                "finished_at": now,
-                "lease_owner": None,
-                "lease_expires_at": None,
-                "error_code": error_code,
-                "updated_at": now,
-            })
+            execution = Execution.model_validate(
+                {
+                    **execution.model_dump(mode="python"),
+                    "status": status,
+                    "finished_at": now,
+                    "lease_owner": None,
+                    "lease_expires_at": None,
+                    "error_code": error_code,
+                    "updated_at": now,
+                }
+            )
             self._executions[execution_id] = execution
             task = self._tasks[execution.task_id]
             task.updated_at = now
@@ -563,7 +729,8 @@ class InMemoryTaskRepository:
             if execution.lease_expires_at is None or execution.lease_expires_at <= utc_now():
                 raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
             waiting = [
-                run for run in state.stage_runs
+                run
+                for run in state.stage_runs
                 if run.execution_id == execution_id
                 and run.status == StageRunStatus.WAITING_CONFIRM
                 and run.validity == StageValidity.CURRENT
@@ -574,15 +741,17 @@ class InMemoryTaskRepository:
             ):
                 raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "阶段确认快照无效")
             now = utc_now()
-            execution = Execution.model_validate({
-                **execution.model_dump(mode="python"),
-                "status": ExecutionStatus.WAITING_CONFIRMATION,
-                "state_snapshot": state,
-                "markdown": markdown,
-                "lease_owner": None,
-                "lease_expires_at": None,
-                "updated_at": now,
-            })
+            execution = Execution.model_validate(
+                {
+                    **execution.model_dump(mode="python"),
+                    "status": ExecutionStatus.WAITING_CONFIRMATION,
+                    "state_snapshot": state,
+                    "markdown": markdown,
+                    "lease_owner": None,
+                    "lease_expires_at": None,
+                    "updated_at": now,
+                }
+            )
             self._executions[execution_id] = execution
             self._states[task.task_id] = state.model_copy(deep=True)
             self.reports[task.task_id] = markdown
@@ -600,7 +769,8 @@ class InMemoryTaskRepository:
 
         state = execution.state_snapshot.model_copy(deep=True)
         matches = [
-            (index, run) for index, run in enumerate(state.stage_runs)
+            (index, run)
+            for index, run in enumerate(state.stage_runs)
             if run.task_id == execution.task_id
             and run.execution_id == execution.execution_id
             and run.stage == stage
@@ -639,18 +809,18 @@ class InMemoryTaskRepository:
                 raise InfrastructureError("EXECUTION_NOT_CURRENT", "历史执行不能确认")
             if execution.status != ExecutionStatus.WAITING_CONFIRMATION:
                 raise InfrastructureError("STAGE_CONFIRMATION_CONFLICT", "执行不在等待确认态")
-            state = self._confirm_waiting_run(
-                execution, stage, expected_stage_run_id, actor
-            )
+            state = self._confirm_waiting_run(execution, stage, expected_stage_run_id, actor)
             now = utc_now()
-            updated = Execution.model_validate({
-                **execution.model_dump(mode="python"),
-                "status": ExecutionStatus.QUEUED,
-                "state_snapshot": state,
-                "lease_owner": None,
-                "lease_expires_at": None,
-                "updated_at": now,
-            })
+            updated = Execution.model_validate(
+                {
+                    **execution.model_dump(mode="python"),
+                    "status": ExecutionStatus.QUEUED,
+                    "state_snapshot": state,
+                    "lease_owner": None,
+                    "lease_expires_at": None,
+                    "updated_at": now,
+                }
+            )
             self._executions[execution_id] = updated
             self._states[task_id] = state.model_copy(deep=True)
             task.updated_at = now
@@ -681,15 +851,17 @@ class InMemoryTaskRepository:
             )
             status = execution_status_from_state(state.completed_status())
             now = utc_now()
-            updated = Execution.model_validate({
-                **execution.model_dump(mode="python"),
-                "status": status,
-                "state_snapshot": state,
-                "finished_at": now,
-                "lease_owner": None,
-                "lease_expires_at": None,
-                "updated_at": now,
-            })
+            updated = Execution.model_validate(
+                {
+                    **execution.model_dump(mode="python"),
+                    "status": status,
+                    "state_snapshot": state,
+                    "finished_at": now,
+                    "lease_owner": None,
+                    "lease_expires_at": None,
+                    "updated_at": now,
+                }
+            )
             self._executions[execution_id] = updated
             self._states[task_id] = state.model_copy(deep=True)
             self.reports[task_id] = execution.markdown
@@ -702,21 +874,24 @@ class InMemoryTaskRepository:
 
         async with self._lock:
             expired = [
-                item for item in self._executions.values()
+                item
+                for item in self._executions.values()
                 if item.status == ExecutionStatus.RUNNING
                 and item.lease_expires_at is not None
                 and item.lease_expires_at <= now
             ]
             for execution in expired:
-                self._executions[execution.execution_id] = Execution.model_validate({
-                    **execution.model_dump(mode="python"),
-                    "status": ExecutionStatus.FAILED,
-                    "finished_at": now,
-                    "lease_owner": None,
-                    "lease_expires_at": None,
-                    "error_code": "WORKER_LEASE_EXPIRED",
-                    "updated_at": now,
-                })
+                self._executions[execution.execution_id] = Execution.model_validate(
+                    {
+                        **execution.model_dump(mode="python"),
+                        "status": ExecutionStatus.FAILED,
+                        "finished_at": now,
+                        "lease_owner": None,
+                        "lease_expires_at": None,
+                        "error_code": "WORKER_LEASE_EXPIRED",
+                        "updated_at": now,
+                    }
+                )
             return [item.execution_id for item in expired]
 
     async def create_tool_run(self, run: ToolRun) -> ToolRun:
@@ -756,16 +931,18 @@ class InMemoryTaskRepository:
                 raise InfrastructureError("TOOL_RUN_ALREADY_FINISHED", "工具调用已结束")
             if status == ToolRunStatus.RUNNING:
                 raise InfrastructureError("TOOL_RUN_INVALID_STATUS", "结束调用必须使用终态")
-            finished = ToolRun.model_validate({
-                **current.model_dump(mode="python"),
-                "status": status,
-                "source": source,
-                "output_snapshot": output_snapshot,
-                "finished_at": utc_now(),
-                "error_code": error_code,
-                "error_message": error_message,
-                "source_external_call_id": source_external_call_id,
-            })
+            finished = ToolRun.model_validate(
+                {
+                    **current.model_dump(mode="python"),
+                    "status": status,
+                    "source": source,
+                    "output_snapshot": output_snapshot,
+                    "finished_at": utc_now(),
+                    "error_code": error_code,
+                    "error_message": error_message,
+                    "source_external_call_id": source_external_call_id,
+                }
+            )
             self._tool_runs[tool_run_id] = finished
             return finished.model_copy(deep=True)
 
@@ -777,13 +954,12 @@ class InMemoryTaskRepository:
         """创建顺序是本次 Workflow Tool 调用的稳定顺序。"""
 
         runs = (self._tool_runs[item] for item in self._execution_tool_runs.get(execution_id, []))
-        return [run.model_copy(deep=True) for run in sorted(
-            runs, key=lambda item: (item.started_at, item.tool_run_id)
-        )]
+        return [
+            run.model_copy(deep=True)
+            for run in sorted(runs, key=lambda item: (item.started_at, item.tool_run_id))
+        ]
 
-    async def create_company_provider_call(
-        self, call: CompanyProviderCall
-    ) -> CompanyProviderCall:
+    async def create_company_provider_call(self, call: CompanyProviderCall) -> CompanyProviderCall:
         """核对 Task、Execution 和 InputVersion 后保存真实调用运行态。"""
 
         async with self._lock:
@@ -831,19 +1007,19 @@ class InMemoryTaskRepository:
                 raise InfrastructureError("COMPANY_PROVIDER_CALL_NOT_FOUND", "公司调用不存在")
             if current.status != CompanyProviderCallStatus.RUNNING:
                 raise InfrastructureError("COMPANY_PROVIDER_CALL_FINISHED", "公司调用已经结束")
-            finished = CompanyProviderCall.model_validate({
-                **current.model_dump(mode="python"),
-                "status": status,
-                "normalized_result": normalized_result,
-                "finished_at": utc_now(),
-                "error_code": error_code,
-            })
+            finished = CompanyProviderCall.model_validate(
+                {
+                    **current.model_dump(mode="python"),
+                    "status": status,
+                    "normalized_result": normalized_result,
+                    "finished_at": utc_now(),
+                    "error_code": error_code,
+                }
+            )
             self._company_provider_calls[external_call_id] = finished
             return finished.model_copy(deep=True)
 
-    async def get_company_provider_call(
-        self, external_call_id: str
-    ) -> CompanyProviderCall | None:
+    async def get_company_provider_call(self, external_call_id: str) -> CompanyProviderCall | None:
         call = self._company_provider_calls.get(external_call_id)
         return call.model_copy(deep=True) if call is not None else None
 
@@ -886,9 +1062,7 @@ class InMemoryTaskRepository:
                 raise InfrastructureError("TASK_WELL_MISMATCH", "任务井号不一致")
             if execution.status != ExecutionStatus.RUNNING:
                 raise InfrastructureError("EXECUTION_NOT_RUNNING", "执行不在运行态")
-            if (
-                execution.lease_expires_at is None or execution.lease_expires_at <= utc_now()
-            ):
+            if execution.lease_expires_at is None or execution.lease_expires_at <= utc_now():
                 raise InfrastructureError("EXECUTION_LEASE_EXPIRED", "执行租约已过期")
             execution.state_snapshot = state.model_copy(deep=True)
             execution.updated_at = utc_now()
