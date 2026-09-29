@@ -45,17 +45,18 @@ CNLC_PROFESSIONAL_PROVIDER=company_mock
 - 工具超时沿用 `CNLC_TOOL_TIMEOUT_SECONDS`，当前不进行网络请求。
 - 不使用大模型重新估算专业参数，也不补造分类阈值或深度单位。
 
-## 真实接口准备与后续替换
+## 真实接口接入状态
 
 `infrastructure/company_api.py` 根据参考代码整理了预处理上传/处理/下载、预测和
-模型列表的 HTTP 客户端；`application/company_results.py` 只做原始预测字段分组。
-两者**没有接入当前默认运行链路，也没有实际访问公司内网验证**。
+模型列表的 HTTP 客户端；`company_real` profile 已通过 `RealCompanyBatchProvider` 接入
+预处理和预测，并由 `application/company_results.py` 做原始预测字段分组。
+该接入使用 MockTransport 完成协议测试，**没有实际访问公司内网验证**。
 原始真实结果只会标为待复核或缺数据，不直接宣称专业步骤完成。
 
-待公司接口和真实样本可用后，在批量提供者内调用真实客户端，把返回内容适配为上述
-内部字段；公司将大接口拆为细接口时，也在这里调整调用与映射，保持 W 步骤消费契约。
-需要同时核对真实井标识、曲线深度/单位、分类编码、错误信封和鉴权，
-再接入 GDSX 输入及明确非 Mock 来源。当前不能仅填写 Token 就切为完整真实模式。
+`analysis` / `report` 没有已确认真实 API，会明确拒绝，不会回退 Mock。真实 GDSX Web ingress、
+大文件 Artifact Store、公司内网联调及专业结果最终验收仍未完成，不能仅填写 Token 就宣称完整
+真实 E2E。详细边界见
+[真实公司 Provider 接入与规范化](architecture/real-company-provider.md)。
 
 ## 验证
 

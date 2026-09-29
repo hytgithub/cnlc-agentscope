@@ -95,9 +95,10 @@ def build_steps(
     validation: ValidationAgent,
     *,
     demo_mode: bool = False,
-    company_batches: bool = False,
+    company_batch_steps: frozenset[StepId] = frozenset(),
+    skip_validation_in_demo: bool = False,
 ) -> list[WorkflowNode]:
-    """按架构规定构造固定 W01-W10 节点列表。"""
+    """按架构规定构造固定 W01-W10 节点列表，并按步骤选择批量能力。"""
 
     async def load(state: InterpretationState) -> StepOutcome:
         """W01：通过正式 Tool Contract 加载井资料。"""
@@ -115,7 +116,7 @@ def build_steps(
         """W02：检查必需曲线和推荐辅助资料。"""
 
         assert state.raw_data is not None and state.data_requirements is not None
-        if demo_mode and not company_batches:
+        if demo_mode and StepId.W01 not in company_batch_steps:
             # Demo Fixture 已在上传入口完成 Schema 校验，此处保持主链路可演示。
             return StepOutcome(
                 reason="Demo Mode：将演示井资料视为完整，继续执行 W03–W10",
@@ -187,7 +188,7 @@ def build_steps(
     async def fluid(state: InterpretationState) -> StepOutcome:
         """W06：由 InterpretationAgent 综合物性和含水饱和度结果。"""
 
-        if company_batches:
+        if StepId.W06 in company_batch_steps:
             sw_output = await caller.call(tools["calculate_sw"], tool_request(state, StepId.W06))
             sw_result = StageResult.model_validate(sw_output.data)
             if sw_result.status not in {StepStatus.SUCCESS, StepStatus.WARNING}:
@@ -203,7 +204,7 @@ def build_steps(
     async def classification(state: InterpretationState) -> StepOutcome:
         """W07：由 InterpretationAgent 形成油气水层分类。"""
 
-        if company_batches:
+        if StepId.W07 in company_batch_steps:
             output = await caller.call(tools["classify_layer"], tool_request(state, StepId.W07))
             result = StageResult.model_validate(output.data)
             return outcome_for(result, StatePatch(layer_classification=result))
@@ -220,7 +221,7 @@ def build_steps(
     async def validate(state: InterpretationState) -> StepOutcome:
         """W09：执行多源验证；Demo 模式保留显式跳过标记。"""
 
-        if demo_mode and not company_batches:
+        if demo_mode and skip_validation_in_demo:
             result = ValidationResult(
                 status=StepStatus.SUCCESS,
                 result={"demo_skipped": True, "summary": "Demo Mode 跳过真实综合验证"},
@@ -230,7 +231,7 @@ def build_steps(
                 source="demo:w09-skipped-validation",
             )
             return outcome_for(result, StatePatch(validation_result=result))
-        if company_batches:
+        if StepId.W09 in company_batch_steps:
             output = await caller.call(
                 tools["validate_interpretation"], tool_request(state, StepId.W09)
             )
@@ -260,7 +261,7 @@ def build_steps(
             and not state.review_required
             and not any(item.importance == "Required" for item in state.missing_data)
         )
-        if company_batches:
+        if StepId.W10 in company_batch_steps:
             output = await caller.call(tools["prepare_report"], tool_request(state, StepId.W10))
             result = StageResult.model_validate(output.data)
             result.result["structural_check_passed"] = valid

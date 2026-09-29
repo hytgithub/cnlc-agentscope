@@ -613,3 +613,36 @@ StageRunStatus（阶段执行状态）表达一次实际执行的生命周期，
 | `STAGE_RESULT_STALE` | 当前工作快照中的阶段结果已经失效。 |
 
 详细设计见 [四阶段结果展示契约](architecture/four-stage-result-contract.md)。
+
+## 43. CompanyProviderCall 状态与稳定错误码（Task 11F）
+
+| CompanyProviderCallStatus | 中文含义 |
+| --- | --- |
+| `RUNNING` | 真实 Provider 物理调用正在执行。 |
+| `SUCCESS` | 调用成功且有界规范化结果已持久化。 |
+| `UNKNOWN` | 调用结果未知；超时或取消后无法确认服务端是否已执行，禁止自动重发，等待人工核实。 |
+| `FAILED` | 调用失败；只保存安全错误码，不保存响应正文。 |
+
+| CompanyProviderOperation | 中文含义 |
+| --- | --- |
+| `analysis` | Provider 数据分析能力；当前真实 API 未实现。 |
+| `preprocessing` | Provider GDSX 预处理能力。 |
+| `interpretation` | Provider 同步预测能力。 |
+| `report` | Provider 报告能力；当前真实 API 未实现，不等于业务 REPORT。 |
+
+| 错误代码值 | 中文含义 |
+| --- | --- |
+| `COMPANY_OPERATION_NOT_IMPLEMENTED` | 真实 Provider 尚无已确认的对应 API。 |
+| `COMPANY_CONTEXT_REQUIRED` | 调用缺少明确 Execution 或 InputVersion。 |
+| `COMPANY_RESULT_VERSION_MISMATCH` | Provider 结果与请求的 Execution / InputVersion 不一致。 |
+| `COMPANY_PREPROCESS_RESULT_REQUIRED` | 当前版本尚无成功的真实预处理结果。 |
+| `COMPANY_PREDICT_INPUT_MISSING` | 预测缺少井名、服务 ID、任务配置或预处理数据。 |
+| `COMPANY_EXECUTION_MODE_MISMATCH` | Provider 返回的物理来源模式与组合根装配模式不一致。 |
+| `PROVIDER_RESULT_TOO_LARGE` | 规范化结果超过当前 JSONB 体积边界；需要 Artifact Store。 |
+| `PROVIDER_RESULT_INVALID` | 规范化结果含非法 JSON、敏感字段或路径。 |
+| `COMPANY_PROVIDER_CALL_RUNNING` | 同一执行和输入版本已有运行中的真实调用，禁止重复提交。 |
+| `COMPANY_PROVIDER_CALL_UNKNOWN` | 同一真实调用结果未知，禁止自动重发并等待人工核实。 |
+| `COMPANY_PROVIDER_CALL_FAILED` | 同一真实调用已明确失败；本任务不自动重试。 |
+
+HTTP、鉴权和响应错误继续复用既有 `COMPANY_*` ToolError。详细设计见
+[真实公司 Provider 接入与规范化](architecture/real-company-provider.md)。

@@ -170,3 +170,19 @@ def test_supported_result_wrappers(payload):
 def test_multiple_wells_cannot_be_silently_assigned_to_one_task():
     with pytest.raises(ToolError):
         extract_prediction_data({"resultData": [{"well": 1}, {"well": 2}]})
+
+
+@pytest.mark.parametrize("missing", ["wellName", "serviceId", "logReqJson", "taskConfig"])
+async def test_prediction_context_fields_are_never_guessed(missing):
+    client = CompanyApiClient(
+        settings(),
+        transport=httpx.MockTransport(lambda request: pytest.fail(str(request.url))),
+    )
+    parameters = request_body()
+    parameters.pop(missing)
+    try:
+        with pytest.raises(ToolError) as caught:
+            await client.predict(parameters, "execution", "input-v1")
+        assert caught.value.code == "COMPANY_PREDICT_INPUT_MISSING"
+    finally:
+        await client.aclose()

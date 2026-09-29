@@ -1,6 +1,7 @@
 """Opt-in real servers. Use dedicated test services; never substitutes SQLite/fake Redis."""
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -8,9 +9,11 @@ from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import pytest
+from pydantic import SecretStr
 from redis.asyncio import Redis
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -20,6 +23,10 @@ from cnlc_agent.application.execution_dispatcher import InProcessExecutionDispat
 from cnlc_agent.application.runtime import application_runtime
 from cnlc_agent.application.stage_orchestrator import StageOrchestrator
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings, PersistenceSettings
+from cnlc_agent.domain.company_provider import (
+    CompanyProviderCallStatus,
+    CompanyProviderOperation,
+)
 from cnlc_agent.domain.dataset_revision import (
     DatasetChangeSet,
     DatasetCurveChange,
@@ -39,7 +46,14 @@ from cnlc_agent.domain.override import InterpretationOverride
 from cnlc_agent.domain.stages import STAGE_ORDER, StageRunStatus
 from cnlc_agent.domain.state import InterpretationState
 from cnlc_agent.domain.tool_run import ToolExecutionMode, ToolRun, ToolRunStatus
+from cnlc_agent.infrastructure.company_api import CompanyApiClient, CompanyApiSettings
+from cnlc_agent.infrastructure.company_provider import (
+    CompanyProviderSettings,
+    ConfiguredCompanyInputResolver,
+    RealCompanyBatchProvider,
+)
 from cnlc_agent.infrastructure.database import (
+    CompanyProviderCallRow,
     DatasetRevisionRow,
     ExecutionRow,
     InputVersionRow,
@@ -48,6 +62,7 @@ from cnlc_agent.infrastructure.database import (
     ToolRunRow,
 )
 from cnlc_agent.infrastructure.redis_store import RedisInterpretationStateStore
+from cnlc_agent.tools.contracts import ToolInput
 
 ROOT = Path(__file__).resolve().parents[2]
 DB_URL = os.environ.get("CNLC_TEST_DATABASE_URL")
@@ -301,6 +316,156 @@ async def test_stage_tool_runs_survive_restart_and_keep_wells_isolated(migrated,
             await second_app.close()
         async with second_engine.begin() as connection:
             await connection.execute(delete(TaskRow).where(TaskRow.task_id.in_(task_ids)))
+        await first_engine.dispose()
+        await second_engine.dispose()
+
+
+async def test_real_provider_call_survives_postgresql_restart(migrated, tmp_path):
+    """PREPROCESS 持久结果跨连接恢复后仍只供同 Execution/InputVersion 的预测使用。"""
+
+    gdsx = tmp_path / "provider-input.gdsx"
+    gdsx.write_bytes(b"\x89HDF\r\n\x1a\nprovider-restart")
+    fixture = MockFixture.model_validate_json(
+        (ROOT / "mock_data/WELL_MOCK_001.json").read_text(encoding="utf-8")
+    )
+    request = TaskRequest(well_id=fixture.well.well_id)
+    first_engine = create_async_engine(DB_URL)
+    second_engine = create_async_engine(DB_URL)
+    client_one = None
+    client_two = None
+    seen: list[str] = []
+
+    def handler(http_request):
+        seen.append(http_request.url.path)
+        if http_request.url.path.endswith("upload"):
+            return httpx.Response(
+                200, json={"code": 200, "data": {"filePath": "/remote/restart.gdsx"}}
+            )
+        if http_request.url.path.endswith("processForGDSX"):
+            return httpx.Response(
+                200, json={"code": 200, "data": {"curves": ["GR"], "count": 2}}
+            )
+        if http_request.url.path.endswith("download"):
+            return httpx.Response(200, content=b"\x89HDF\r\n\x1a\nprocessed")
+        body = json.loads(http_request.content)
+        assert body["logReqJson"] == {"curves": ["GR"], "count": 2}
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "data": {
+                    "evaluationData": {
+                        "resultData": [
+                            {
+                                "curveList": [
+                                    {"standardName": "POR", "curveData": [0.12]}
+                                ]
+                            }
+                        ]
+                    }
+                },
+            },
+        )
+
+    api_settings = CompanyApiSettings(
+        preprocessing_url="http://preprocess.test/",
+        prediction_url="http://predict.test/center-management/",
+        token=SecretStr("restart-secret"),
+        _env_file=None,
+    )
+    resolver = ConfiguredCompanyInputResolver(
+        CompanyProviderSettings(
+            gdsx_path=gdsx,
+            well_name="restart-well",
+            service_id="restart-service",
+            task_config={"NUM": ["POR"]},
+            preprocess_operations={"resample": {"enable": False}},
+            _env_file=None,
+        )
+    )
+    try:
+        first_repository = PostgreSQLTaskRepository(first_engine)
+        state = InterpretationState(task=request, mode="demo")
+        await first_repository.create_task(state)
+        input_version = await first_repository.create_input_version(
+            request.task_id, fixture
+        )
+        execution = await first_repository.create_execution(
+            state, "INITIAL", input_version_id=input_version.input_version_id
+        )
+        tool_input = ToolInput(
+            task_id=request.task_id,
+            trace_id=state.trace_id,
+            well_id=request.well_id,
+            step_id="W03",
+            parameters={
+                "execution_id": execution.execution_id,
+                "input_version_id": input_version.input_version_id,
+                "effective_override": {},
+            },
+        )
+        client_one = CompanyApiClient(
+            api_settings, transport=httpx.MockTransport(handler)
+        )
+        first_provider = RealCompanyBatchProvider(
+            client_one, first_repository, resolver
+        )
+        preprocess_response = await first_provider.execute("preprocessing", tool_input)
+        preprocess_call_id = preprocess_response.external_call_id
+        await client_one.aclose()
+        client_one = None
+        await first_engine.dispose()
+
+        reopened = PostgreSQLTaskRepository(second_engine)
+        persisted = await reopened.get_company_provider_call(preprocess_call_id)
+        assert persisted is not None
+        assert persisted.status == CompanyProviderCallStatus.SUCCESS
+        assert persisted.normalized_result["logReqJson"] == {
+            "curves": ["GR"],
+            "count": 2,
+        }
+        client_two = CompanyApiClient(
+            api_settings, transport=httpx.MockTransport(handler)
+        )
+        second_provider = RealCompanyBatchProvider(client_two, reopened, resolver)
+        calls_after_preprocess = len(seen)
+        restored_preprocess = await second_provider.execute("preprocessing", tool_input)
+        assert restored_preprocess.external_call_id == preprocess_call_id
+        assert len(seen) == calls_after_preprocess
+        prediction = await second_provider.execute(
+            "interpretation", tool_input.model_copy(update={"step_id": "W04"})
+        )
+        calls_after_prediction = len(seen)
+        restored_prediction = await second_provider.execute(
+            "interpretation", tool_input.model_copy(update={"step_id": "W04"})
+        )
+        assert restored_prediction.external_call_id == prediction.external_call_id
+        assert len(seen) == calls_after_prediction
+        calls = await reopened.list_company_provider_calls(request.task_id)
+        assert len(calls) == 2
+        assert calls[1].provider_operation == CompanyProviderOperation.INTERPRETATION
+        assert calls[1].normalized_result["preprocessing_call_id"] == preprocess_call_id
+        assert prediction.external_call_id == calls[1].external_call_id
+        assert all(item.provider_call_id for item in calls)
+        serialized = json.dumps(
+            [item.model_dump(mode="json") for item in calls], ensure_ascii=False
+        )
+        assert "restart-secret" not in serialized
+        assert str(gdsx) not in serialized
+        async with second_engine.connect() as connection:
+            count = await connection.scalar(
+                select(func.count()).select_from(CompanyProviderCallRow).where(
+                    CompanyProviderCallRow.execution_id == execution.execution_id
+                )
+            )
+        assert count == 2
+    finally:
+        if client_one is not None:
+            await client_one.aclose()
+        if client_two is not None:
+            await client_two.aclose()
+        async with second_engine.begin() as connection:
+            await connection.execute(delete(TaskRow).where(TaskRow.task_id == request.task_id))
         await first_engine.dispose()
         await second_engine.dispose()
 

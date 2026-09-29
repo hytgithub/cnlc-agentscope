@@ -6,48 +6,66 @@ import json
 from typing import Protocol
 from uuid import uuid4
 
+from pydantic import Field
+
 from cnlc_agent.domain.enums import StepStatus
 from cnlc_agent.domain.errors import ToolError
-from cnlc_agent.domain.models import JsonObject, StageResult
+from cnlc_agent.domain.models import Contract, JsonObject, StageResult
 from cnlc_agent.domain.tool_run import ToolExecutionMode
 from cnlc_agent.infrastructure.mock import FixtureRepository
 from cnlc_agent.tools.contracts import ToolCaller, ToolInput, ToolOutput
 from cnlc_agent.tools.mock import MockResultTool
 
 
+class CompanyBatchResponse(Contract):
+    """Provider 批量返回及其物理调用身份；业务数据与审计元数据分开。"""
+
+    data: JsonObject
+    provider_call_id: str | None = Field(default=None, min_length=1, max_length=128)
+    external_call_id: str = Field(min_length=1, max_length=128)
+    execution_mode: ToolExecutionMode
+    source: str = Field(min_length=1, max_length=256)
+    is_mock: bool
+
+
 class CompanyBatchProvider(Protocol):
     """将来公司 API 拆分时只替换批量提供者内部实现，保留规范化结果键。"""
 
-    async def execute(self, stage: str, request: ToolInput) -> JsonObject: ...
+    execution_mode: ToolExecutionMode
+
+    async def execute(self, stage: str, request: ToolInput) -> CompanyBatchResponse: ...
 
 
 class MockCompanyBatchProvider:
     """直接返回本项目现有 Mock 资料，不发网络请求、不伪造真实服务响应协议。"""
 
+    execution_mode = ToolExecutionMode.MOCK
+
     def __init__(self, repository: FixtureRepository) -> None:
         self.repository = repository
 
-    async def execute(self, stage: str, request: ToolInput) -> JsonObject:
+    async def execute(self, stage: str, request: ToolInput) -> CompanyBatchResponse:
         """四个分支分别对应数据分析、预处理、智能处理和报告数据准备。"""
         fixture = await self.repository.load(request.well_id)
+        data: JsonObject
         if stage == "analysis":
-            return {
+            data = {
                 "well_data": {
                     "well": fixture.well.model_dump(mode="json"),
                     "raw_data": fixture.raw_data.model_dump(mode="json"),
                     "requirements": fixture.requirements.model_dump(mode="json"),
                 }
             }
-        if stage == "preprocessing":
+        elif stage == "preprocessing":
             if "qc" not in fixture.outputs:
                 raise ToolError("COMPANY_MOCK_RESULT_MISSING", "Mock 资料缺少质量结果")
-            return {
+            data = {
                 "qc": fixture.outputs["qc"].model_dump(mode="json"),
                 # 当前 Fixture 没有独立的处理后曲线：仅回传原数据并明确标记未转换。
                 "processed_data": fixture.raw_data.model_dump(mode="json"),
                 "operations_applied": False,
             }
-        if stage == "interpretation":
+        elif stage == "interpretation":
             results: JsonObject = {}
             for key in ("lithology", "petrophysics", "sw", "fluid", "classification", "intervals"):
                 if key not in fixture.outputs:
@@ -57,9 +75,9 @@ class MockCompanyBatchProvider:
                 output = await MockResultTool(key, key, self.repository).execute(request)
                 results[key] = output.data
             results["validation"] = fixture.validation.model_dump(mode="json")
-            return results
-        if stage == "report":
-            return {
+            data = results
+        elif stage == "report":
+            data = {
                 "final_check": StageResult(
                     is_mock=True,
                     source="mock:company:report",
@@ -67,30 +85,40 @@ class MockCompanyBatchProvider:
                     evidence=["报告继续由本项目模板依据当前状态生成；未调用公司报告 API"],
                 ).model_dump(mode="json")
             }
-        raise ToolError("COMPANY_STAGE_UNSUPPORTED", "未知公司处理步骤")
+        else:
+            raise ToolError("COMPANY_STAGE_UNSUPPORTED", "未知公司处理步骤")
+        external_call_id = uuid4().hex
+        return CompanyBatchResponse(
+            data=data,
+            external_call_id=external_call_id,
+            execution_mode=ToolExecutionMode.MOCK,
+            source=f"mock:company:{stage}:{external_call_id}",
+            is_mock=True,
+        )
 
 
 class _BatchTool:
     """一个实际的 Mock 大步骤调用，独立记录来源和共享调用 ID。"""
 
-    execution_mode = ToolExecutionMode.MOCK
-
     def __init__(self, stage: str, provider: CompanyBatchProvider) -> None:
         self.stage = stage
         self.provider = provider
         self.name = f"company_{stage}"
-        self.source = f"mock:company:{stage}"
+        self.source = f"company:batch:{stage}"
+        self.execution_mode = provider.execution_mode
 
     async def execute(self, request: ToolInput) -> ToolOutput:
-        data = await self.provider.execute(self.stage, request)
-        call_id = uuid4().hex
+        response = await self.provider.execute(self.stage, request)
+        if response.execution_mode != self.execution_mode:
+            raise ToolError("COMPANY_EXECUTION_MODE_MISMATCH", "Provider 返回来源与装配模式不一致")
         return ToolOutput(
             status=StepStatus.SUCCESS,
-            data=data,
+            data=response.data,
             metadata={
-                "is_mock": True,
-                "source": f"{self.source}:{call_id}",
-                "external_call_id": call_id,
+                "is_mock": response.is_mock,
+                "source": response.source,
+                "external_call_id": response.external_call_id,
+                "provider_call_id": response.provider_call_id,
                 "stage": self.stage,
             },
         )
@@ -155,7 +183,7 @@ class CompanyResultTool:
                 data["well"] = {**well, "extensions": extensions}
         else:
             data["source"] = metadata["source"]
-            data["is_mock"] = True
+            data["is_mock"] = bool(metadata.get("is_mock"))
             raw_result = data.get("result", {})
             if not isinstance(raw_result, dict):
                 raise ToolError("COMPANY_RESULT_INVALID", "细分结果必须为对象")
@@ -184,6 +212,26 @@ def build_company_mock_tools(
         "merge_intervals": ("interpretation", "intervals"),
         "validate_interpretation": ("interpretation", "validation"),
         "prepare_report": ("report", "final_check"),
+    }
+    return {
+        name: CompanyResultTool(name, stage, key, batches) for name, (stage, key) in mapping.items()
+    }
+
+
+def build_company_real_tools(
+    provider: CompanyBatchProvider, caller: ToolCaller
+) -> dict[str, CompanyResultTool]:
+    """真实 profile 只替换已声明的 PREPROCESS/INTERPRET 能力；W01 由输入适配器负责。"""
+
+    batches = CompanyBatchResults(provider, caller)
+    mapping = {
+        "check_curve_quality": ("preprocessing", "qc"),
+        "identify_lithology": ("interpretation", "lithology"),
+        "evaluate_petrophysics": ("interpretation", "petrophysics"),
+        "calculate_sw": ("interpretation", "sw"),
+        "identify_fluid": ("interpretation", "fluid"),
+        "classify_layer": ("interpretation", "classification"),
+        "merge_intervals": ("interpretation", "intervals"),
     }
     return {
         name: CompanyResultTool(name, stage, key, batches) for name, (stage, key) in mapping.items()

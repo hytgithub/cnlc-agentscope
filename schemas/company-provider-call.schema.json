@@ -1,0 +1,119 @@
+{
+  "$defs": {
+    "CompanyProviderCallStatus": {
+      "description": "一次真实 Provider 物理调用的生命周期。",
+      "enum": [
+        "RUNNING",
+        "SUCCESS",
+        "UNKNOWN",
+        "FAILED"
+      ],
+      "title": "CompanyProviderCallStatus",
+      "type": "string"
+    },
+    "CompanyProviderOperation": {
+      "description": "当前已识别的公司批量能力；不等同于四个业务阶段。",
+      "enum": [
+        "analysis",
+        "preprocessing",
+        "interpretation",
+        "report"
+      ],
+      "title": "CompanyProviderOperation",
+      "type": "string"
+    },
+    "JsonValue": {}
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "跨进程恢复真实调用所需的最小事实，独立于有损 ToolRun 摘要。",
+  "properties": {
+    "error_code": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Code"
+    },
+    "execution_id": {
+      "minLength": 1,
+      "title": "Execution Id",
+      "type": "string"
+    },
+    "external_call_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "External Call Id",
+      "type": "string"
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Finished At"
+    },
+    "input_version_id": {
+      "minLength": 1,
+      "title": "Input Version Id",
+      "type": "string"
+    },
+    "normalized_result": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Normalized Result",
+      "type": "object"
+    },
+    "provider_call_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Provider Call Id",
+      "type": "string"
+    },
+    "provider_operation": {
+      "$ref": "#/$defs/CompanyProviderOperation"
+    },
+    "request_summary": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Request Summary",
+      "type": "object"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/CompanyProviderCallStatus",
+      "default": "RUNNING"
+    },
+    "task_id": {
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "execution_id",
+    "input_version_id",
+    "provider_operation"
+  ],
+  "title": "CompanyProviderCall",
+  "type": "object"
+}

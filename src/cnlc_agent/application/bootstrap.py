@@ -10,6 +10,15 @@ from cnlc_agent.application.ports import InterpretationStateStore, ModelGateway,
 from cnlc_agent.application.prediction import MockPredictionProvider
 from cnlc_agent.application.service import InterpretationTaskService
 from cnlc_agent.config.settings import AppSettings, ConnectionSettings
+from cnlc_agent.domain.enums import StepId
+from cnlc_agent.infrastructure.company_api import CompanyApiClient, CompanyApiSettings
+from cnlc_agent.infrastructure.company_provider import (
+    CompanyArtifactSink,
+    CompanyInputResolver,
+    CompanyProviderSettings,
+    ConfiguredCompanyInputResolver,
+    RealCompanyBatchProvider,
+)
 from cnlc_agent.infrastructure.mock import (
     InMemoryStateStore,
     InMemoryTaskRepository,
@@ -20,11 +29,20 @@ from cnlc_agent.infrastructure.model_gateway import OpenAICompatibleModelGateway
 from cnlc_agent.infrastructure.telemetry import LoggingTelemetry
 from cnlc_agent.reports.assembler import ReportAssembler
 from cnlc_agent.tools.catalog import validate_injected_tools
-from cnlc_agent.tools.company_batches import build_company_mock_tools
+from cnlc_agent.tools.company_batches import build_company_mock_tools, build_company_real_tools
 from cnlc_agent.tools.contracts import Tool, ToolCaller
 from cnlc_agent.tools.mock import GetWellDataTool, MockResultTool
 from cnlc_agent.workflows.interpretation_workflow import InterpretationWorkflow
 from cnlc_agent.workflows.steps import build_steps
+
+PROFESSIONAL_PROVIDER_BATCH_STEPS: dict[str, frozenset[StepId]] = {
+    "fixture": frozenset(),
+    "company_mock": frozenset(StepId) - {StepId.W02},
+    # 真实公司能力只覆盖 W03 预处理和 W04-W08 预测投影。
+    "company_real": frozenset(
+        {StepId.W03, StepId.W04, StepId.W05, StepId.W06, StepId.W07, StepId.W08}
+    ),
+}
 
 
 def build_application(
@@ -32,6 +50,9 @@ def build_application(
     *,
     task_repository: TaskRepository | None = None,
     state_store: InterpretationStateStore | None = None,
+    company_api_client: CompanyApiClient | None = None,
+    company_input_resolver: CompanyInputResolver | None = None,
+    company_artifact_sink: CompanyArtifactSink | None = None,
 ) -> InterpretationTaskService:
     """按配置装配任务服务及其 Agent、Workflow、Tool 和基础设施依赖。"""
 
@@ -40,6 +61,7 @@ def build_application(
     telemetry = LoggingTelemetry()
     active_tasks = task_repository if task_repository is not None else InMemoryTaskRepository()
     caller = ToolCaller(telemetry, settings.tool_timeout_seconds, active_tasks)
+    close_callbacks: list[Callable[[], Awaitable[None]]] = []
     tools: dict[str, Tool] = {"get_well_data": GetWellDataTool(repository)}
     prediction = MockPredictionProvider()
     for name, key in {
@@ -52,8 +74,24 @@ def build_application(
         tools[name] = MockResultTool(name, key, repository, prediction)
     if settings.professional_provider == "company_mock":
         tools = dict(build_company_mock_tools(repository, caller))
+    elif settings.professional_provider == "company_real":
+        client = company_api_client or CompanyApiClient(CompanyApiSettings())  # type: ignore[call-arg]
+        resolver = company_input_resolver or ConfiguredCompanyInputResolver(
+            CompanyProviderSettings()  # type: ignore[call-arg]
+        )
+        tools.update(
+            build_company_real_tools(
+                RealCompanyBatchProvider(
+                    client,
+                    active_tasks,
+                    resolver,
+                    company_artifact_sink,
+                ),
+                caller,
+            )
+        )
+        close_callbacks.append(client.aclose)
     validate_injected_tools(tools)
-    close_callbacks: list[Callable[[], Awaitable[None]]] = []
     gateway: ModelGateway
     if settings.model_provider == "mock":
         gateway = MockModelGateway(repository)
@@ -72,7 +110,8 @@ def build_application(
             interpretation,
             validation,
             demo_mode=settings.mode == "demo",
-            company_batches=settings.professional_provider == "company_mock",
+            company_batch_steps=PROFESSIONAL_PROVIDER_BATCH_STEPS[settings.professional_provider],
+            skip_validation_in_demo=settings.professional_provider == "fixture",
         ),
         (
             state_store

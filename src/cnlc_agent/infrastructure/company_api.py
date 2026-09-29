@@ -136,6 +136,8 @@ class CompanyApiClient:
         operations: JsonObject,
         execution_id: str,
         input_version_id: str,
+        *,
+        external_call_id: str | None = None,
     ) -> PreprocessingResult:
         """上传、处理、下载构成一次预处理；子操作参数由调用方明确提供。"""
         self._check_context(execution_id, input_version_id)
@@ -173,6 +175,7 @@ class CompanyApiClient:
             raise ToolError("COMPANY_INVALID_GDSX", "下载结果不是可识别的 GDSX/HDF5 文件")
         return PreprocessingResult(
             call=CompanyCallResult(
+                external_call_id=external_call_id or uuid4().hex,
                 operation="preprocessing",
                 execution_id=execution_id,
                 input_version_id=input_version_id,
@@ -188,6 +191,8 @@ class CompanyApiClient:
         parameters: JsonObject,
         execution_id: str,
         input_version_id: str,
+        *,
+        external_call_id: str | None = None,
     ) -> CompanyCallResult:
         """保留原始结构化预测结果，避免旧网关在后处理后仅返回文件地址。"""
         self._check_context(execution_id, input_version_id)
@@ -207,6 +212,7 @@ class CompanyApiClient:
         # 只保留专业数据，不让上游自由文本、鉴权或错误详情进入任务状态。
         result = extract_prediction_data(payload)
         return CompanyCallResult(
+            external_call_id=external_call_id or uuid4().hex,
             operation="interpretation",
             execution_id=execution_id,
             input_version_id=input_version_id,

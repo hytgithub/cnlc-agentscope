@@ -8,7 +8,7 @@ from cnlc_agent.schema import CONTRACTS, export_schemas, main
 
 def test_checked_in_schemas_match_runtime():
     assert export_schemas(Path(__file__).resolve().parents[2] / "schemas", check=True)
-    assert len(CONTRACTS) == 16
+    assert len(CONTRACTS) == 17
 
 
 def test_schema_check_detects_drift_without_overwriting(tmp_path):

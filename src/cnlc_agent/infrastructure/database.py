@@ -3,13 +3,28 @@
 from datetime import datetime
 
 from pydantic import ValidationError
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, select
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    select,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from cnlc_agent.domain.company_provider import (
+    CompanyProviderCall,
+    CompanyProviderCallStatus,
+    CompanyProviderOperation,
+)
 from cnlc_agent.domain.dataset_revision import (
     DatasetChangeSet,
     DatasetChangeType,
@@ -265,6 +280,57 @@ class ToolRunRow(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class CompanyProviderCallRow(Base):
+    """真实公司物理调用的可恢复规范化事实，不存文件字节或响应正文。"""
+
+    __tablename__ = "interpretation_company_provider_call"
+    __table_args__ = (
+        Index(
+            "ix_company_provider_call_execution_operation",
+            "execution_id",
+            "provider_operation",
+        ),
+        CheckConstraint(
+            "provider_operation IN ('analysis', 'preprocessing', 'interpretation', 'report')",
+            name="ck_company_provider_call_operation",
+        ),
+        CheckConstraint(
+            "status IN ('RUNNING', 'SUCCESS', 'UNKNOWN', 'FAILED')",
+            name="ck_company_provider_call_status",
+        ),
+        UniqueConstraint(
+            "task_id",
+            "execution_id",
+            "input_version_id",
+            "provider_operation",
+            name="uq_company_provider_call_identity_operation",
+        ),
+    )
+
+    provider_call_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    external_call_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    task_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("interpretation_task.task_id", ondelete="CASCADE"), nullable=False
+    )
+    execution_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("interpretation_execution.execution_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    input_version_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("interpretation_input_version.input_version_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    provider_operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    request_summary: Mapped[JsonObject] = mapped_column(JSONB, nullable=False)
+    normalized_result: Mapped[JsonObject] = mapped_column(JSONB, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
 def _as_tool_run(row: ToolRunRow) -> ToolRun:
     """读回持久审计时重新校验生命周期与字段。"""
 
@@ -284,6 +350,25 @@ def _as_tool_run(row: ToolRunRow) -> ToolRun:
         finished_at=row.finished_at,
         error_code=row.error_code,
         error_message=row.error_message,
+    )
+
+
+def _as_company_provider_call(row: CompanyProviderCallRow) -> CompanyProviderCall:
+    """读回时重新执行生命周期、敏感字段和体积校验。"""
+
+    return CompanyProviderCall(
+        provider_call_id=row.provider_call_id,
+        external_call_id=row.external_call_id,
+        task_id=row.task_id,
+        execution_id=row.execution_id,
+        input_version_id=row.input_version_id,
+        provider_operation=CompanyProviderOperation(row.provider_operation),
+        status=CompanyProviderCallStatus(row.status),
+        request_summary=row.request_summary,
+        normalized_result=row.normalized_result,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+        error_code=row.error_code,
     )
 
 
@@ -504,6 +589,150 @@ class PostgreSQLTaskRepository:
         except (SQLAlchemyError, OSError, TimeoutError):
             raise InfrastructureError(
                 "DATABASE_READ_FAILED", "数据库工具审计列表读取失败"
+            ) from None
+
+    async def create_company_provider_call(
+        self, call: CompanyProviderCall
+    ) -> CompanyProviderCall:
+        """在单事务内核对 Execution 与 InputVersion 归属并创建运行态。"""
+
+        try:
+            call = CompanyProviderCall.model_validate(call.model_dump(mode="python"))
+            async with self.sessions.begin() as session:
+                execution = await session.get(ExecutionRow, call.execution_id)
+                input_version = await session.get(InputVersionRow, call.input_version_id)
+                if (
+                    execution is None
+                    or execution.task_id != call.task_id
+                    or execution.input_version_id != call.input_version_id
+                    or input_version is None
+                    or input_version.task_id != call.task_id
+                ):
+                    raise InfrastructureError(
+                        "COMPANY_RESULT_VERSION_MISMATCH",
+                        "公司调用不属于当前执行及输入版本",
+                    )
+                session.add(CompanyProviderCallRow(
+                    provider_call_id=call.provider_call_id,
+                    external_call_id=call.external_call_id,
+                    task_id=call.task_id,
+                    execution_id=call.execution_id,
+                    input_version_id=call.input_version_id,
+                    provider_operation=call.provider_operation.value,
+                    status=call.status.value,
+                    request_summary=call.request_summary,
+                    normalized_result=call.normalized_result,
+                    started_at=call.started_at,
+                    finished_at=None,
+                    error_code=None,
+                ))
+            return call.model_copy(deep=True)
+        except IntegrityError:
+            raise InfrastructureError(
+                "COMPANY_PROVIDER_CALL_EXISTS", "公司调用标识已存在"
+            ) from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError(
+                "DATABASE_WRITE_FAILED", "数据库公司调用创建失败"
+            ) from None
+
+    async def finish_company_provider_call(
+        self,
+        external_call_id: str,
+        *,
+        status: CompanyProviderCallStatus,
+        normalized_result: JsonObject,
+        error_code: str | None = None,
+    ) -> CompanyProviderCall:
+        """行锁保证调用只能结束一次；失败时 normalized_result 必须为空。"""
+
+        try:
+            async with self.sessions.begin() as session:
+                row = await session.scalar(
+                    select(CompanyProviderCallRow)
+                    .where(CompanyProviderCallRow.external_call_id == external_call_id)
+                    .with_for_update()
+                )
+                if row is None:
+                    raise InfrastructureError(
+                        "COMPANY_PROVIDER_CALL_NOT_FOUND", "公司调用不存在"
+                    )
+                current = _as_company_provider_call(row)
+                if current.status != CompanyProviderCallStatus.RUNNING:
+                    raise InfrastructureError(
+                        "COMPANY_PROVIDER_CALL_FINISHED", "公司调用已经结束"
+                    )
+                finished = CompanyProviderCall.model_validate({
+                    **current.model_dump(mode="python"),
+                    "status": status,
+                    "normalized_result": normalized_result,
+                    "finished_at": utc_now(),
+                    "error_code": error_code,
+                })
+                row.status = finished.status.value
+                row.normalized_result = finished.normalized_result
+                row.finished_at = finished.finished_at
+                row.error_code = finished.error_code
+            return finished
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError(
+                "DATABASE_WRITE_FAILED", "数据库公司调用结束失败"
+            ) from None
+
+    async def get_company_provider_call(
+        self, external_call_id: str
+    ) -> CompanyProviderCall | None:
+        try:
+            async with self.sessions() as session:
+                row = await session.scalar(
+                    select(CompanyProviderCallRow).where(
+                        CompanyProviderCallRow.external_call_id == external_call_id
+                    )
+                )
+                return _as_company_provider_call(row) if row is not None else None
+        except (ValidationError, ValueError):
+            raise InfrastructureError(
+                "INVALID_STORED_COMPANY_PROVIDER_CALL", "公司调用持久事实无效"
+            ) from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError("DATABASE_READ_FAILED", "数据库公司调用读取失败") from None
+
+    async def list_company_provider_calls(
+        self,
+        task_id: str,
+        *,
+        execution_id: str | None = None,
+        operation: CompanyProviderOperation | None = None,
+    ) -> list[CompanyProviderCall]:
+        try:
+            async with self.sessions() as session:
+                statement = select(CompanyProviderCallRow).where(
+                    CompanyProviderCallRow.task_id == task_id
+                )
+                if execution_id is not None:
+                    statement = statement.where(
+                        CompanyProviderCallRow.execution_id == execution_id
+                    )
+                if operation is not None:
+                    statement = statement.where(
+                        CompanyProviderCallRow.provider_operation == operation.value
+                    )
+                rows = (
+                    await session.scalars(
+                        statement.order_by(
+                            CompanyProviderCallRow.started_at,
+                            CompanyProviderCallRow.provider_call_id,
+                        )
+                    )
+                ).all()
+                return [_as_company_provider_call(row) for row in rows]
+        except (ValidationError, ValueError):
+            raise InfrastructureError(
+                "INVALID_STORED_COMPANY_PROVIDER_CALL", "公司调用持久事实无效"
+            ) from None
+        except (SQLAlchemyError, OSError, TimeoutError):
+            raise InfrastructureError(
+                "DATABASE_READ_FAILED", "数据库公司调用列表读取失败"
             ) from None
 
     async def get_execution_report(self, execution_id: str) -> str | None:

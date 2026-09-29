@@ -5,6 +5,11 @@ from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Protocol
 
+from cnlc_agent.domain.company_provider import (
+    CompanyProviderCall,
+    CompanyProviderCallStatus,
+    CompanyProviderOperation,
+)
 from cnlc_agent.domain.dataset_revision import DatasetChangeSet, DatasetRevision
 from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.execution import (
@@ -147,6 +152,31 @@ class TaskRepository(Protocol):
     async def get_tool_run(self, tool_run_id: str) -> ToolRun | None: ...
 
     async def list_tool_runs(self, execution_id: str) -> list[ToolRun]: ...
+
+    async def create_company_provider_call(
+        self, call: CompanyProviderCall
+    ) -> CompanyProviderCall: ...
+
+    async def finish_company_provider_call(
+        self,
+        external_call_id: str,
+        *,
+        status: CompanyProviderCallStatus,
+        normalized_result: JsonObject,
+        error_code: str | None = None,
+    ) -> CompanyProviderCall: ...
+
+    async def get_company_provider_call(
+        self, external_call_id: str
+    ) -> CompanyProviderCall | None: ...
+
+    async def list_company_provider_calls(
+        self,
+        task_id: str,
+        *,
+        execution_id: str | None = None,
+        operation: CompanyProviderOperation | None = None,
+    ) -> list[CompanyProviderCall]: ...
 
     async def get_execution_report(self, execution_id: str) -> str | None: ...
 

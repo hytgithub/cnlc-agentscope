@@ -9,6 +9,11 @@ from typing import Protocol
 from pydantic import ValidationError as SchemaError
 
 from cnlc_agent.application.ports import ModelRequest
+from cnlc_agent.domain.company_provider import (
+    CompanyProviderCall,
+    CompanyProviderCallStatus,
+    CompanyProviderOperation,
+)
 from cnlc_agent.domain.dataset_revision import (
     DatasetChangeSet,
     DatasetRevision,
@@ -125,6 +130,7 @@ class InMemoryTaskRepository:
         self._inputs: dict[str, InterpretationInputVersion] = {}
         self._tool_runs: dict[str, ToolRun] = {}
         self._execution_tool_runs: dict[str, list[str]] = {}
+        self._company_provider_calls: dict[str, CompanyProviderCall] = {}
         self._task_inputs: dict[str, list[str]] = {}
         self._dataset_revisions: dict[str, DatasetRevision] = {}
         self._dataset_change_sets: dict[str, DatasetChangeSet] = {}
@@ -774,6 +780,91 @@ class InMemoryTaskRepository:
         return [run.model_copy(deep=True) for run in sorted(
             runs, key=lambda item: (item.started_at, item.tool_run_id)
         )]
+
+    async def create_company_provider_call(
+        self, call: CompanyProviderCall
+    ) -> CompanyProviderCall:
+        """核对 Task、Execution 和 InputVersion 后保存真实调用运行态。"""
+
+        async with self._lock:
+            call = CompanyProviderCall.model_validate(call.model_dump(mode="python"))
+            execution = self._executions.get(call.execution_id)
+            input_version = self._inputs.get(call.input_version_id)
+            if (
+                execution is None
+                or execution.task_id != call.task_id
+                or execution.input_version_id != call.input_version_id
+                or input_version is None
+                or input_version.task_id != call.task_id
+            ):
+                raise InfrastructureError(
+                    "COMPANY_RESULT_VERSION_MISMATCH", "公司调用不属于当前执行及输入版本"
+                )
+            if call.external_call_id in self._company_provider_calls:
+                raise InfrastructureError("COMPANY_PROVIDER_CALL_EXISTS", "公司调用标识已存在")
+            if any(
+                item.task_id == call.task_id
+                and item.execution_id == call.execution_id
+                and item.input_version_id == call.input_version_id
+                and item.provider_operation == call.provider_operation
+                for item in self._company_provider_calls.values()
+            ):
+                raise InfrastructureError(
+                    "COMPANY_PROVIDER_CALL_EXISTS", "同一执行和输入版本已存在该公司调用"
+                )
+            self._company_provider_calls[call.external_call_id] = call.model_copy(deep=True)
+            return call.model_copy(deep=True)
+
+    async def finish_company_provider_call(
+        self,
+        external_call_id: str,
+        *,
+        status: CompanyProviderCallStatus,
+        normalized_result: JsonObject,
+        error_code: str | None = None,
+    ) -> CompanyProviderCall:
+        """在同一进程锁内一次性结束调用，失败事实不保存响应正文。"""
+
+        async with self._lock:
+            current = self._company_provider_calls.get(external_call_id)
+            if current is None:
+                raise InfrastructureError("COMPANY_PROVIDER_CALL_NOT_FOUND", "公司调用不存在")
+            if current.status != CompanyProviderCallStatus.RUNNING:
+                raise InfrastructureError("COMPANY_PROVIDER_CALL_FINISHED", "公司调用已经结束")
+            finished = CompanyProviderCall.model_validate({
+                **current.model_dump(mode="python"),
+                "status": status,
+                "normalized_result": normalized_result,
+                "finished_at": utc_now(),
+                "error_code": error_code,
+            })
+            self._company_provider_calls[external_call_id] = finished
+            return finished.model_copy(deep=True)
+
+    async def get_company_provider_call(
+        self, external_call_id: str
+    ) -> CompanyProviderCall | None:
+        call = self._company_provider_calls.get(external_call_id)
+        return call.model_copy(deep=True) if call is not None else None
+
+    async def list_company_provider_calls(
+        self,
+        task_id: str,
+        *,
+        execution_id: str | None = None,
+        operation: CompanyProviderOperation | None = None,
+    ) -> list[CompanyProviderCall]:
+        calls = [
+            call
+            for call in self._company_provider_calls.values()
+            if call.task_id == task_id
+            and (execution_id is None or call.execution_id == execution_id)
+            and (operation is None or call.provider_operation == operation)
+        ]
+        return [
+            call.model_copy(deep=True)
+            for call in sorted(calls, key=lambda item: (item.started_at, item.provider_call_id))
+        ]
 
     async def get_execution_report(self, execution_id: str) -> str | None:
         execution = self._executions.get(execution_id)

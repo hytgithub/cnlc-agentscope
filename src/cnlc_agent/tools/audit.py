@@ -27,6 +27,7 @@ BULK_FIELDS = {
     "instruction",
 }
 METADATA_KEYS = {
+    "provider_call_id",
     "external_call_id",
     "stage",
     "is_mock",
