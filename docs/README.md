@@ -1,8 +1,35 @@
 # 测井解释智能体文档导航
 
-本目录同时保存当前设计、历史差距分析、Task 执行记录和验收基线。阅读时应先确认文档类型；当前行为以代码、Alembic migration 和标为 **Current Design** 的文档为准。状态、枚举、动作码和流程节点的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)；Current Design 文档首次出现这些代码值时应同步给出中文说明。
+本目录同时保存项目主设计基线、当前实现说明、证据、历史差距分析、Task 执行记录和验收基线。阅读时必须先区分“目标设计”和“当前实现”：
 
-## 当前设计（Current Design）
+- **目标与当前认可的设计方向**：以 [design/](design/) 为准；
+- **为什么这样设计、哪些结论已被验证**：以 [evidence/](evidence/) 为准；
+- **代码现在实际上怎么工作**：以代码、Alembic migration 和下方 Current Implementation 文档为准；
+- **一次具体怎么实施**：以 [tasks/](tasks/) 为准。
+
+状态、枚举、动作码和流程节点的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
+
+## 项目主设计基线（Project Design Baseline）
+
+| 阶段 | 文档 | 治理状态 |
+| --- | --- | --- |
+| 需求 | [design/01-测井解释智能体需求规格说明.md](design/01-测井解释智能体需求规格说明.md) | BASELINE |
+| 目标 | [design/02-测井解释智能体建设目标.md](design/02-测井解释智能体建设目标.md) | BASELINE |
+| 效果 | [design/03-测井解释智能体预期效果.md](design/03-测井解释智能体预期效果.md) | BASELINE |
+| 方案 | [design/04-测井解释智能体技术方案.md](design/04-测井解释智能体技术方案.md) | VALIDATING |
+| 测试 | [design/05-测井解释智能体测试与验收方案.md](design/05-测井解释智能体测试与验收方案.md) | VALIDATING |
+
+治理规则见 [design/README.md](design/README.md)。
+
+## 证据（Evidence）
+
+- [evidence/01-测井解释智能体现状事实盘点.md](evidence/01-测井解释智能体现状事实盘点.md)
+- [evidence/02-现有系统运行证据表.md](evidence/02-现有系统运行证据表.md)
+- [evidence/03-AgentScope原生能力最小对照实验.md](evidence/03-AgentScope原生能力最小对照实验.md)
+
+证据用于支撑技术方案和验收方案的修订，不自动改写需求、目标和预期效果。详见 [evidence/README.md](evidence/README.md)。
+
+## 当前实现说明（Current Implementation）
 
 | 主题 | 文档 | 说明 |
 | --- | --- | --- |
