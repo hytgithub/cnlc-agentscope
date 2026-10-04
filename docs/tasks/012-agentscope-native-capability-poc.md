@@ -27,11 +27,11 @@
 
 ## 子任务
 
-1. 012A：Prompt + Toolkit + Skill 动态工具选择 POC
-2. 012B：AgentState / Context + 原生 Task planning 对照
-3. 012C：HITL / Permission / Interrupt 对照
-4. 012D：TracingMiddleware 与现有 ToolRun / Execution Trace 对照
-5. 012E：汇总 AgentScope 原生能力验证与代码决策矩阵
+1. 012A：Prompt + Toolkit + Skill 动态工具选择 POC（已执行）
+2. 012A.1：Skill 稳定性、重复运行与 Response Grounding（已执行）
+3. 012B：真实多轮 Context 与权威业务锚定边界（下一步）
+4. 后续按证据决定：原生 Task/Plan 对照、HITL/Interrupt、TracingMiddleware
+5. 012E：当前阶段职责边界审计（已形成阶段性结论，不视为最终架构定稿）
 
 ## 硬边界
 
