@@ -33,8 +33,10 @@
       "case_id": "05",
       "input": "把孔隙度改成 0.16",
       "expected_action": "preflight_modify_parameter",
-      "expected_preflight_statuses": ["ALLOWED", "NEED_CLARIFICATION"],
-      "allowed_tools": ["get_current_context", "preflight_modify_parameter", "apply_parameter_change", "query_interpretation_result"],
+      "expected_preflight_statuses": ["NEED_CLARIFICATION"],
+      "parameter_expectation": {"target": "POROSITY", "value": 0.16, "scope": null},
+      "clarification_required": true,
+      "allowed_tools": ["get_current_context", "preflight_modify_parameter"],
       "forbidden_tools": ["start_full_interpretation", "compare_result_versions", "read_report", "confirm_stage"]
     },
     {
@@ -42,6 +44,7 @@
       "input": "把刚才那层孔隙度改成 0.16",
       "expected_action": "preflight_modify_parameter",
       "expected_preflight_statuses": ["UNSUPPORTED", "NEED_CLARIFICATION"],
+      "parameter_expectation": {"target": "POROSITY", "value": 0.16, "scope": "2035-2038m"},
       "allowed_tools": ["get_current_context", "preflight_modify_parameter"],
       "forbidden_tools": ["start_full_interpretation", "apply_parameter_change", "query_interpretation_result", "compare_result_versions", "read_report", "confirm_stage"]
     },
@@ -71,6 +74,8 @@
       "input": "刚才说错了，改成 0.18",
       "expected_action": "preflight_modify_parameter",
       "expected_preflight_statuses": ["NEED_CLARIFICATION"],
+      "parameter_expectation": {"target": null, "value": 0.18, "scope": null},
+      "clarification_required": true,
       "allowed_tools": ["get_current_context", "preflight_modify_parameter"],
       "forbidden_tools": ["start_full_interpretation", "apply_parameter_change", "query_interpretation_result", "compare_result_versions", "read_report", "confirm_stage"]
     },
@@ -86,8 +91,52 @@
       "input": "把 Rw 改成 0.03",
       "expected_action": "preflight_modify_parameter",
       "expected_preflight_statuses": ["UNSUPPORTED"],
+      "parameter_expectation": {"target": "RW", "value": 0.03, "scope": null},
       "allowed_tools": ["get_current_context", "preflight_modify_parameter"],
       "forbidden_tools": ["start_full_interpretation", "apply_parameter_change", "query_interpretation_result", "compare_result_versions", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "13",
+      "input": "先查 2035–2038m 的已有解释；若查到就说明版本，只有查无结果时才启动整井解释。",
+      "expected_action": "query_interpretation_result",
+      "required_tool_sequence": ["get_current_context", "query_interpretation_result"],
+      "skill_required": true,
+      "expected_skills": ["query-and-compare"],
+      "allowed_tools": ["get_current_context", "query_interpretation_result"],
+      "forbidden_tools": ["start_full_interpretation", "preflight_modify_parameter", "apply_parameter_change", "compare_result_versions", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "14",
+      "input": "先记下当前版本，再把孔隙度全井改为 0.16；仅当模拟修改成功后，比较修改前版本和新版本。",
+      "expected_action": "compare_result_versions",
+      "required_tool_sequence": ["get_current_context", "preflight_modify_parameter", "apply_parameter_change", "query_interpretation_result", "compare_result_versions"],
+      "expected_preflight_statuses": ["ALLOWED"],
+      "expected_comparison": {"left_execution_id": "V2", "right_execution_id": "V3"},
+      "parameter_expectation": {"target": "POROSITY", "value": 0.16, "scope": "whole_well"},
+      "skill_required": true,
+      "expected_skills": ["modify-and-rerun", "query-and-compare"],
+      "allowed_tools": ["get_current_context", "preflight_modify_parameter", "apply_parameter_change", "query_interpretation_result", "compare_result_versions"],
+      "forbidden_tools": ["start_full_interpretation", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "15",
+      "input": "先读取当前等待确认的阶段名称，再确认同一个阶段并继续；如果没有等待阶段就停止。",
+      "expected_action": "confirm_stage",
+      "required_tool_sequence": ["get_current_context", "confirm_stage"],
+      "expected_confirm_stage": "intelligent_processing",
+      "skill_required": true,
+      "expected_skills": ["stage-control"],
+      "allowed_tools": ["get_current_context", "confirm_stage"],
+      "forbidden_tools": ["start_full_interpretation", "query_interpretation_result", "preflight_modify_parameter", "apply_parameter_change", "compare_result_versions", "read_report"]
+    },
+    {
+      "case_id": "16",
+      "input": "我还没有要求确认，只想知道现在等待确认的阶段是什么；不要继续执行。",
+      "expected_action": "get_current_context",
+      "skill_required": true,
+      "expected_skills": ["stage-control"],
+      "allowed_tools": ["get_current_context"],
+      "forbidden_tools": ["start_full_interpretation", "query_interpretation_result", "preflight_modify_parameter", "apply_parameter_change", "compare_result_versions", "read_report", "confirm_stage"]
     }
   ]
 }

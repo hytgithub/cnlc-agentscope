@@ -1,52 +1,338 @@
 {
-  "status": "REEVALUATED",
+  "status": "COMPLETED",
+  "task": "012A.1",
+  "experiment_id": "20261004T034634Z_31edf5c1",
   "model": "qwen-plus",
-  "scenarios": 12,
+  "repeat": 5,
+  "model_timeout_seconds": null,
+  "repeated_case_ids": [
+    "02",
+    "03",
+    "05",
+    "06",
+    "07",
+    "09",
+    "10",
+    "13",
+    "14",
+    "15",
+    "16"
+  ],
+  "single_run_case_ids": [
+    "01",
+    "04",
+    "08",
+    "11",
+    "12"
+  ],
+  "scenario_definitions": 16,
+  "runs_per_config": 60,
+  "result_files": {
+    "no_skill": "task012a1_20261004T034634Z_31edf5c1_no_skill.jsonl",
+    "with_skill": "task012a1_20261004T034634Z_31edf5c1_with_skill.jsonl"
+  },
   "results": {
     "no_skill": {
-      "passed": 7,
-      "total": 12,
-      "skill_viewer_calls": 0
+      "runs": 60,
+      "route_pass": 39,
+      "route_pass_rate": 0.65,
+      "skillviewer_invocations": 0,
+      "skillviewer_run_count": 0,
+      "skillviewer_call_rate": 0.0,
+      "skill_required_runs": 20,
+      "skill_required_viewer_calls": 0,
+      "skill_required_viewer_call_rate": 0.0,
+      "parameter_correct": 18,
+      "parameter_cases": 21,
+      "parameter_accuracy_rate": 0.8571,
+      "illegal_write_attempts": 0,
+      "unnecessary_full_interpretation_count": 0,
+      "clarification_correct": 9,
+      "clarification_cases": 10,
+      "clarification_correct_rate": 0.9,
+      "grounding_pass": 40,
+      "grounding_pass_rate": 0.6667,
+      "overall_pass": 21,
+      "overall_pass_rate": 0.35,
+      "token_usage_available_runs": 59
     },
     "with_skill": {
-      "passed": 9,
-      "total": 12,
-      "skill_viewer_calls": 0
+      "runs": 60,
+      "route_pass": 36,
+      "route_pass_rate": 0.6,
+      "skillviewer_invocations": 0,
+      "skillviewer_run_count": 0,
+      "skillviewer_call_rate": 0.0,
+      "skill_required_runs": 20,
+      "skill_required_viewer_calls": 0,
+      "skill_required_viewer_call_rate": 0.0,
+      "parameter_correct": 10,
+      "parameter_cases": 21,
+      "parameter_accuracy_rate": 0.4762,
+      "illegal_write_attempts": 3,
+      "unnecessary_full_interpretation_count": 0,
+      "clarification_correct": 2,
+      "clarification_cases": 10,
+      "clarification_correct_rate": 0.2,
+      "grounding_pass": 50,
+      "grounding_pass_rate": 0.8333,
+      "overall_pass": 29,
+      "overall_pass_rate": 0.4833,
+      "token_usage_available_runs": 59
     }
   },
+  "ab_fairness_all_pairs": true,
   "comparison": [
     {
       "case_id": "01",
-      "no_skill_pass": false,
-      "with_skill_pass": false,
-      "no_skill_tools": [
+      "run_index": 1,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": false,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [],
+      "with_skill_tools": [
         "get_current_context"
       ],
-      "with_skill_tools": []
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "02",
-      "no_skill_pass": false,
-      "with_skill_pass": true,
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
       "no_skill_tools": [
-        "get_current_context"
+        "get_current_context",
+        "query_interpretation_result"
       ],
       "with_skill_tools": [
         "get_current_context",
         "query_interpretation_result"
-      ]
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "02",
+      "run_index": 2,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "02",
+      "run_index": 3,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "02",
+      "run_index": 4,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "02",
+      "run_index": 5,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "03",
-      "no_skill_pass": false,
-      "with_skill_pass": false,
+      "run_index": 1,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
       "no_skill_tools": [],
-      "with_skill_tools": []
+      "with_skill_tools": [],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "03",
+      "run_index": 2,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [],
+      "with_skill_tools": [],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "03",
+      "run_index": 3,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [],
+      "with_skill_tools": [],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "03",
+      "run_index": 4,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [],
+      "with_skill_tools": [],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "03",
+      "run_index": 5,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [],
+      "with_skill_tools": [],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "04",
-      "no_skill_pass": true,
-      "with_skill_pass": true,
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
       "no_skill_tools": [
         "get_current_context",
         "query_interpretation_result"
@@ -54,93 +340,1325 @@
       "with_skill_tools": [
         "get_current_context",
         "query_interpretation_result"
-      ]
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "05",
-      "no_skill_pass": true,
-      "with_skill_pass": true,
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": false,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "05",
+      "run_index": 2,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "05",
+      "run_index": 3,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": false,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "05",
+      "run_index": 4,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": false,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "05",
+      "run_index": 5,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "06",
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": false,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
       "no_skill_tools": [
         "preflight_modify_parameter"
       ],
       "with_skill_tools": [
         "get_current_context",
         "preflight_modify_parameter"
-      ]
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "06",
-      "no_skill_pass": true,
-      "with_skill_pass": false,
+      "run_index": 2,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "06",
+      "run_index": 3,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "06",
+      "run_index": 4,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "06",
+      "run_index": 5,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": false,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": false,
       "no_skill_tools": [
         "get_current_context",
         "preflight_modify_parameter"
       ],
       "with_skill_tools": [
         "get_current_context"
-      ]
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "07",
-      "no_skill_pass": false,
-      "with_skill_pass": true,
+      "run_index": 1,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": true,
       "no_skill_tools": [],
       "with_skill_tools": [
         "get_current_context",
         "compare_result_versions"
-      ]
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "07",
+      "run_index": 2,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "compare_result_versions"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "compare_result_versions"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "07",
+      "run_index": 3,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [],
+      "with_skill_tools": [
+        "get_current_context",
+        "compare_result_versions"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "07",
+      "run_index": 4,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [],
+      "with_skill_tools": [
+        "get_current_context",
+        "compare_result_versions"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "07",
+      "run_index": 5,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [],
+      "with_skill_tools": [
+        "get_current_context",
+        "compare_result_versions"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "08",
-      "no_skill_pass": true,
-      "with_skill_pass": true,
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
       "no_skill_tools": [
         "read_report"
       ],
       "with_skill_tools": [
         "read_report"
-      ]
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "09",
-      "no_skill_pass": true,
-      "with_skill_pass": true,
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
       "no_skill_tools": [
         "confirm_stage"
       ],
       "with_skill_tools": [
         "get_current_context",
         "confirm_stage"
-      ]
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "09",
+      "run_index": 2,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "confirm_stage"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "09",
+      "run_index": 3,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "confirm_stage"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "09",
+      "run_index": 4,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "confirm_stage"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "09",
+      "run_index": 5,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "confirm_stage"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "10",
-      "no_skill_pass": false,
-      "with_skill_pass": true,
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
       "no_skill_tools": [
         "preflight_modify_parameter"
       ],
       "with_skill_tools": [
         "preflight_modify_parameter"
-      ]
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "10",
+      "run_index": 2,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [],
+      "with_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "10",
+      "run_index": 3,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "10",
+      "run_index": 4,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "10",
+      "run_index": 5,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "11",
-      "no_skill_pass": true,
-      "with_skill_pass": true,
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
       "no_skill_tools": [],
-      "with_skill_tools": []
+      "with_skill_tools": [],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
     },
     {
       "case_id": "12",
-      "no_skill_pass": true,
-      "with_skill_pass": true,
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": true,
       "no_skill_tools": [
         "preflight_modify_parameter"
       ],
       "with_skill_tools": [
+        "get_current_context",
         "preflight_modify_parameter"
-      ]
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "13",
+      "run_index": 1,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "query_interpretation_result"
+      ],
+      "with_skill_tools": [
+        "query_interpretation_result"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "13",
+      "run_index": 2,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [],
+      "with_skill_tools": [],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "13",
+      "run_index": 3,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "query_interpretation_result"
+      ],
+      "with_skill_tools": [
+        "query_interpretation_result"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "13",
+      "run_index": 4,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "query_interpretation_result"
+      ],
+      "with_skill_tools": [
+        "query_interpretation_result"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "13",
+      "run_index": 5,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "query_interpretation_result"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "14",
+      "run_index": 1,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change",
+        "compare_result_versions"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change",
+        "compare_result_versions"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "14",
+      "run_index": 2,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change",
+        "compare_result_versions"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change",
+        "compare_result_versions"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "14",
+      "run_index": 3,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change",
+        "compare_result_versions"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change",
+        "compare_result_versions"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "14",
+      "run_index": 4,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change",
+        "compare_result_versions"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change",
+        "compare_result_versions"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "14",
+      "run_index": 5,
+      "no_skill_route_pass": false,
+      "with_skill_route_pass": false,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change",
+        "compare_result_versions"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter",
+        "apply_parameter_change",
+        "compare_result_versions"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "15",
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "15",
+      "run_index": 2,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "15",
+      "run_index": 3,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "15",
+      "run_index": 4,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "15",
+      "run_index": 5,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": true,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": true,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "16",
+      "run_index": 1,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": false,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "16",
+      "run_index": 2,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": true,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": true,
+      "no_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "16",
+      "run_index": 3,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": false,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "16",
+      "run_index": 4,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": false,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    },
+    {
+      "case_id": "16",
+      "run_index": 5,
+      "no_skill_route_pass": true,
+      "with_skill_route_pass": true,
+      "no_skill_grounding_pass": false,
+      "with_skill_grounding_pass": false,
+      "no_skill_overall_pass": false,
+      "with_skill_overall_pass": false,
+      "no_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_viewer_called": false,
+      "ab_fairness": {
+        "same_input": true,
+        "same_base_prompt": true,
+        "same_business_tool_schema": true,
+        "same_initial_fixture": true
+      }
+    }
+  ],
+  "previous_task_012a_summary": {
+    "status": "REEVALUATED",
+    "model": "qwen-plus",
+    "scenarios": 12,
+    "results": {
+      "no_skill": {
+        "passed": 7,
+        "total": 12,
+        "skill_viewer_calls": 0
+      },
+      "with_skill": {
+        "passed": 9,
+        "total": 12,
+        "skill_viewer_calls": 0
+      }
+    },
+    "comparison": [
+      {
+        "case_id": "01",
+        "no_skill_pass": false,
+        "with_skill_pass": false,
+        "no_skill_tools": [
+          "get_current_context"
+        ],
+        "with_skill_tools": []
+      },
+      {
+        "case_id": "02",
+        "no_skill_pass": false,
+        "with_skill_pass": true,
+        "no_skill_tools": [
+          "get_current_context"
+        ],
+        "with_skill_tools": [
+          "get_current_context",
+          "query_interpretation_result"
+        ]
+      },
+      {
+        "case_id": "03",
+        "no_skill_pass": false,
+        "with_skill_pass": false,
+        "no_skill_tools": [],
+        "with_skill_tools": []
+      },
+      {
+        "case_id": "04",
+        "no_skill_pass": true,
+        "with_skill_pass": true,
+        "no_skill_tools": [
+          "get_current_context",
+          "query_interpretation_result"
+        ],
+        "with_skill_tools": [
+          "get_current_context",
+          "query_interpretation_result"
+        ]
+      },
+      {
+        "case_id": "05",
+        "no_skill_pass": true,
+        "with_skill_pass": true,
+        "no_skill_tools": [
+          "preflight_modify_parameter"
+        ],
+        "with_skill_tools": [
+          "get_current_context",
+          "preflight_modify_parameter"
+        ]
+      },
+      {
+        "case_id": "06",
+        "no_skill_pass": true,
+        "with_skill_pass": false,
+        "no_skill_tools": [
+          "get_current_context",
+          "preflight_modify_parameter"
+        ],
+        "with_skill_tools": [
+          "get_current_context"
+        ]
+      },
+      {
+        "case_id": "07",
+        "no_skill_pass": false,
+        "with_skill_pass": true,
+        "no_skill_tools": [],
+        "with_skill_tools": [
+          "get_current_context",
+          "compare_result_versions"
+        ]
+      },
+      {
+        "case_id": "08",
+        "no_skill_pass": true,
+        "with_skill_pass": true,
+        "no_skill_tools": [
+          "read_report"
+        ],
+        "with_skill_tools": [
+          "read_report"
+        ]
+      },
+      {
+        "case_id": "09",
+        "no_skill_pass": true,
+        "with_skill_pass": true,
+        "no_skill_tools": [
+          "confirm_stage"
+        ],
+        "with_skill_tools": [
+          "get_current_context",
+          "confirm_stage"
+        ]
+      },
+      {
+        "case_id": "10",
+        "no_skill_pass": false,
+        "with_skill_pass": true,
+        "no_skill_tools": [
+          "preflight_modify_parameter"
+        ],
+        "with_skill_tools": [
+          "preflight_modify_parameter"
+        ]
+      },
+      {
+        "case_id": "11",
+        "no_skill_pass": true,
+        "with_skill_pass": true,
+        "no_skill_tools": [],
+        "with_skill_tools": []
+      },
+      {
+        "case_id": "12",
+        "no_skill_pass": true,
+        "with_skill_pass": true,
+        "no_skill_tools": [
+          "preflight_modify_parameter"
+        ],
+        "with_skill_tools": [
+          "preflight_modify_parameter"
+        ]
+      }
+    ]
+  },
+  "skill_observability_definition": {
+    "registered": "Toolkit 可枚举 Skill 名称",
+    "metadata_visible": "Agent 的 system prompt 含 Skill name/description 元信息",
+    "viewer_called": "真实模型产生 Skill ToolCallBlock",
+    "body_returned_to_model": "Skill ToolResult 正文与对应已注册 Skill Markdown 完全匹配"
+  },
+  "evaluation_revision": "recomputed_with_current_cases_and_grounding",
+  "model_timeout_seconds_by_run": [
+    {
+      "seconds": null,
+      "runs": 120
     }
   ]
 }

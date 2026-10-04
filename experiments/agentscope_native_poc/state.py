@@ -49,6 +49,7 @@ class MockState:
             "well_id": self.well_id,
             "current_execution_id": self.current_execution_id,
             "previous_execution_id": self.previous_execution_id,
+            "known_execution_ids": sorted(self.known_execution_ids),
             "view_scope": self.view_scope,
             "pending_stage": self.pending_stage,
         }

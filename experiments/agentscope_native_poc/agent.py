@@ -35,7 +35,7 @@ def build_toolkit(
     config: ExperimentConfig | str,
     state: MockState | None = None,
 ) -> Toolkit:
-    """构建相同 Mock Tool 集；with_skill 额外加载三个本地 AgentScope Skill。"""
+    """构建相同 Mock Tool 集；with_skill 额外加载本地 AgentScope Skill。"""
 
     selected = ExperimentConfig(config)
     mock_state = state or MockState.fixture()

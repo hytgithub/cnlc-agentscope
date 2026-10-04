@@ -220,3 +220,7 @@ git diff --check
 优先：GPT-6 Astra Work，高思考等级，用于严格保持实验边界、阅读 AgentScope 2.0.8 API 并设计 A/B 证据。
 
 额度受限时：GPT-5.6 Sol High。不要用模型能力差异替代 qwen-plus A/B 本身；实验对象仍是项目实际 qwen-plus。
+
+## 后续治理说明（Task 012A.1）
+
+本 Task 第 11 节“不修改 AGENTS.md”是 Task 012A 当时的实验范围约束，保留为历史事实；它不代表此后持续禁止治理项目规范。之后的独立治理提交已更新 `AGENTS.md`。Task 012A.1 按当前 `AGENTS.md` 和当前 Task 边界执行，不修改生产业务代码或 `AGENTS.md`。
