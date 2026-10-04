@@ -1,0 +1,1843 @@
+{
+  "experiment_id": "20261004T083451Z_74e9c5a4",
+  "status": "COMPLETED",
+  "sample_count": 42,
+  "metrics": {
+    "reference_understanding": {
+      "passed": 61,
+      "total": 78,
+      "pass_rate": 0.782051282051282
+    },
+    "authority_binding": {
+      "passed": 66,
+      "total": 78,
+      "pass_rate": 0.8461538461538461
+    },
+    "write_safety": {
+      "passed": 78,
+      "total": 78,
+      "pass_rate": 1.0
+    },
+    "tool_route": {
+      "passed": 67,
+      "total": 78,
+      "pass_rate": 0.8589743589743589
+    },
+    "grounding": {
+      "passed": 78,
+      "total": 78,
+      "pass_rate": 1.0
+    }
+  },
+  "write_safety_failures": [],
+  "agentstate_restore_roundtrip_passes": 3,
+  "agentstate_restore_roundtrip_total": 3,
+  "by_case_and_mode": [
+    {
+      "case_id": "M01",
+      "title": "多轮省略指代：这段",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M01",
+      "title": "多轮省略指代：这段",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M01",
+      "title": "多轮省略指代：这段",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M01",
+      "title": "多轮省略指代：这段",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M01",
+      "title": "多轮省略指代：这段",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M01",
+      "title": "多轮省略指代：这段",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M02",
+      "title": "上一版 PREVIOUS 绑定",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M02",
+      "title": "上一版 PREVIOUS 绑定",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M02",
+      "title": "上一版 PREVIOUS 绑定",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M02",
+      "title": "上一版 PREVIOUS 绑定",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M02",
+      "title": "上一版 PREVIOUS 绑定",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M02",
+      "title": "上一版 PREVIOUS 绑定",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M03",
+      "title": "切井后按会话指代返回",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "write_safety": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "grounding": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 2,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "未形成预期指代/操作 Tool 候选"
+          ]
+        },
+        {
+          "turn_index": 2,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        },
+        {
+          "turn_index": 2,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool query_authority_result 或调用未允许 Tool: []"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M03",
+      "title": "切井后按会话指代返回",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "write_safety": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 2,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "候选版本、井或范围与用例指代不符"
+          ]
+        },
+        {
+          "turn_index": 2,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M03",
+      "title": "切井后按会话指代返回",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "write_safety": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "grounding": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 2,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "未形成预期指代/操作 Tool 候选"
+          ]
+        },
+        {
+          "turn_index": 2,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        },
+        {
+          "turn_index": 2,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool query_authority_result 或调用未允许 Tool: []"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M03",
+      "title": "切井后按会话指代返回",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "write_safety": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 2,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "候选版本、井或范围与用例指代不符"
+          ]
+        },
+        {
+          "turn_index": 2,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M03",
+      "title": "切井后按会话指代返回",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "write_safety": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "grounding": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 2,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "未形成预期指代/操作 Tool 候选"
+          ]
+        },
+        {
+          "turn_index": 2,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        },
+        {
+          "turn_index": 2,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool query_authority_result 或调用未允许 Tool: []"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M03",
+      "title": "切井后按会话指代返回",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 3,
+          "pass_rate": 0.6666666666666666
+        },
+        "write_safety": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 3,
+          "total": 3,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 2,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "候选版本、井或范围与用例指代不符"
+          ]
+        },
+        {
+          "turn_index": 2,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M04",
+      "title": "对话与当前权威冲突",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 0,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "未形成预期指代/操作 Tool 候选"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool query_authority_result 或调用未允许 Tool: []"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M04",
+      "title": "对话与当前权威冲突",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 0,
+          "total": 2,
+          "pass_rate": 0.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 0,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "未形成预期指代/操作 Tool 候选"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool query_authority_result 或调用未允许 Tool: []"
+          ]
+        },
+        {
+          "turn_index": 1,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "候选版本、井或范围与用例指代不符"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M04",
+      "title": "对话与当前权威冲突",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 0,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "未形成预期指代/操作 Tool 候选"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool query_authority_result 或调用未允许 Tool: []"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M04",
+      "title": "对话与当前权威冲突",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 0,
+          "total": 2,
+          "pass_rate": 0.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 0,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "未形成预期指代/操作 Tool 候选"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool query_authority_result 或调用未允许 Tool: []"
+          ]
+        },
+        {
+          "turn_index": 1,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "候选版本、井或范围与用例指代不符"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M04",
+      "title": "对话与当前权威冲突",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 0,
+          "total": 2,
+          "pass_rate": 0.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 0,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "未形成预期指代/操作 Tool 候选"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool query_authority_result 或调用未允许 Tool: []"
+          ]
+        },
+        {
+          "turn_index": 1,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "候选版本、井或范围与用例指代不符"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M04",
+      "title": "对话与当前权威冲突",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 0,
+          "total": 2,
+          "pass_rate": 0.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 0,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "未形成预期指代/操作 Tool 候选"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "authority_binding",
+          "pass": false,
+          "failures": [
+            "ToolResult 未绑定到预期当前权威锚点"
+          ]
+        },
+        {
+          "turn_index": 0,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool query_authority_result 或调用未允许 Tool: []"
+          ]
+        },
+        {
+          "turn_index": 1,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "候选版本、井或范围与用例指代不符"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M05",
+      "title": "只读范围不能升级成写范围",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M05",
+      "title": "只读范围不能升级成写范围",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 1,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool preflight_local_modify 或调用未允许 Tool: ['query_authority_result']"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M05",
+      "title": "只读范围不能升级成写范围",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M05",
+      "title": "只读范围不能升级成写范围",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M05",
+      "title": "只读范围不能升级成写范围",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M05",
+      "title": "只读范围不能升级成写范围",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 1,
+          "metric": "tool_route",
+          "pass": false,
+          "failures": [
+            "缺少预期 Tool preflight_local_modify 或调用未允许 Tool: ['query_authority_result']"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M06",
+      "title": "显式局部修改仍不支持",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M06",
+      "title": "显式局部修改仍不支持",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M06",
+      "title": "显式局部修改仍不支持",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M06",
+      "title": "显式局部修改仍不支持",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M06",
+      "title": "显式局部修改仍不支持",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M06",
+      "title": "显式局部修改仍不支持",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 1,
+          "total": 1,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M07",
+      "title": "AgentState 序列化后的会话恢复",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M07",
+      "title": "AgentState 序列化后的会话恢复",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M07",
+      "title": "AgentState 序列化后的会话恢复",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M07",
+      "title": "AgentState 序列化后的会话恢复",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 1,
+          "total": 2,
+          "pass_rate": 0.5
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [
+        {
+          "turn_index": 1,
+          "metric": "reference_understanding",
+          "pass": false,
+          "failures": [
+            "候选版本、井或范围与用例指代不符"
+          ]
+        }
+      ],
+      "pass": false,
+      "context_mode": "fresh_agent"
+    },
+    {
+      "case_id": "M07",
+      "title": "AgentState 序列化后的会话恢复",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "native_context"
+    },
+    {
+      "case_id": "M07",
+      "title": "AgentState 序列化后的会话恢复",
+      "metric_summary": {
+        "reference_understanding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "authority_binding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "write_safety": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "tool_route": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        },
+        "grounding": {
+          "passed": 2,
+          "total": 2,
+          "pass_rate": 1.0
+        }
+      },
+      "write_safety_failures": [],
+      "failures": [],
+      "pass": true,
+      "context_mode": "fresh_agent"
+    }
+  ],
+  "records_path": "experiments/agentscope_native_poc/artifacts/task012b_20261004T083451Z_74e9c5a4.jsonl"
+}

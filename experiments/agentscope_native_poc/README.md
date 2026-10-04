@@ -1,5 +1,26 @@
 # Task 012A：AgentScope Prompt + Toolkit + Skill 对照实验
 
+## Task 012B：多轮 Context 与 Authority
+
+独立运行多轮会话实验，不调用生产 Resolver、TaskCommandRunner、Workflow、PostgreSQL 或 Redis。AgentState 只保存 AgentScope 会话消息；task / well / execution / scope / version / revision 由 `authority.py` 的隔离 Fixture 确定。
+
+离线合同测试：
+
+```bash
+pytest tests/experiments/test_multiturn_context_authority.py -q
+```
+
+真实 qwen-plus A/B（AgentState 连续上下文 vs 每轮新 Agent）需显式启用。`CNLC_MODEL_ENV_FILE` 可指向本机已有模型配置文件；日志和摘要不会记录密钥：
+
+```bash
+CNLC_RUN_012B_MODEL=1 CNLC_MODEL_ENV_FILE=/path/to/project/.env \
+  python -m experiments.agentscope_native_poc.multiturn_runner --real-model --repeat 3
+```
+
+逐轮证据保存在 `experiments/agentscope_native_poc/artifacts/task012b_<experiment-id>.jsonl`，汇总写入同目录的 `task012b_summary.json`。汇总分别列出 Reference Understanding、Authority Binding、Write Safety、Tool Route、Grounding，并独立列出任何 Write Safety 失败。固定集为 M01–M07，定义见 `multiturn_cases.json`。
+
+若 Grounding 规则调整，可使用 `--reevaluate-experiment-id <experiment-id>` 仅基于 JSONL 离线重算，不会重复调用模型。
+
 该目录是独立的 AgentScope 2.0.8 POC。`no_skill` 与 `with_skill` 共用基础 System Prompt、八个 Mock Tool、场景输入和 Fixture；实验变量是 Toolkit 是否加载本地 Skill。Skill 元信息由 AgentScope 自动追加到有效 system prompt，这是 Skill 配置本身的预期差异。所有 Tool 结果都标注为 Task 012A 测试 Fixture，不代表真实测井数据，也不调用专业算法、数据库、Redis 或公司 API。
 
 Tool 的状态值仅属于本实验：`ALLOWED`（允许模拟修改）、`UNSUPPORTED`（当前 Fixture 不支持）、`NEED_CLARIFICATION`（需要补充信息）、`SIMULATED`（仅模拟 Fixture 变化）、`OK`（只读调用成功）、`REJECTED`（Mock 拒绝）和 `NOT_FOUND`（Fixture 中无此对象）。Tool 只访问进程内状态，不发起 I/O，因此没有外部 Tool 超时配置。

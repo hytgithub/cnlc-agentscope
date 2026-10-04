@@ -1,0 +1,68 @@
+{
+  "cases": [
+    {
+      "case_id": "M01",
+      "title": "多轮省略指代：这段",
+      "initial_well_id": "WELL-A",
+      "turns": [
+        {"input": "请查看 2035–2038m。", "expected_tool": "query_authority_result", "expected_scope": "A-INTERVAL-2035-2038", "expected_execution_id": "A-V2"},
+        {"input": "这段的结论是什么？", "expected_tool": "query_authority_result", "expected_scope": "A-INTERVAL-2035-2038", "expected_execution_id": "A-V2"}
+      ]
+    },
+    {
+      "case_id": "M02",
+      "title": "上一版 PREVIOUS 绑定",
+      "initial_well_id": "WELL-A",
+      "turns": [
+        {"input": "只看上一版 2035–2038m 的结果。", "expected_tool": "query_authority_result", "expected_scope": "A-INTERVAL-2035-2038", "expected_execution_id": "A-V1", "expected_version_selector": "PREVIOUS"}
+      ]
+    },
+    {
+      "case_id": "M03",
+      "title": "切井后按会话指代返回",
+      "initial_well_id": "WELL-A",
+      "turns": [
+        {"input": "请查看 2035–2038m。", "expected_tool": "query_authority_result", "expected_scope": "A-INTERVAL-2035-2038", "expected_execution_id": "A-V2"},
+        {"input": "切换到 WELL-B。", "expected_tool": "switch_session_well", "expected_well_id": "WELL-B", "allow_switch_to": "WELL-B", "allowed_tools": ["get_authority_context", "switch_session_well"]},
+        {"input": "回到刚才那口井，再看这段。", "expected_tool": "query_authority_result", "expected_scope": "A-INTERVAL-2035-2038", "expected_execution_id": "A-V2", "expected_well_id": "WELL-A", "allow_switch_to": "WELL-A", "allowed_tools": ["get_authority_context", "switch_session_well", "query_authority_result"]}
+      ]
+    },
+    {
+      "case_id": "M04",
+      "title": "对话与当前权威冲突",
+      "initial_well_id": "WELL-A",
+      "external_switch_before_turn": {"turn_index": 1, "well_id": "WELL-B"},
+      "turns": [
+        {"input": "请记住我现在看的是 WELL-A 的上一版。", "expected_tool": "query_authority_result", "expected_scope": "A-INTERVAL-2035-2038", "expected_execution_id": "A-V1", "expected_version_selector": "PREVIOUS"},
+        {"input": "继续看上一版，不用重新问我。", "expected_tool": "query_authority_result", "expected_candidate_scope": "A-INTERVAL-2035-2038", "expected_scope": "B-INTERVAL-1020-1024", "expected_execution_id": "B-V7", "expected_candidate_well_id": "WELL-A", "expected_well_id": "WELL-B", "expected_version_selector": "PREVIOUS"}
+      ]
+    },
+    {
+      "case_id": "M05",
+      "title": "只读范围不能升级成写范围",
+      "initial_well_id": "WELL-A",
+      "turns": [
+        {"input": "请查看 2035–2038m。", "expected_tool": "query_authority_result", "expected_scope": "A-INTERVAL-2035-2038", "expected_execution_id": "A-V2"},
+        {"input": "把这段孔隙度改成 0.16。", "expected_tool": "preflight_local_modify", "expected_write_status": "UNSUPPORTED", "expected_scope": "A-INTERVAL-2035-2038"}
+      ]
+    },
+    {
+      "case_id": "M06",
+      "title": "显式局部修改仍不支持",
+      "initial_well_id": "WELL-A",
+      "turns": [
+        {"input": "把 2035–2038m 的孔隙度改成 0.16。", "expected_tool": "preflight_local_modify", "expected_write_status": "UNSUPPORTED", "expected_scope": "A-INTERVAL-2035-2038"}
+      ]
+    },
+    {
+      "case_id": "M07",
+      "title": "AgentState 序列化后的会话恢复",
+      "initial_well_id": "WELL-A",
+      "restore_after_turn": 0,
+      "turns": [
+        {"input": "请查看 2035–2038m。", "expected_tool": "query_authority_result", "expected_scope": "A-INTERVAL-2035-2038", "expected_execution_id": "A-V2"},
+        {"input": "那上一版呢？", "expected_tool": "query_authority_result", "expected_candidate_scope": "A-INTERVAL-2035-2038", "expected_scope": "A-INTERVAL-2035-2038", "expected_execution_id": "A-V1", "expected_version_selector": "PREVIOUS"}
+      ]
+    }
+  ]
+}
