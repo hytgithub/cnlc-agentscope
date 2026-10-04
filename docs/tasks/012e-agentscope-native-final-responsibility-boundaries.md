@@ -1,8 +1,8 @@
-# Task 012E｜AgentScope 原生能力与项目架构最终职责边界
+# Task 012E｜AgentScope 原生能力与项目架构阶段性职责边界（v0.1）
 
 > 父任务：Task 012 / 012A / 012A.1
 > 分支：`codex/task-12-agentscope-native-capability-poc`
-> 基线提交：`a1afeae30e83ca81ed2307da5f7e1cb550f357eb`（Task 012A.1，已是当前分支 HEAD）
+> 证据基线提交：`a1afeae30e83ca81ed2307da5f7e1cb550f357eb`（Task 012A.1 结果基线；当前分支后续仍可能继续演进）
 > 类型：架构审计与决策记录；不实施生产重构
 > 日期：2026-10-04
 
@@ -14,13 +14,13 @@ Task 012A.1 的真实模型证据没有证明 Skill 有净价值：qwen-plus 共
 
 OperationPlan 不是 AgentScope ReAct 的重复 LLM 计划；它是模型提出的结构化意图/操作合同候选。Resolver、Validator、Policy 与 Bridge 也不是 Tool schema 的替代品：它们把候选请求绑定到受授权的 task/execution/scope/version，进行确定性校验并执行。当前链路确有边界分散与部分检查重复的可维护性问题，但证据不支持删除 Operation 层、Bridge 或 Validator。
 
-本 Task 只确定后续架构边界和迁移次序，不修改生产代码。**没有模块获得 `REMOVE`（删除）决策。**
+本 Task 形成的是**阶段性职责边界**，用于约束后续实验和迁移次序，不代表 AgentScope 原生能力已经全部验证完成，也不修改生产代码。**没有模块获得 `REMOVE`（删除）决策。**
 
 ## 2. 范围、证据等级与基线
 
 ### 2.1 分支与实验事实
 
-已在开始时确认：当前分支为 `codex/task-12-agentscope-native-capability-poc`，HEAD 为 `a1afeae30e83ca81ed2307da5f7e1cb550f357eb`；该提交是当前分支祖先（当前 HEAD 与之相同）。没有切换或修改 `main`。
+Task 012E 以 `a1afeae30e83ca81ed2307da5f7e1cb550f357eb` 作为 Task 012A.1 的证据基线；该提交属于当前实验分支历史。Task 012E 之后分支仍可能继续增加治理、证据和后续实验提交，因此不得再把该 SHA 描述为永久 HEAD。没有切换或修改 `main`。
 
 Task 012A.1 结果文档记录的 qwen-plus 数据为：120 次真实模型运行，no_skill 60、with_skill 60；SkillViewer 调用 no_skill 0/60、with_skill 0/60；4 个 Skill-required 场景的 with_skill Viewer 调用为 0/20。Tool route 为 65.0% / 60.0%；参数正确率为 85.7% / 47.6%；澄清正确率为 90.0% / 20.0%；with_skill 有 3 次非法写入调用尝试（均被 POC Mock 拒绝，未触达生产数据）；Grounding 为 66.7% / 83.3%；overall 为 35.0% / 48.3%。结论为 `NO_CLEAR_VALUE`（当前任务集无明确价值）。详细口径、逐场景重复结果见 [Task 012A.1 实验结果](../evidence/05-Task012A1-Skill稳定性与Grounding实验结果.md) 和 `artifacts/native_poc/summary.json`。
 
@@ -45,13 +45,21 @@ Task 012A 的旧轮摘要为 no_skill 7/12、with_skill 9/12，Viewer 都为 0�
 | Agent / ReAct | `agentscope/agent/_agent.py` 提供消息循环、模型调用、Tool call 处理和 Agent state；生产 `LoggingInterpretationDemoAgent` 使用 AgentScope `Agent` 与 qwen-plus。 | 适合候选意图理解与有限 Tool 选择；Tool call 仍只是模型提议，不是已授权业务动作。 |
 | Toolkit / Tool | `agentscope/tool/_toolkit.py` 注册、列出 schema 并分派 Tool；支持 `tools`、`skills_or_loaders`、MCP 等注册入口。生产 Agent 明确拒绝带 MCP/Skills 的任意 Toolkit，并组装经批准的高层 task Tools。 | 原生 Toolkit 解决模型可见能力的注册与调用；不提供项目 task ownership、scope/version 解析或写前事务安全。 |
 | Skill | `tool/_toolkit.py` 默认 Skill 指令把 `name` / `description` / `dir` 元信息放入有效 system prompt，并声明应通过内置 Viewer 按需读取正文；`skill/_local_loader.py` 解析本地 Markdown；`tool/_builtin/_skill.py` Viewer 名称为 `Skill`，schema 是必填精确名称 `{skill: ...}`。本地 loader 读到 `SKILL.md` 并不等于正文进入模型上下文。012A.1 with_skill 真实调用中 Viewer 0/60。 | 可选方法知识；只有观察到 `Skill` ToolCall 及正文 ToolResult 才能声称模型实际读取。不可承担流程控制或业务安全。 |
-| AgentState / memory | `agentscope/state/` 有对话上下文、摘要、中间上下文和 `TaskContext` 数据对象。Agent 可将进行中 TaskContext 转成上下文文本。当前安装包中源码搜索未发现项目 Task 的 `TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate` CRUD Tools/API；`Task` 数据对象不等于带业务授权与持久化语义的任务服务。 | 适合作为 Agent 会话态/提示上下文；不能替代 InterpretationState、Execution、数据库权限事实或跨会话业务状态。 |
+| AgentState / memory | `agentscope/state/` 有对话上下文、摘要、中间上下文和 `TaskContext` 数据对象。Agent 可将进行中 TaskContext 转成上下文文本。**当前项目本地 `.venv` 的 Task 012E 扫描没有定位到 `TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate`；但 AgentScope 官方 `v2.0.8` tag 的 `src/agentscope/tool/_task/` 明确导出并实现这些会话 Task Tools。** 因此这里存在“官方对应 tag 与当前本地安装/扫描结果不一致”的环境事实差异，不能据本地未找到就断言 AgentScope 2.0.8 官方不存在这些能力。无论是否存在，这些会话 Task Tools 都不等于带业务授权、版本和持久化语义的测井业务 Task 服务。 | 适合作为 Agent 会话态/提示上下文；不能替代 InterpretationState、Execution、数据库权限事实或跨会话业务状态。 |
 | Tracing | `TracingMiddleware` 可为 Agent/model/Tool 活动提供 OpenTelemetry span。生产默认路径使用项目 `Telemetry` / LoggingTelemetry，并持久化 Execution、Stage/Step 和 ToolRun 业务事实；目前未见默认启用该 AgentScope tracing middleware。 | 原生 trace 可作为调用级观测适配器；不是业务审计记录、版本事实或可恢复事件源。 |
 | HITL / interrupt / GoalPipeline | Task 012 的历史说明列有 Event、GoalPipeline 等能力，但本 Task 没有对它们做替代生产流程的对照验证；它们没有被当前业务 StageRun、并发和持久化契约覆盖。 | 不据历史能力列表推断可替换当前 Domain State Machine；相关替代结论为 `VERIFY`，不在本 Task 实施。 |
 
-### AgentState Task API 历史表述核对
+### AgentState Task API 版本事实核对
 
-`docs/tasks/012-agentscope-native-capability-poc.md` 原文称 AgentState 内含任务上下文，并有官方 `TaskCreate / TaskGet / TaskList / TaskUpdate`。本轮核对安装的 AgentScope 2.0.8 源码：存在 `TaskContext` 与通用 `Task` 数据模型，但未找到上述 CRUD API 或同名内置 Tools。因此**“有 TaskContext 数据模型”得到源码支持，“官方提供 Task CRUD API”在当前安装版本未得到支持**。这是对历史 Task 012 能力列表的版本核验补充，不删除或篡改当时记录；后续不得在架构选择中依赖未证实的 CRUD 能力。
+`docs/tasks/012-agentscope-native-capability-poc.md` 原文称 AgentState 内含任务上下文，并有官方 `TaskCreate / TaskGet / TaskList / TaskUpdate`。
+
+当前证据必须分开记录：
+
+1. **项目本地环境事实**：Task 012E 当时对当前 `.venv` 安装源码的扫描没有定位到上述 CRUD Tools；
+2. **官方对应版本事实**：AgentScope 官方仓库 `v2.0.8` tag 的 `src/agentscope/tool/_task/__init__.py` 明确导出 `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate`，并存在对应实现文件；
+3. **业务架构结论不变**：这些 Task Tools 管理的是 Agent 会话内任务组织，不具有本项目 Task / Execution / InputVersion 的授权、版本、持久化和正式结果语义，不能直接替代业务 Task 服务。
+
+因此后续如果要验证原生 Task planning，必须先在**当前实际安装环境**确认 import / Toolkit 注册行为，再做同场景 A/B；不得仅凭官方源码存在就宣称当前运行环境已经可用，也不得因本地扫描未找到就宣称官方 2.0.8 没有。
 
 ## 4. 当前架构与目标边界
 
@@ -256,7 +264,7 @@ POC `experiments/agentscope_native_poc/grounding.py` 只针对固定 Fixture 和
 - 若把 Tool schema、Prompt、Skill 当业务安全层，会漏过授权、stale version、范围误扩和竞争条件；012A.1 已观察到模型尝试非法写入。
 - 若把排队/接收当成功，或回复没有绑定 task/execution/scope/version，会产生错误的操作完成承诺。
 - 过度集中在 Bridge/Runner 会增加修改成本；过早删除其中一层又会失去关键校验。未来只能通过单一权威规则源与回归测试收敛，不移除防御性检查直到找到等价保护。
-- AgentScope 2.0.8 Task CRUD API 历史说明目前与本地源码不符；依赖该描述作替代决策会形成版本误判。
+- AgentScope Task CRUD 存在“官方 v2.0.8 tag 可见、当前项目本地扫描未定位”的环境差异；在当前 `.venv` 完成 import/注册实测前，不能用它作替代决策。
 - REPORT 确认点描述不一致；需业务确认，当前实现仍是执行事实。
 
 ### 最小回归集
@@ -278,7 +286,7 @@ POC `experiments/agentscope_native_poc/grounding.py` 只针对固定 Fixture 和
 
 1. **职责检查点分布**：Operation 的 parser、多个 Resolver、Validator、Policy、Bridge、Runner 和 Application 都含有相邻边界检查。需要建立规则→唯一权威 enforcement point 的映射，再决定是否收敛；当前不阻塞运行，也不支持删除层。
 2. **最终回复缺统一证据合同**：现有关键回复路径有服务端投影，但缺显式通用 task/execution/scope/version/source/evidence envelope；对“未调用 Tool 却声称完成”等场景需补契约保护。
-3. **AgentScope Task CRUD 文档与 2.0.8 源码不一致**：本地已找到 TaskContext/Task 数据对象，未找到列出的 CRUD API/Tools；需核验来源版本并修正后续能力表述。
+3. **AgentScope Task CRUD 的官方源码与本地环境可见性不一致**：官方 `v2.0.8` tag 明确包含 TaskCreate / TaskGet / TaskList / TaskUpdate；Task 012E 本地扫描未定位。后续 Plan 类实验前先验证当前 `.venv` import、Toolkit 注册和实际调用，再决定是否纳入候选能力。
 4. **阶段确认产品口径**：当前允许 REPORT 等待确认；用户业务叙述确认至解释后再报告。需业务确认是否有报告确认阶段门控。
 5. **幂等边界**：现有 turn-level operation lock、一次性消费 pending clarification、expected-current 校验和数据库事务提供局部保护；本轮代码审计未证实一个贯穿客户端重试/后台任务/外部副作用的通用幂等键契约。在任何真实外部写接入前需单独验证并记录 unknown outcome 恢复语义。
 
