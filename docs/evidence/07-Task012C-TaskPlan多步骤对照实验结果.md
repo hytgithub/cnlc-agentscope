@@ -94,3 +94,18 @@ Architecture Issue：**No production architecture issue found.** 本实验发现
 - `ruff check experiments tests/experiments`：All checks passed。
 - `git diff --check`：通过。
 - 遗留项：实验中的 P04 写范围越级失败作为证据保留，未修生产代码；需人工评审后决定是否建立独立迁移 Task。
+
+## 7. Post-review：生产写范围语义复核
+
+012C 实验完成后的人工代码复核发现，需要对“缺 scope 自动补 whole_well”进一步区分 POC 风险与生产现状。
+
+012C 实验本身不能证明生产存在相同缺陷；但当前生产代码中可观察到：
+
+- `OperationExecutionBridge` 在最终 scope 解析前存在 `op.scope = op.scope or WholeWellScope()`；
+- `missing_plan_slots()` 对 `MODIFY_PARAMETER` 检查 target / value / model，但不把 scope 缺失作为必需澄清槽位；
+- `OperationCatalog` 当前对 `MODIFY_PARAMETER` 仅声明 `WHOLE_WELL`；
+- `tests/unit/test_operation_execution_bridge.py::test_supported_parameters_really_create_one_execution` 使用无显式 scope 的参数修改并期待 SUCCESS。
+
+因此，本文第 5 节中的 `No production architecture issue found` 应理解为：**012C 实验当时没有建立“Task Tools 导致生产安全问题”的因果证据**，不代表当前生产修改范围语义已经与最新设计 04/05 完全一致。
+
+该语义冲突已转入 `docs/tasks/012c-1-write-scope-safety-boundary.md` 独立审计。Task 012C.1 将核对 por / perm / sampling_interval / prediction_model 的正式 scope 规则，并决定当前 WholeWell fallback 是受支持的产品语义、可信 Active scope 继承，还是需要改为 NEED_CLARIFICATION。012C 原始 A/B 数据和 Task/Plan 结论保持不变。
