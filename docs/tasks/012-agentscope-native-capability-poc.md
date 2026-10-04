@@ -31,9 +31,10 @@
 2. 012A.1：Skill 稳定性、重复运行与 Response Grounding（已执行）
 3. 012B：真实多轮 Context 与权威业务锚定边界（已执行；原始三次运行证据保留）
 4. 012B.1：已补齐 M01～M06 第 4、5 次、保留 M07 三次，并更新 Evidence 06、04/05；012B 补齐闭环完成
-5. 012C：AgentScope 原生 Task Tools 多步骤对照（已执行；Evidence 07；`REGISTERED_BUT_UNUSED（已注册但未使用）`，Plan 组 Write Safety 失败 5 次）
-6. 后续按证据决定：HITL/Interrupt、TracingMiddleware
-7. 012E：当前阶段职责边界审计（已形成阶段性结论，不视为最终架构定稿）
+5. 012C：AgentScope 原生 Task Tools 多步骤对照（已执行；Evidence 07；`REGISTERED_BUT_UNUSED（已注册但未使用）`）
+6. 012C.1：写范围语义与生产安全边界核对（下一步；审计缺 scope → WholeWellScope 的正式产品语义）
+7. 012C.1 评审通过后再决定：HITL/Interrupt、TracingMiddleware
+8. 012E：当前阶段职责边界审计（已形成阶段性结论，不视为最终架构定稿）
 
 ## 硬边界
 
