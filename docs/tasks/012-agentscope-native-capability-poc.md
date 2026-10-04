@@ -21,17 +21,18 @@
 
 不得把 GoalPipeline 或 AgentState Task 直接视为现有 OperationPlan / ExecutionPlan 的替代品，必须经过对照实验。
 
-### 2.0.8 本地源码核验补充（Task 012E）
+### 2.0.8 Task API 版本事实补充（Task 012E 修订）
 
-以上能力列表保留为 Task 012 建立时的历史调查记录。Task 012E 对当前仓库 `.venv` 内安装的 AgentScope 2.0.8 源码再次核验：可见 `TaskContext` 和通用 `Task` 数据对象，但没有找到 `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate` CRUD API 或同名内置 Tools。因此“有 Task 上下文数据模型”已核实，“官方提供上述 Task CRUD API”在本安装版本中未核实，不得据此替代项目 OperationPlan、ExecutionPlan、StageRun 或业务持久化。详见 [Task 012E](012e-agentscope-native-final-responsibility-boundaries.md)。本说明补充版本证据，不改写当时实验事实。
+以上能力列表保留为 Task 012 建立时的历史调查记录。后续复核发现必须区分两类事实：当前项目 `.venv` 的 Task 012E 扫描当时没有定位到 `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate`；但 AgentScope 官方仓库 `v2.0.8` tag 的 `src/agentscope/tool/_task/` 明确包含并导出这些会话 Task Tools。因此不能把“本地扫描未找到”写成“官方 2.0.8 不存在”。后续如验证原生 Task/Plan，必须先在当前实际安装环境做 import、Toolkit 注册和真实调用验证。无论这些 Tools 是否可用，它们都不等于本项目带授权、版本和持久化语义的业务 Task / Execution。详见 [Task 012E](012e-agentscope-native-final-responsibility-boundaries.md)。
 
 ## 子任务
 
 1. 012A：Prompt + Toolkit + Skill 动态工具选择 POC（已执行）
 2. 012A.1：Skill 稳定性、重复运行与 Response Grounding（已执行）
-3. 012B：真实多轮 Context 与权威业务锚定边界（下一步）
-4. 后续按证据决定：原生 Task/Plan 对照、HITL/Interrupt、TracingMiddleware
-5. 012E：当前阶段职责边界审计（已形成阶段性结论，不视为最终架构定稿）
+3. 012B：真实多轮 Context 与权威业务锚定边界（已执行；原定 5 次重复仅完成 3 次）
+4. 012B.1：补齐 M01～M06 第 4、5 次、更新 Evidence 06，并回写 04/05（下一步）
+5. 后续按证据决定：原生 Task/Plan 对照、HITL/Interrupt、TracingMiddleware
+6. 012E：当前阶段职责边界审计（已形成阶段性结论，不视为最终架构定稿）
 
 ## 硬边界
 
