@@ -6,7 +6,8 @@
 
 - 01：现状事实盘点；
 - 02：现有系统运行证据矩阵；
-- 03：AgentScope 原生能力最小对照实验。
+- 03：AgentScope 原生能力最小对照实验设计；
+- 04：Task 012A Prompt + Toolkit + Skill A/B 实验结果。
 
 ## 使用规则
 
