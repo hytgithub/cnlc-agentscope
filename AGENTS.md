@@ -111,7 +111,55 @@ Artifact / 文件来源
 
 如果 Codex 认为当前设计无法实现、存在明显冲突、严重耦合或明显不符合 AgentScope 实现方式，应记录 Architecture Issue，包括问题描述、涉及模块、当前设计、目标设计、证据、影响范围、建议方案和是否阻塞当前 Task。
 
-## 5. Task 边界原则
+## 5. 文档同步更新规则
+
+**每一次对项目做出有效改动，都必须同步检查并完善相关文档。**
+
+“完成代码”不等于 Task 完成。任何代码、配置、业务行为、架构、接口、状态、测试或运行方式发生变化时，必须判断其文档影响，并在同一个 Task / 同一个分支中完成对应文档更新。
+
+### 5.1 变更与文档映射
+
+| 变更类型 | 必须检查 / 更新的文档 |
+| --- | --- |
+| 需求范围、业务能力变化 | `docs/design/01-测井解释智能体需求规格说明.md` |
+| 建设目标变化 | `docs/design/02-测井解释智能体建设目标.md` |
+| 用户可观察行为、交互效果变化 | `docs/design/03-测井解释智能体预期效果.md` |
+| 架构、Agent、Skill、Tool、Workflow、State、Plan、Trace 等方案变化 | `docs/design/04-测井解释智能体技术方案.md` |
+| 测试口径、验收条件、风险场景变化 | `docs/design/05-测井解释智能体测试与验收方案.md` |
+| 新实验、运行数据、A/B 结果、能力验证 | `docs/evidence/` |
+| 当前实现结构、接口、数据库、状态机、交互链路变化 | 对应 Current Implementation 文档 |
+| 状态、枚举、动作码变化 | `docs/11-status-enum-glossary.md` |
+| 单次任务实现与验证 | 对应 `docs/tasks/` 任务记录 |
+
+### 5.2 文档更新原则
+
+- 不要求每次小改动都机械修改五份主设计文档；只修改真正受到影响的文档。
+- 如果本次改动**不改变**需求、目标或预期效果，不要为了“有改动”而无意义改写 01～03。
+- 04、05 应随着新的架构证据和验收发现持续演进。
+- 新的实验和运行结果必须先进入 `docs/evidence/`，再据证据修订 04 / 05。
+- Current Implementation 文档必须与实际代码保持一致，不能让旧文档继续描述已经不存在的实现。
+- 文档必须区分“已实现”“已验证”“讨论中”“待验证”，不得把计划写成事实。
+- 任何新增专业规则都必须有业务来源；不能为了让文档完整而补造阈值、公式或依赖关系。
+
+### 5.3 每个 Task 的文档验收
+
+每个 Task 完成报告必须新增一项：
+
+```text
+Documentation Impact
+```
+
+并明确列出：
+
+1. 本次改动影响了哪些文档；
+2. 实际更新了哪些文档；
+3. 哪些主设计文档检查后确认无需修改，以及原因；
+4. 是否新增 evidence；
+5. 是否存在代码已经改变但文档尚未同步的遗留项。
+
+只要存在“代码已变更但相关文档未同步”，该 Task **不得视为完成**。
+
+## 7. Task 边界原则
 
 Codex 每次只完成当前 Task 明确要求的工作。
 
@@ -125,7 +173,7 @@ Codex 每次只完成当前 Task 明确要求的工作。
 
 每个 Task 应可以独立审查、测试和回滚。
 
-## 6. Agent 开发规则
+## 7. Agent 开发规则
 
 当前实现中存在：
 
@@ -167,7 +215,7 @@ W07 油气水层分类
 
 ValidationAgent 原则上不直接覆盖 InterpretationAgent 的结构化解释结果，应输出 ValidationResult，由 Workflow 决定后续动作。
 
-## 7. Agent 输出规则
+## 8. Agent 输出规则
 
 关键业务输出必须优先采用结构化对象。
 
@@ -184,7 +232,7 @@ recommended_action
 
 具体 Schema 以项目 Schema 文档为准。
 
-## 8. Agent 通信规则
+## 9. Agent 通信规则
 
 V0.1 不推荐多个 Agent 之间进行无约束自然语言聊天。
 
@@ -198,7 +246,7 @@ Workflow
 
 完成。
 
-## 9. Tool 开发规则
+## 10. Tool 开发规则
 
 每一个 Tool 必须具有明确 Contract，至少定义：
 
@@ -216,7 +264,7 @@ Test
 
 Tool 职责必须单一。
 
-## 10. Tool 与算法关系
+## 11. Tool 与算法关系
 
 推荐：
 
@@ -230,7 +278,7 @@ Domain Algorithm
 
 算法层原则上应尽量保持纯计算，不直接依赖 AgentScope、Redis、Database、Web 或 LLM。
 
-## 11. Mock Tool 规则
+## 12. Mock Tool 规则
 
 V0.1 允许使用 Mock Tool，但 Mock 必须实现正式 Tool Contract、返回正式 Output Schema、支持测试和未来替换。
 
@@ -244,7 +292,7 @@ PorosityTool interface
 
 不要在业务代码中到处写临时 mock 判断。
 
-## 12. 禁止 LLM 替代专业计算
+## 13. 禁止 LLM 替代专业计算
 
 如果已经存在或者计划存在确定性专业算法，则禁止要求 LLM 直接估算。
 
@@ -260,7 +308,7 @@ PorosityResult
 Agent 使用结果进行综合判断
 ```
 
-## 13. Workflow 开发规则
+## 14. Workflow 开发规则
 
 当前 W01-W10 是**完整解释内部的现有确定性业务流程**，用于组织已实现的专业步骤和错误边界。
 
@@ -274,7 +322,7 @@ Workflow 仍负责当前实现中的步骤编排、状态转换、Retry、Rollba
 
 W01-W10 不得在普通 Task 中随意修改；若 AgentScope 原生能力实验表明某些“智能编排职责”可以上移到 Agent / Skill / Toolkit，也必须通过 Architecture Issue、evidence 和迁移 Task 决定，不能直接删除 Workflow 的确定性安全职责。
 
-## 14. Workflow 状态规则
+## 15. Workflow 状态规则
 
 候选统一状态：
 
@@ -293,11 +341,11 @@ W01-W10 不得在普通 Task 中随意修改；若 AgentScope 原生能力实验
 
 设计文档、Task 说明和验收记录中，状态、枚举、动作码、规划原因等稳定代码值首次出现时，必须写成 `CODE（中文名称或中文含义）`，或在紧邻位置提供中文说明表。不得只列英文枚举让读者自行猜测。新增枚举时必须同步更新 `docs/11-status-enum-glossary.md`。
 
-## 15. Retry / Rollback 规则
+## 16. Retry / Rollback 规则
 
 Retry 和 Rollback 必须有明确原因、次数限制、Trace 和状态记录。超过限制后，应进入 `REVIEW_REQUIRED`（需要人工复核）或明确失败状态，禁止无限执行。
 
-## 16. InterpretationState 开发规则
+## 17. InterpretationState 开发规则
 
 InterpretationState 是单井解释任务的核心状态对象。
 
@@ -305,7 +353,7 @@ InterpretationState 是单井解释任务的核心状态对象。
 
 重要状态变化应能够回答：谁修改、什么时候修改、为什么修改、修改前后是什么。
 
-## 17. 数据库规则
+## 18. 数据库规则
 
 数据库真实接入。
 
@@ -323,7 +371,7 @@ Database
 
 Agent 原则上不直接持有数据库连接。
 
-## 18. Redis 规则
+## 19. Redis 规则
 
 Redis 真实接入。
 
@@ -339,7 +387,7 @@ Redis Adapter
 
 业务代码不得大量直接调用 Redis SDK。
 
-## 19. Model Access 规则
+## 20. Model Access 规则
 
 内部统一模型必须通过统一模型访问层调用。
 
@@ -355,17 +403,17 @@ Internal Model Adapter
 
 禁止每个 Agent 分别实现自己的模型调用逻辑。
 
-## 20. AgentScope 依赖规则
+## 21. AgentScope 依赖规则
 
 业务核心对象如 Domain Result、InterpretationState、Tool Contract 应尽可能保持业务独立性，避免和 AgentScope 内部类型产生不必要的深度耦合。
 
-## 21. 配置规则
+## 22. 配置规则
 
 禁止将模型名称、数据库连接、Redis 地址、Timeout、Retry 次数、Rollback 次数、Log Level 等配置散落写死。
 
 密码、Token、API Key 不得提交到代码仓库。
 
-## 22. 日志和 Trace
+## 23. 日志和 Trace
 
 普通日志处理系统运行、异常、Debug 和基础设施问题。
 
@@ -381,7 +429,7 @@ State Change
 Final Result
 ```
 
-## 23. Error Handling 规则
+## 24. Error Handling 规则
 
 不得大量使用：
 
@@ -403,7 +451,7 @@ InfrastructureError
 ValidationError
 ```
 
-## 24. 测试规则
+## 25. 测试规则
 
 每一个 Task 完成后必须测试。
 
@@ -420,7 +468,7 @@ Unit Test
 聊天过程展示至少检查折叠/展开、计时位置、报告可见性、参数修改后的回复和刷新恢复。
 不能只检查 DOM 中存在文本或 aria-expanded；必须确认实际操作后正文隐藏/恢复，报告仍显示。
 
-## 25. 不以“代码生成完成”作为验收标准
+## 26. 不以“代码生成完成”作为验收标准
 
 至少需要确认：
 
@@ -432,7 +480,7 @@ Unit Test
 当前 Task 的验收条件满足
 ```
 
-## 26. 代码质量原则
+## 27. 代码质量原则
 
 优先：
 
@@ -459,11 +507,11 @@ Clear Responsibility
 后续新增或修改项目自有代码时，应同步维护相关中文注释；第三方上游快照、生成文件、
 Schema 导出文件和测试夹具不要求为了注释而改写。
 
-## 27. 依赖管理规则
+## 28. 依赖管理规则
 
 新增第三方依赖前，应判断是否真的需要、标准库是否可以解决、现有依赖是否已有类似能力。
 
-## 28. 当前阶段禁止提前实现的内容
+## 29. 当前阶段禁止提前实现的内容
 
 除非 Task 明确要求，V0.1 阶段不要提前建设：
 
@@ -483,7 +531,7 @@ Kubernetes
 
 > 跑通测井解释 Agent 主链路。
 
-## 29. 每个 Codex Task 的标准执行流程
+## 30. 每个 Codex Task 的标准执行流程
 
 1. 阅读当前 Task 指定的项目设计文档；
 2. 检查已有代码，不重复建设；
@@ -493,7 +541,7 @@ Kubernetes
 6. 检查架构偏差；
 7. 报告结果。
 
-## 30. 每次 Task 完成后必须报告
+## 31. 每次 Task 完成后必须报告
 
 必须报告：
 
@@ -513,13 +561,13 @@ Kubernetes
 No Architecture Issue found.
 ```
 
-## 31. Codex 不允许自行补造专业业务规则
+## 32. Codex 不允许自行补造专业业务规则
 
 如果项目文档没有明确油层判断阈值、Sw 阈值、孔隙度标准、有效厚度标准或专业计算公式，Codex 不得自行猜测并写入生产逻辑。
 
 应该保留 Interface、使用 Mock、增加 TODO 并记录待确认业务规则。
 
-## 32. 数据格式不确定时
+## 33. 数据格式不确定时
 
 当前测试井正式数据格式尚未最终确定。
 
@@ -539,7 +587,7 @@ No Architecture Issue found.
 Pending final well-data schema.
 ```
 
-## 33. 项目第一优先级
+## 34. 项目第一优先级
 
 当前项目第一阶段最重要的目标为：
 
@@ -547,7 +595,7 @@ Pending final well-data schema.
 
 在不破坏核心架构原则的前提下，优先保证一个简单、清晰、可测试的 V0.1 实现真正跑通。
 
-## 34. 最终原则
+## 35. 最终原则
 
 Codex 应始终遵循：
 
