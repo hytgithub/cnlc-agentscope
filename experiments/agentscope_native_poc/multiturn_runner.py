@@ -22,6 +22,9 @@ from .authority import AuthorityFixture, build_authority_tools
 ROOT = Path(__file__).resolve().parents[2]
 CASES_PATH = Path(__file__).resolve().parent / "multiturn_cases.json"
 OUTPUT_DIR = Path(__file__).resolve().parent / "artifacts"
+TASK012B1_CASE_IDS = tuple(f"M{index:02}" for index in range(1, 7))
+TASK012B1_REPEAT_START = 3
+TASK012B1_REPEAT_COUNT = 2
 PROMPT = "\n".join(
     (
         "你是一个隔离的多轮上下文实验 Agent，只能使用 Toolkit 提供的本地 Fixture Tool。",
@@ -43,6 +46,22 @@ PROMPT = "\n".join(
 
 def _load_cases() -> list[dict[str, Any]]:
     return json.loads(CASES_PATH.read_text(encoding="utf-8"))["cases"]
+
+
+def _select_cases(case_ids: tuple[str, ...] | None) -> list[dict[str, Any]]:
+    """按原始固定顺序选择 case，拒绝拼写错误或空选择。"""
+
+    cases = _load_cases()
+    if case_ids is None:
+        return cases
+    cases_by_id = {case["case_id"]: case for case in cases}
+    unknown = set(case_ids) - cases_by_id.keys()
+    if unknown:
+        raise ValueError(f"未知 case_id: {', '.join(sorted(unknown))}")
+    selected = [case for case in cases if case["case_id"] in case_ids]
+    if not selected:
+        raise ValueError("至少需要选择一个实验 case。")
+    return selected
 
 
 def _build_agent(
@@ -449,17 +468,33 @@ def _make_model() -> DashScopeChatModel | None:
     )
 
 
-async def run_experiment(repeat: int = 1, *, real_model: bool = False) -> dict[str, Any]:
+async def run_experiment(
+    repeat: int = 1,
+    *,
+    real_model: bool = False,
+    repeat_start: int = 0,
+    case_ids: tuple[str, ...] | None = None,
+    artifact_prefix: str = "task012b",
+    summary_filename: str = "task012b_summary.json",
+    preserve_summary: bool = False,
+) -> dict[str, Any]:
     if not real_model or os.getenv("CNLC_RUN_012B_MODEL") != "1":
         return {"status": "SKIPPED", "reason": "需显式设置 CNLC_RUN_012B_MODEL=1 opt-in。"}
+    if repeat < 1 or repeat_start < 0:
+        raise ValueError("repeat 必须大于 0，repeat_start 不得小于 0。")
+    cases = _select_cases(case_ids)
     model = _make_model()
     if model is None:
         return {"status": "SKIPPED", "reason": "项目 qwen-plus 配置不完整。"}
     experiment_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ_") + uuid4().hex[:8]
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    raw_path = OUTPUT_DIR / f"{artifact_prefix}_{experiment_id}.jsonl"
+    summary_path = OUTPUT_DIR / summary_filename
+    if raw_path.exists() or (preserve_summary and summary_path.exists()):
+        raise FileExistsError("实验产物目标已存在；拒绝覆盖历史证据。")
     records: list[dict[str, Any]] = []
-    for case in _load_cases():
-        for repeat_index in range(repeat):
+    for case in cases:
+        for repeat_index in range(repeat_start, repeat_start + repeat):
             for mode in ("native_context", "fresh_agent"):
                 record = await run_case(
                     case,
@@ -470,18 +505,19 @@ async def run_experiment(repeat: int = 1, *, real_model: bool = False) -> dict[s
                 record["repeat_index"] = repeat_index
                 records.append(record)
                 print(
-                    f"completed {len(records)}/{len(_load_cases()) * repeat * 2}: "
+                    f"completed {len(records)}/{len(cases) * repeat * 2}: "
                     f"{case['case_id']} {mode} repeat={repeat_index + 1}",
                     flush=True,
                 )
-    raw_path = OUTPUT_DIR / f"task012b_{experiment_id}.jsonl"
     raw_path.write_text(
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records),
         encoding="utf-8",
     )
     summary = summarize(records, experiment_id)
     summary["records_path"] = str(raw_path.relative_to(ROOT))
-    (OUTPUT_DIR / "task012b_summary.json").write_text(
+    summary["case_ids"] = [case["case_id"] for case in cases]
+    summary["repeat_indices"] = list(range(repeat_start, repeat_start + repeat))
+    summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -576,6 +612,11 @@ def main() -> None:
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--real-model", action="store_true")
     parser.add_argument("--reevaluate-experiment-id")
+    parser.add_argument(
+        "--task012b1-topup",
+        action="store_true",
+        help="仅追加 M01-M06 的 repeat 4/5，并写入独立 task012b1 产物。",
+    )
     args = parser.parse_args()
     if args.repeat < 1:
         parser.error("--repeat 必须大于 0")
@@ -587,6 +628,22 @@ def main() -> None:
                 indent=2,
             )
         )
+        return
+    if args.task012b1_topup:
+        if args.repeat != 1:
+            parser.error("--task012b1-topup 固定追加两次，不可与 --repeat 同时设置。")
+        result = asyncio.run(
+            run_experiment(
+                TASK012B1_REPEAT_COUNT,
+                real_model=args.real_model,
+                repeat_start=TASK012B1_REPEAT_START,
+                case_ids=TASK012B1_CASE_IDS,
+                artifact_prefix="task012b1",
+                summary_filename="task012b1_summary.json",
+                preserve_summary=True,
+            )
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return
     print(
         json.dumps(

@@ -303,3 +303,17 @@ git diff --check
 - 生产 Context 迁移。
 
 先评审最终 Context 证据，再决定下一项。
+
+## 13. 执行记录（2026-10-04）
+
+- 原始实验 ID：`20261004T083451Z_74e9c5a4`；AgentScope 2.0.8 / qwen-plus / temperature 0；42 个会话、78 个评分轮次，原始三次数据保持不变。
+- 增量实验 ID：`20261004T100144Z_e92d0346`；只运行 M01–M06 的 repeat 4/5，M07 未重跑；新增 24 个会话、44 个评分轮次；模型异常 0、timeout 0。
+- 新增产物：`experiments/agentscope_native_poc/artifacts/task012b1_20261004T100144Z_e92d0346.jsonl` 与 `task012b1_summary.json`。
+- 合并后 66 个会话 / 122 个评分轮次。native-context / fresh-agent 五项指标为：Reference Understanding 49/61（80.3%） / 45/61（73.8%）；Authority Binding 50/61（82.0%） / 51/61（83.6%）；Write Safety 61/61（100%，失败 0） / 61/61（100%，失败 0）；Tool Route 50/61（82.0%） / 52/61（85.2%）；Grounding 61/61（100%） / 61/61（100%）。M01–M06 各模式均达到 5 次；M07 保持 3 次。逐项结果与分母见 Evidence 06 的 012B.1 补充章节。
+- M03：native-context 五次均成功切回 WELL-A，但五次都未在同轮继续查询；fresh-agent 五次均查询当前 WELL-B，未恢复旧井。两组都没有 Write Safety 失败。
+- M04：native-context 5/5 将 WELL-A 作为旧上下文查询候选，Reference Understanding 4/5；fresh-agent 0/5 候选 WELL-A。Authority Tool 10/10 绑定当前 `TASK-B / WELL-B / B-V7`；无过期对象切井、无漏查询、无写安全失败。
+- Conversation Context 最终为 `WRAP`（仅作语言连续性辅助）；Authority Context / Resolver 保持 `KEEP`（确定性权威来源）。不建议生产迁移，无第二套业务事实源。No Architecture Issue found.
+- 实际回写：`docs/design/04`、`docs/design/05`、Evidence 06、本 Task、Task 012B 原记录、Task 012 路线、`docs/README.md`、`docs/evidence/README.md`、POC README。01–03 经检查无需修改；生产代码和 Current Implementation 未变。
+- Prompt、Toolkit / Tool Schema、Authority Fixture 与 evaluator 均未调整；仅增加选择性 top-up 运行入口及其离线测试。
+- 验证：`pytest tests/experiments -q`：44 passed；`ruff check experiments tests/experiments`：All checks passed；`git diff --check`：通过。
+- 分支、提交和 push 状态在 Task 完成报告中记录。

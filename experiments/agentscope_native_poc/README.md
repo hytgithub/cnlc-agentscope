@@ -21,6 +21,15 @@ CNLC_RUN_012B_MODEL=1 CNLC_MODEL_ENV_FILE=/path/to/project/.env \
 
 若 Grounding 规则调整，可使用 `--reevaluate-experiment-id <experiment-id>` 仅基于 JSONL 离线重算，不会重复调用模型。
 
+Task 012B.1 仅补跑 M01–M06 的第 4、5 次，不重跑已满足最低次数的 M07；沿用同一 Prompt、Toolkit、Fixture 和 evaluator，不调整模型行为。真实 qwen-plus 增量运行命令：
+
+```bash
+CNLC_RUN_012B_MODEL=1 CNLC_MODEL_ENV_FILE=/path/to/project/.env \
+  python -m experiments.agentscope_native_poc.multiturn_runner --real-model --task012b1-topup
+```
+
+增量原始记录写入 `artifacts/task012b1_<experiment-id>.jsonl`，摘要写入 `artifacts/task012b1_summary.json`；运行器拒绝覆盖同名 Task 012B.1 证据。每条记录用 `repeat_index` 3/4 表示第 4/5 次。
+
 该目录是独立的 AgentScope 2.0.8 POC。`no_skill` 与 `with_skill` 共用基础 System Prompt、八个 Mock Tool、场景输入和 Fixture；实验变量是 Toolkit 是否加载本地 Skill。Skill 元信息由 AgentScope 自动追加到有效 system prompt，这是 Skill 配置本身的预期差异。所有 Tool 结果都标注为 Task 012A 测试 Fixture，不代表真实测井数据，也不调用专业算法、数据库、Redis 或公司 API。
 
 Tool 的状态值仅属于本实验：`ALLOWED`（允许模拟修改）、`UNSUPPORTED`（当前 Fixture 不支持）、`NEED_CLARIFICATION`（需要补充信息）、`SIMULATED`（仅模拟 Fixture 变化）、`OK`（只读调用成功）、`REJECTED`（Mock 拒绝）和 `NOT_FOUND`（Fixture 中无此对象）。Tool 只访问进程内状态，不发起 I/O，因此没有外部 Tool 超时配置。

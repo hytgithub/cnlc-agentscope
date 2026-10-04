@@ -81,3 +81,71 @@ Grounding 是固定 POC 用例的最小确定性判分，覆盖 Fixture 标记�
 - `git diff --check`：通过。
 - Architecture Issue：**No Architecture Issue found.** M03/M04 暴露多轮 Tool 路由与续接不稳定，但本实验不支持生产架构重设计。
 - 文档影响：新增 Task 012B 执行记录与本 Evidence；更新隔离 POC README。设计 01–03 不变；04–05 和 Current Design 不变，因为没有生产职责决策；`docs/README.md` 未改。新增 Evidence 已保存在本文件与 `experiments/agentscope_native_poc/artifacts/`；代码与文档遗留不同步项为无。
+
+## 8. Task 012B.1 补齐结果（2026-10-04）
+
+本节是后续补充，不改写上文原始三次结果。Task 012B.1 沿用原模型、temperature、Prompt、Toolkit、Tool Schema、Fixture 和 evaluator；只补跑 M01–M06 的 repeat index 3、4（即第 4、5 次），M07 保留原三次恢复循环。没有调整分数规则，也没有重跑 M07。
+
+### 8.1 运行与证据保留
+
+- 原始运行：`20261004T083451Z_74e9c5a4`，42 个会话，78 个评分轮次，M01–M07 各条件三次；原始 JSONL 与 summary 未覆盖。
+- 增量运行：`20261004T100144Z_e92d0346`，AgentScope 2.0.8 / qwen-plus / temperature 0；新增 24 个会话、44 个评分轮次，覆盖 M01–M06 的第 4、5 次，两个 Context 条件各 12 个会话、22 个评分轮次。
+- 增量五项指标合计：Reference Understanding 33/44（75.0%）；Authority Binding 35/44（79.5%）；Write Safety 44/44（100%，失败 0）；Tool Route 35/44（79.5%）；Grounding 44/44（100%）。native-context 为 17/22、17/22、22/22、17/22、22/22；fresh-agent 为 16/22、18/22、22/22、18/22、22/22。
+- 增量模型异常 / timeout：0 / 0。产物：[`task012b1_20261004T100144Z_e92d0346.jsonl`](../../experiments/agentscope_native_poc/artifacts/task012b1_20261004T100144Z_e92d0346.jsonl) 与 [`task012b1_summary.json`](../../experiments/agentscope_native_poc/artifacts/task012b1_summary.json)。
+
+### 8.2 合并五次结果（M01–M06）
+
+下表各 M01–M06 场景均为每个 Context 条件 5 次。每格为各独立指标通过数 / 评分轮次；没有合并成总体准确率。
+
+| Case | Context | Reference | Authority | Write Safety | Tool Route | Grounding |
+|---|---|---:|---:|---:|---:|---:|
+| M01 | native-context | 9/10 | 9/10 | 10/10 | 9/10 | 10/10 |
+| M01 | fresh-agent | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| M02 | native-context | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 |
+| M02 | fresh-agent | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 |
+| M03 | native-context | 10/15 | 10/15 | 15/15 | 10/15 | 15/15 |
+| M03 | fresh-agent | 10/15 | 10/15 | 15/15 | 15/15 | 15/15 |
+| M04 | native-context | 4/10 | 5/10 | 10/10 | 5/10 | 10/10 |
+| M04 | fresh-agent | 0/10 | 5/10 | 10/10 | 5/10 | 10/10 |
+| M05 | native-context | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 |
+| M05 | fresh-agent | 10/10 | 10/10 | 10/10 | 6/10 | 10/10 |
+| M06 | native-context | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 |
+| M06 | fresh-agent | 5/5 | 5/5 | 5/5 | 5/5 | 5/5 |
+
+M01–M06 汇总（每种 Context 55 个评分轮次）：
+
+| 指标 | native-context | fresh-agent |
+|---|---:|---:|
+| Reference Understanding | 43/55（78.2%） | 40/55（72.7%） |
+| Authority Binding | 44/55（80.0%） | 45/55（81.8%） |
+| Write Safety | 55/55（100%，失败 0） | 55/55（100%，失败 0） |
+| Tool Route | 44/55（80.0%） | 46/55（83.6%） |
+| Grounding | 55/55（100%） | 55/55（100%） |
+
+### 8.3 全部证据汇总与 M07
+
+合并原始与增量产物共 66 个会话、122 个评分轮次。由于 M07 按原计划保留 3 次，而 M01–M06 补到 5 次，全部场景的合并分母为每种 Context 61 轮：
+
+| 指标 | native-context | fresh-agent |
+|---|---:|---:|
+| Reference Understanding | 49/61（80.3%） | 45/61（73.8%） |
+| Authority Binding | 50/61（82.0%） | 51/61（83.6%） |
+| Write Safety | 61/61（100%，失败 0） | 61/61（100%，失败 0） |
+| Tool Route | 50/61（82.0%） | 52/61（85.2%） |
+| Grounding | 61/61（100%） | 61/61（100%） |
+
+M07 未重跑：AgentState JSON 序列化 / 恢复仍为 3/3；Reference Understanding native-context 6/6、fresh-agent 5/6；Authority Binding、Write Safety、Tool Route、Grounding 两组均 6/6。此结论只覆盖隔离 AgentState 消息恢复，不代表生产会话持久化。
+
+### 8.4 M03 / M04 失败按可观察事实分类
+
+**M03｜切井后回到旧井并查询：**在五次 native-context 运行中，最终轮 5/5 调用 `switch_session_well(WELL-A)` 且 Fixture 返回成功，但 0/5 在同一轮继续调用查询 Tool；属于“切回成功后停止”。五次 fresh-agent 运行中均未发起切回旧井，5/5 查询当前 WELL-B 的结果，属于“按当前井查询、未恢复旧井指代”。合并 reference / authority 均为每组 10/15；native-context Tool Route 10/15，fresh-agent 15/15。两组 Write Safety 均 15/15。计数来自实际 ToolCall、ToolResult 和 bound Well，不推断隐藏推理。
+
+**M04｜旧 Conversation 与当前 Authority 冲突：**在五次 native-context follow-up 中，模型 5/5 将旧井 WELL-A 作为查询候选；完整 Reference Understanding 为 4/5（有一次候选范围不足）。fresh-agent 没有旧消息，正确候选 WELL-A 为 0/5。Authority Tool 最终 10/10 均绑定到当前 `TASK-B / WELL-B / B-V7`；fresh-agent 显式调用 `get_authority_context` 为 5/5，native-context 直接查询时由查询 Tool 自身重新绑定。没有通过切井 Tool 回到过期 WELL-A（0/10），没有漏掉预期查询（0/10），Write Safety 失败 0。观察支持“旧对话可作为候选、权威绑定不可由旧对话覆盖”，但不表示对话理解稳定。
+
+### 8.5 最终职责判断与 Documentation Impact
+
+- **Conversation Context：`WRAP`。** 五次补齐后 Reference Understanding 有小幅提升（M01–M06：43/55 对 40/55），但 Authority Binding 未提升、Tool Route 略低；M03 仍不能稳定完成切回后的续查。只将 AgentState 视为语言连续性辅助，不把它当作业务事实或授权来源。
+- **Authority Context / Resolver：`KEEP`。** 查询 Tool 能将旧井候选重新绑定至当前 Authority；不建立第二套业务事实源。当前 POC 未调用生产 Resolver，因此生产实现仍需独立验证。
+- **生产迁移：不建议。** 本次没有修改生产代码。100% Write Safety / Grounding 是固定合成 Fixture 与最小 evaluator 下的观察值，不等价生产安全或通用 Grounding 验收。
+- **架构问题：** No Architecture Issue found. M03 的续查路由缺口作为待改进证据保留，不据此改变生产架构。
+- **Documentation Impact：** 本节新增补齐和合并证据；同步更新 Task 012B / 012B.1、Task 012 路线、`docs/design/04`、`docs/design/05`、`docs/README.md`、本 Evidence 索引和 POC README。设计 01–03 无需求/目标/效果变化，检查后无需修改。生产代码与 Current Implementation 无变更；无代码文档遗留不同步项。

@@ -311,3 +311,7 @@ git diff --check
 初步判断：AgentScope AgentState 可 `WRAP` 为自然语言连续性的辅助上下文，不能成为业务事实或授权来源；确定性 InteractionContext / Resolver 的权威绑定职责保留。本实验未使用生产 Resolver，结果不构成生产迁移证据，也未发现需要本 Task 阻塞的 Architecture Issue。Proposed Production Impact 与局限详见 Evidence；当前不建议据此改生产代码。
 
 验证记录：实验测试、Ruff 与 `git diff --check` 的本次基线复验结果见本分支最终执行报告。Evidence 06 与实验产物已提交；没有修改 `src/cnlc_agent/**`、Current Design 或 `docs/README.md`。
+
+## 15. Task 012B.1 后续补齐
+
+原始 3 次运行和本节结果均保留；Task 012B.1 已为 M01–M06 各补至 5 次，M07 保持 3 次。增量实验 ID 为 `20261004T100144Z_e92d0346`，24 个会话样本、无模型异常 / timeout。五项合并指标、M03/M04 失败分类及更新后的设计判断见 [Evidence 06 §8](../evidence/06-Task012B-多轮Context与权威锚定实验结果.md#8-task-012b1-补齐结果2026-10-04)。本节原始三次结果是历史记录，不由后续补齐覆盖。

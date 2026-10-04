@@ -22,11 +22,15 @@ from experiments.agentscope_native_poc.authority import (
 )
 from experiments.agentscope_native_poc.multiturn_runner import (
     PROMPT,
+    TASK012B1_CASE_IDS,
+    TASK012B1_REPEAT_COUNT,
+    TASK012B1_REPEAT_START,
     _build_agent,
     _calls_for_turn,
     _grounding_outcome,
     _load_cases,
     _metric_scores,
+    _select_cases,
     summarize,
 )
 
@@ -57,6 +61,25 @@ def test_multiturn_cases_define_m01_to_m07_and_five_separate_metrics():
         "switch_session_well",
         "preflight_local_modify",
     }
+
+
+def test_task012b1_topup_selects_only_m01_to_m06_and_repeat_four_five():
+    selected = _select_cases(TASK012B1_CASE_IDS)
+    assert [case["case_id"] for case in selected] == [f"M{i:02}" for i in range(1, 7)]
+    assert TASK012B1_REPEAT_START == 3
+    assert TASK012B1_REPEAT_COUNT == 2
+    assert list(range(TASK012B1_REPEAT_START, TASK012B1_REPEAT_START + TASK012B1_REPEAT_COUNT)) == [
+        3,
+        4,
+    ]
+    assert "M07" not in {case["case_id"] for case in selected}
+
+
+def test_case_selector_rejects_unknown_and_empty_selection():
+    with pytest.raises(ValueError, match="未知 case_id"):
+        _select_cases(("M99",))
+    with pytest.raises(ValueError, match="至少需要选择一个实验 case"):
+        _select_cases(())
 
 
 @pytest.mark.asyncio

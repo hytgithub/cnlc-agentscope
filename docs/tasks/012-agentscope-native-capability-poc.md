@@ -29,8 +29,8 @@
 
 1. 012A：Prompt + Toolkit + Skill 动态工具选择 POC（已执行）
 2. 012A.1：Skill 稳定性、重复运行与 Response Grounding（已执行）
-3. 012B：真实多轮 Context 与权威业务锚定边界（已执行；原定 5 次重复仅完成 3 次）
-4. 012B.1：补齐 M01～M06 第 4、5 次、更新 Evidence 06，并回写 04/05（下一步）
+3. 012B：真实多轮 Context 与权威业务锚定边界（已执行；原始三次运行证据保留）
+4. 012B.1：已补齐 M01～M06 第 4、5 次、保留 M07 三次，并更新 Evidence 06、04/05；012B 补齐闭环完成
 5. 后续按证据决定：原生 Task/Plan 对照、HITL/Interrupt、TracingMiddleware
 6. 012E：当前阶段职责边界审计（已形成阶段性结论，不视为最终架构定稿）
 
