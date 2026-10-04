@@ -28,7 +28,7 @@
 
 ## Task 执行记录（Task Execution Record）
 
-`docs/tasks/` 保存每个 Task 的实现与验证记录。当前前后端和首次解释流式联调记录见 [tasks/010-frontend-backend-integration.md](tasks/010-frontend-backend-integration.md)。执行记录说明当时环境与结果，不替代 Current Design。Task 10.3 见 [tasks/010-3-interaction-robustness.md](tasks/010-3-interaction-robustness.md)，Task 10.4 见 [tasks/010-4-conversation-persistence.md](tasks/010-4-conversation-persistence.md)。
+`docs/tasks/` 保存每个 Task 的实现与验证记录。当前前后端和首次解释流式联调记录见 [tasks/010-frontend-backend-integration.md](tasks/010-frontend-backend-integration.md)。执行记录说明当时环境与结果，不替代 Current Design。Task 10.3 见 [tasks/010-3-interaction-robustness.md](tasks/010-3-interaction-robustness.md)，Task 10.4 见 [tasks/010-4-conversation-persistence.md](tasks/010-4-conversation-persistence.md)。Task 012 的原生能力实验与职责决策见 [tasks/012-agentscope-native-capability-poc.md](tasks/012-agentscope-native-capability-poc.md)、[Task 012A.1](tasks/012a-1-skill-stability-grounding-poc.md) 和 [Task 012E](tasks/012e-agentscope-native-final-responsibility-boundaries.md)。
 
 ## 验收（Acceptance）
 

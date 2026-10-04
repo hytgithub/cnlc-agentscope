@@ -24,6 +24,7 @@
 - [08-intent-and-interaction-design.md](08-intent-and-interaction-design.md)：意图识别与任务级 Tool；
 - [architecture/four-stage-execution-model.md](architecture/four-stage-execution-model.md)：四阶段运行、确认、依赖及失效契约；
 - [09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md)：解释过程 SSE 与前端职责。
+- [tasks/012e-agentscope-native-final-responsibility-boundaries.md](tasks/012e-agentscope-native-final-responsibility-boundaries.md)：AgentScope 原生能力、Operation 安全链路与 Response Grounding 的 Task 012E 决策审计。
 
 `06-interactive-agent-gap-analysis.md` 是历史差距分析，不作为当前能力事实来源。
 
@@ -877,3 +878,5 @@ Task / Execution / ToolRun / Report
 最终边界保持：
 
 > **Agent 理解意图，Application 决定可执行动作与依赖，Workflow 控制专业流程，Tool 执行能力，PostgreSQL 保存事实。**
+
+Task 012E 将其细化为 AgentScope 的 ReAct / Toolkit 仅产生并执行受批准的候选调用；OperationPlan 是项目意图合同，Resolver/Validator/Policy/Bridge 将候选绑定并校验，Domain State / StageOrchestrator 保存确定性业务状态。Skill 是可选方法知识，不能作为控制组件。报告、参数与版本回复应绑定 ToolResult / 权威 State；具体迁移方案和模块决策见 [Task 012E](tasks/012e-agentscope-native-final-responsibility-boundaries.md)。本段是架构边界补充，不表示本 Task 修改了生产实现。

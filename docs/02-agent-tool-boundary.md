@@ -843,3 +843,11 @@ Report
 - 它需要哪些 Tool；
 - 它与已有 Agent 如何隔离；
 - 增加 Agent 后带来的收益是什么。
+
+## 27. AgentScope 原生能力与确定性业务边界
+
+Task 012E 基于当前 AgentScope 2.0.8 源码、生产代码和 012A.1 真实模型证据，明确：AgentScope Agent/ReAct 负责自然语言理解和候选 Tool 选择；Toolkit 负责批准能力的注册、schema 暴露与调用；这些原生能力不替代项目授权、task/execution/version/scope 解析、写前校验、原子性、阶段状态和业务持久化。
+
+OperationPlan 是稳定、可审计、可拒绝的用户意图合同，不是第二个模型 Planner，也不是执行计划。Resolver 将模型给出的指代候选绑定到权威身份与范围；Validator/Policy 和应用执行边界始终由确定性代码强制。Skill 只能作为可选方法知识；Task 012A.1 的 qwen-plus 运行中 SkillViewer 为 0/60，不能依赖模型读取 Skill 保证业务安全。
+
+逐模块决策与 Response Grounding 边界见 [Task 012E](tasks/012e-agentscope-native-final-responsibility-boundaries.md)。这是目标职责决策和代码审计，不表示本节引用的生产代码已在本 Task 中重构。

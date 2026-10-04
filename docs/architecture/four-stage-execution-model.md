@@ -159,7 +159,13 @@ StageRun。仓库中的来源 Execution 快照绝不回写，V1 始终保留当�
 后续依赖：正式 DatasetRevision / Patch 持久化、参数与报告配置版本存储、带并发控制的
 确认 / 修改应用接口、阶段展示与人工确认调度。本任务不新增基础设施或专业业务规则。
 
-No Architecture Issue found.
+## 7. Task 012E 职责边界补充
+
+Task 012E 审计确认当前模型为四个 Domain 阶段，用户确认是门控而非第五阶段。Agent 可提出查询、确认或局部重跑的意图；是否存在可推进阶段、依赖是否满足、结果是否有效以及确认状态如何持久化，仍由 StageOrchestrator 和 Domain State Machine 决定。AgentScope AgentState Task/Goal 不作为 StageRun / Execution 的替代。
+
+口径待确认：当前人工模式的 StageOrchestrator 可让 `REPORT`（报告生成）进入 `WAITING_CONFIRM`（等待确认）；用户的目标流程说明仅列到解释完成后的确认，再生成报告。Task 012E 将这点标为 `VERIFY`（待核实），在业务确认前不修改现有实现或本四阶段模型。详见 [Task 012E](../tasks/012e-agentscope-native-final-responsibility-boundaries.md)。
+
+Task 11A 完成时记录为 No Architecture Issue found；后续 Task 012E 发现 REPORT 确认口径待业务核实，详见下文 Task 012E 补充。该历史结论保留其当时语境。
 
 ### 本次验证记录
 

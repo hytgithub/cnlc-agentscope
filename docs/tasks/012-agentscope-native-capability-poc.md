@@ -21,6 +21,10 @@
 
 不得把 GoalPipeline 或 AgentState Task 直接视为现有 OperationPlan / ExecutionPlan 的替代品，必须经过对照实验。
 
+### 2.0.8 本地源码核验补充（Task 012E）
+
+以上能力列表保留为 Task 012 建立时的历史调查记录。Task 012E 对当前仓库 `.venv` 内安装的 AgentScope 2.0.8 源码再次核验：可见 `TaskContext` 和通用 `Task` 数据对象，但没有找到 `TaskCreate`、`TaskGet`、`TaskList`、`TaskUpdate` CRUD API 或同名内置 Tools。因此“有 Task 上下文数据模型”已核实，“官方提供上述 Task CRUD API”在本安装版本中未核实，不得据此替代项目 OperationPlan、ExecutionPlan、StageRun 或业务持久化。详见 [Task 012E](012e-agentscope-native-final-responsibility-boundaries.md)。本说明补充版本证据，不改写当时实验事实。
+
 ## 子任务
 
 1. 012A：Prompt + Toolkit + Skill 动态工具选择 POC

@@ -112,3 +112,9 @@ W01-W10、专业 Tool、RUN（执行）/ REUSE（复用）、最终真实报告�
 COMPARE（比较）、SCENARIO（试算）、任意局部重算、历史版本分支写、层段编辑、人工结果覆盖、
 条件链执行与 Task11 依赖图仍未开放。W01-W10、三核心 Agent、DB Schema 与 migration 未改变。
 详细验收见 [E2 执行记录](tasks/010-5e2-react-operation-integration.md)。
+
+## 7. AgentScope 职责核验补充
+
+Task 012E 对照 AgentScope 2.0.8 本地源码与真实模型实验后，确认 ReAct 的 Tool 选择不能替代 OperationPlan 这一稳定意图合同；Agent 给出的 task、execution、version、scope 仅是候选，必须经项目 Resolver、身份绑定、Validator/Policy 和写前重校验后才能到达应用命令。Skill 为可选方法知识，不是流程保证或权限组件；当前 qwen-plus 真实实验的 SkillViewer 调用为 0/60。
+
+本设计描述的当前工具/解析行为没有因该审计自动改变。模块完整决策、四阶段与确认口径差异、Grounding Response Contract 和后续迁移次序见 [Task 012E](tasks/012e-agentscope-native-final-responsibility-boundaries.md)。
