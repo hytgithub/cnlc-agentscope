@@ -1,0 +1,146 @@
+{
+  "status": "REEVALUATED",
+  "model": "qwen-plus",
+  "scenarios": 12,
+  "results": {
+    "no_skill": {
+      "passed": 7,
+      "total": 12,
+      "skill_viewer_calls": 0
+    },
+    "with_skill": {
+      "passed": 9,
+      "total": 12,
+      "skill_viewer_calls": 0
+    }
+  },
+  "comparison": [
+    {
+      "case_id": "01",
+      "no_skill_pass": false,
+      "with_skill_pass": false,
+      "no_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_tools": []
+    },
+    {
+      "case_id": "02",
+      "no_skill_pass": false,
+      "with_skill_pass": true,
+      "no_skill_tools": [
+        "get_current_context"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ]
+    },
+    {
+      "case_id": "03",
+      "no_skill_pass": false,
+      "with_skill_pass": false,
+      "no_skill_tools": [],
+      "with_skill_tools": []
+    },
+    {
+      "case_id": "04",
+      "no_skill_pass": true,
+      "with_skill_pass": true,
+      "no_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "query_interpretation_result"
+      ]
+    },
+    {
+      "case_id": "05",
+      "no_skill_pass": true,
+      "with_skill_pass": true,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter"
+      ]
+    },
+    {
+      "case_id": "06",
+      "no_skill_pass": true,
+      "with_skill_pass": false,
+      "no_skill_tools": [
+        "get_current_context",
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "get_current_context"
+      ]
+    },
+    {
+      "case_id": "07",
+      "no_skill_pass": false,
+      "with_skill_pass": true,
+      "no_skill_tools": [],
+      "with_skill_tools": [
+        "get_current_context",
+        "compare_result_versions"
+      ]
+    },
+    {
+      "case_id": "08",
+      "no_skill_pass": true,
+      "with_skill_pass": true,
+      "no_skill_tools": [
+        "read_report"
+      ],
+      "with_skill_tools": [
+        "read_report"
+      ]
+    },
+    {
+      "case_id": "09",
+      "no_skill_pass": true,
+      "with_skill_pass": true,
+      "no_skill_tools": [
+        "confirm_stage"
+      ],
+      "with_skill_tools": [
+        "get_current_context",
+        "confirm_stage"
+      ]
+    },
+    {
+      "case_id": "10",
+      "no_skill_pass": false,
+      "with_skill_pass": true,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "preflight_modify_parameter"
+      ]
+    },
+    {
+      "case_id": "11",
+      "no_skill_pass": true,
+      "with_skill_pass": true,
+      "no_skill_tools": [],
+      "with_skill_tools": []
+    },
+    {
+      "case_id": "12",
+      "no_skill_pass": true,
+      "with_skill_pass": true,
+      "no_skill_tools": [
+        "preflight_modify_parameter"
+      ],
+      "with_skill_tools": [
+        "preflight_modify_parameter"
+      ]
+    }
+  ]
+}

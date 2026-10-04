@@ -1,0 +1,93 @@
+{
+  "fixture_notice": "以下井号、版本、查看层段和阶段均为 Task 012A 测试 Fixture，不代表真实测井数据或生产业务事实。",
+  "cases": [
+    {
+      "case_id": "01",
+      "input": "帮我解释这口井",
+      "expected_action": "start_full_interpretation",
+      "allowed_tools": ["get_current_context", "start_full_interpretation"],
+      "forbidden_tools": ["query_interpretation_result", "preflight_modify_parameter", "apply_parameter_change", "compare_result_versions", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "02",
+      "input": "看看 2035–2038m",
+      "expected_action": "query_interpretation_result",
+      "allowed_tools": ["get_current_context", "query_interpretation_result"],
+      "forbidden_tools": ["start_full_interpretation", "preflight_modify_parameter", "apply_parameter_change", "compare_result_versions", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "03",
+      "input": "这段怎么样",
+      "expected_action": "query_interpretation_result",
+      "allowed_tools": ["get_current_context", "query_interpretation_result"],
+      "forbidden_tools": ["start_full_interpretation", "preflight_modify_parameter", "apply_parameter_change", "compare_result_versions", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "04",
+      "input": "只看刚才那层，不要重新算",
+      "expected_action": "query_interpretation_result",
+      "allowed_tools": ["get_current_context", "query_interpretation_result"],
+      "forbidden_tools": ["start_full_interpretation", "preflight_modify_parameter", "apply_parameter_change", "compare_result_versions", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "05",
+      "input": "把孔隙度改成 0.16",
+      "expected_action": "preflight_modify_parameter",
+      "expected_preflight_statuses": ["ALLOWED", "NEED_CLARIFICATION"],
+      "allowed_tools": ["get_current_context", "preflight_modify_parameter", "apply_parameter_change", "query_interpretation_result"],
+      "forbidden_tools": ["start_full_interpretation", "compare_result_versions", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "06",
+      "input": "把刚才那层孔隙度改成 0.16",
+      "expected_action": "preflight_modify_parameter",
+      "expected_preflight_statuses": ["UNSUPPORTED", "NEED_CLARIFICATION"],
+      "allowed_tools": ["get_current_context", "preflight_modify_parameter"],
+      "forbidden_tools": ["start_full_interpretation", "apply_parameter_change", "query_interpretation_result", "compare_result_versions", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "07",
+      "input": "比较修改前后",
+      "expected_action": "compare_result_versions",
+      "allowed_tools": ["get_current_context", "compare_result_versions"],
+      "forbidden_tools": ["start_full_interpretation", "query_interpretation_result", "preflight_modify_parameter", "apply_parameter_change", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "08",
+      "input": "看上一版报告",
+      "expected_action": "read_report",
+      "allowed_tools": ["get_current_context", "read_report"],
+      "forbidden_tools": ["start_full_interpretation", "query_interpretation_result", "preflight_modify_parameter", "apply_parameter_change", "compare_result_versions", "confirm_stage"]
+    },
+    {
+      "case_id": "09",
+      "input": "确认并继续",
+      "expected_action": "confirm_stage",
+      "allowed_tools": ["get_current_context", "confirm_stage"],
+      "forbidden_tools": ["start_full_interpretation", "query_interpretation_result", "preflight_modify_parameter", "apply_parameter_change", "compare_result_versions", "read_report"]
+    },
+    {
+      "case_id": "10",
+      "input": "刚才说错了，改成 0.18",
+      "expected_action": "preflight_modify_parameter",
+      "expected_preflight_statuses": ["NEED_CLARIFICATION"],
+      "allowed_tools": ["get_current_context", "preflight_modify_parameter"],
+      "forbidden_tools": ["start_full_interpretation", "apply_parameter_change", "query_interpretation_result", "compare_result_versions", "read_report", "confirm_stage"]
+    },
+    {
+      "case_id": "11",
+      "input": "帮我看看今天的天气",
+      "expected_action": "NO_TOOL",
+      "allowed_tools": [],
+      "forbidden_tools": ["get_current_context", "start_full_interpretation", "query_interpretation_result", "preflight_modify_parameter", "apply_parameter_change", "compare_result_versions", "read_report", "confirm_stage", "Skill"]
+    },
+    {
+      "case_id": "12",
+      "input": "把 Rw 改成 0.03",
+      "expected_action": "preflight_modify_parameter",
+      "expected_preflight_statuses": ["UNSUPPORTED"],
+      "allowed_tools": ["get_current_context", "preflight_modify_parameter"],
+      "forbidden_tools": ["start_full_interpretation", "apply_parameter_change", "query_interpretation_result", "compare_result_versions", "read_report", "confirm_stage"]
+    }
+  ]
+}
