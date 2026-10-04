@@ -15,9 +15,17 @@ from cnlc_agent.domain.execution import (
     ExecutionStatus,
     PlanningReason,
 )
-from cnlc_agent.domain.inputs import InterpretationInputVersion
+from cnlc_agent.domain.inputs import InputPayloadKind, InterpretationInputVersion
 from cnlc_agent.domain.models import Contract, JsonObject, TaskRequest
 from cnlc_agent.domain.override import InterpretationOverride
+from cnlc_agent.domain.response_evidence import (
+    ResponseEvidenceEnvelope,
+    ResponseEvidenceKind,
+    ResponseEvidenceRef,
+    ResponseSourceType,
+    response_envelope_from_task_result,
+)
+from cnlc_agent.domain.tool_run import ToolExecutionMode
 
 
 class GetStatusCommand(Contract):
@@ -74,6 +82,11 @@ class TaskCommandResult(Contract):
     missing_data: list[JsonObject] = Field(default_factory=list)
     warning_count: int = 0
     review_required: bool = False
+    source_type: ResponseSourceType = ResponseSourceType.UNKNOWN
+    evidence_refs: tuple[ResponseEvidenceRef, ...] = ()
+    response_evidence: ResponseEvidenceEnvelope | None = None
+    confirmed_stage: str | None = None
+    confirmed_stage_run_id: str | None = None
 
 
 class TaskCommands:
@@ -192,9 +205,7 @@ class TaskCommands:
         self,
         task_id: str,
         execution_id: str,
-        command: Literal[
-            "START", "MODIFY", "FULL_RERUN", "STATUS", "GET_REPORT", "CONFIRM"
-        ],
+        command: Literal["START", "MODIFY", "FULL_RERUN", "STATUS", "GET_REPORT", "CONFIRM"],
         include_report: bool = False,
     ) -> TaskCommandResult:
         """只挑选可信的标识、步骤与统计值，报告来自 Execution.markdown。"""
@@ -205,8 +216,51 @@ class TaskCommands:
         task = await self.service.repository.get_task(task_id)
         assert task is not None
         runs = await self.service.list_tool_runs(task_id, execution_id)
+        input_version = (
+            await self.service.repository.get_input_version(execution.input_version_id)
+            if execution.input_version_id
+            else None
+        )
         state = execution.state_snapshot
-        return TaskCommandResult(
+        source_type = _response_source_type(input_version, runs)
+        evidence_refs = [
+            ResponseEvidenceRef(kind=ResponseEvidenceKind.TASK, reference_id=task_id),
+            ResponseEvidenceRef(
+                kind=ResponseEvidenceKind.EXECUTION,
+                reference_id=execution_id,
+                source_type=source_type,
+            ),
+        ]
+        if input_version is not None:
+            evidence_refs.append(
+                ResponseEvidenceRef(
+                    kind=ResponseEvidenceKind.INPUT_VERSION,
+                    reference_id=input_version.input_version_id,
+                    source_type=(
+                        ResponseSourceType.FIXTURE
+                        if input_version.payload_kind == InputPayloadKind.FIXTURE
+                        else ResponseSourceType.REAL
+                    ),
+                )
+            )
+        evidence_refs.extend(
+            ResponseEvidenceRef(
+                kind=ResponseEvidenceKind.TOOL_RUN,
+                reference_id=run.tool_run_id,
+                source_type=_source_for_tool_mode(run.execution_mode),
+            )
+            for run in runs
+        )
+        report_ready = execution.status in TERMINAL_EXECUTION_STATUSES and bool(execution.markdown)
+        if report_ready:
+            evidence_refs.append(
+                ResponseEvidenceRef(
+                    kind=ResponseEvidenceKind.REPORT,
+                    reference_id=execution_id,
+                    source_type=source_type,
+                )
+            )
+        result = TaskCommandResult(
             command=command,
             task_id=task_id,
             well_id=task.well_id,
@@ -245,9 +299,7 @@ class TaskCommands:
             ],
             warning_count=len(state.warnings),
             review_required=state.review_required,
-            report_ready=(
-                execution.status in TERMINAL_EXECUTION_STATUSES and bool(execution.markdown)
-            ),
+            report_ready=report_ready,
             tool_run_summary={
                 "count": len(runs),
                 "last_tool": runs[-1].tool_code if runs else None,
@@ -262,4 +314,39 @@ class TaskCommands:
                 if include_report
                 else None
             ),
+            source_type=source_type,
+            evidence_refs=tuple(evidence_refs),
         )
+        return result.model_copy(
+            update={"response_evidence": response_envelope_from_task_result(result)}
+        )
+
+
+def _source_for_tool_mode(mode: ToolExecutionMode) -> ResponseSourceType:
+    """將已有 ToolRun 来源投影到回复来源，不改变 ToolRun 的审计语义。"""
+
+    return {
+        ToolExecutionMode.REAL: ResponseSourceType.REAL,
+        ToolExecutionMode.MOCK: ResponseSourceType.MOCK,
+        ToolExecutionMode.DERIVED: ResponseSourceType.DERIVED,
+        ToolExecutionMode.VIRTUAL: ResponseSourceType.UNKNOWN,
+    }[mode]
+
+
+def _response_source_type(input_version, runs) -> ResponseSourceType:
+    """Fixture 优先；只有全部可审计专业调用为 REAL 才能标为真实来源。"""
+
+    if input_version is not None and input_version.payload_kind == InputPayloadKind.FIXTURE:
+        return ResponseSourceType.FIXTURE
+    modes = {run.execution_mode for run in runs}
+    if ToolExecutionMode.MOCK in modes:
+        return ResponseSourceType.MOCK
+    if modes and modes <= {ToolExecutionMode.REAL, ToolExecutionMode.DERIVED}:
+        return (
+            ResponseSourceType.DERIVED
+            if ToolExecutionMode.DERIVED in modes
+            else ResponseSourceType.REAL
+        )
+    if modes == {ToolExecutionMode.REAL}:
+        return ResponseSourceType.REAL
+    return ResponseSourceType.MIXED if modes else ResponseSourceType.UNKNOWN

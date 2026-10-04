@@ -167,3 +167,9 @@ flowchart TD
 ## 9. 内部消息展示边界
 
 AgentScope 当前把运行上下文注入为 `role = assistant` 消息内的 `HintBlock`，其 `source` 是结构化 JSON：`label = System`、`sublabel = Runtime State`；独立系统提示则使用 `role = system`。前端 `ChatContent` 只在 presentation boundary 移除这类结构化 runtime hint 和 system role 消息，Session persistence 与模型上下文保持不变。同一 Assistant 消息中的 Text、Thinking、ToolCall、ToolResult 会继续显示，其他来源的 HintBlock 也不受影响。过滤不匹配 `Treat the following...` 等文本。
+
+## 10. 回复证据与流式最终正文
+
+Task 013 将流式最终回复绑定 `ResponseEvidenceEnvelope`（最终回复证据合同）。创建任务后，进度来自 `Execution` / Telemetry，报告正文仍按本轮明确 `execution_id` 从持久结果读取；共享 renderer 用执行状态区分 `QUEUED`（排队等待）、`RUNNING`（正在执行）、`WAITING_CONFIRMATION`（等待阶段确认）、成功与失败。报告读取与新报告生成使用不同的回复操作类型。
+
+流式回复可以继续逐段输出服务端报告 Markdown，但不交给 LLM 改写。缺少 Tool / Application 结果时，最终自然语言流不会保留模型声称“已查询/已修改/已完成”的自由文本；Mock / Fixture 结果的最终正文显式带“非真实业务结果”。阶段确认与后续阶段完成分别由确认结果和之后 Execution 状态证明。现有 Panel / Read API 仍以各自结构化响应为准，未在此 Task 统一包装。

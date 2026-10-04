@@ -880,3 +880,25 @@ Task / Execution / ToolRun / Report
 > **Agent 理解意图，Application 决定可执行动作与依赖，Workflow 控制专业流程，Tool 执行能力，PostgreSQL 保存事实。**
 
 Task 012E 将其细化为 AgentScope 的 ReAct / Toolkit 仅产生并执行受批准的候选调用；OperationPlan 是项目意图合同，Resolver/Validator/Policy/Bridge 将候选绑定并校验，Domain State / StageOrchestrator 保存确定性业务状态。Skill 是可选方法知识，不能作为控制组件。报告、参数与版本回复应绑定 ToolResult / 权威 State；具体迁移方案和模块决策见 [Task 012E](tasks/012e-agentscope-native-final-responsibility-boundaries.md)。本段是架构边界补充，不表示本 Task 修改了生产实现。
+
+## 28. Task 013 最终回复证据与渲染
+
+业务事实回复在 `TaskCommandResult` 之后投影为不可变 `ResponseEvidenceEnvelope`，并由 `DeterministicRenderer` 形成聊天正文。Envelope 绑定 task、execution、解析后的 scope、InputVersion / revision、业务操作、响应状态、ExecutionStatus、来源和证据引用；它不保存第二套执行状态，也不回写 Domain State。
+
+```text
+TaskCommandResult / StageResult / persisted Report
+↓
+ResponseEvidenceEnvelope（证据、范围、来源和状态）
+↓
+Response Status Gate（确定性状态门控）
+↓
+DeterministicRenderer（固定业务事实和报告正文）
+↓
+AgentScope middleware / streaming reply
+↓
+Web chat
+```
+
+`OperationToolResult.outcome=SUCCESS`（命令成功）仅表示 Tool 命令已提交或读取完成，不授权宣称解释完成；聊天最终语义由 `ExecutionStatus` 决定。`QUEUED`（排队等待）和 `RUNNING`（正在执行）只能描述队列/当前阶段，`WAITING_CONFIRMATION`（等待阶段确认）不得暗示下一阶段已完成。`GET_REPORT`（读取已有报告）与 `REPORT_GENERATION`（生成新报告）是不同回复操作。阶段确认只证明确认记录成功；之后阶段状态仍须以实际 Execution 结果为准。
+
+无业务结果时，middleware 不透传模型最终自由文本，并同步用安全文案替换 Assistant 上下文中的自由文本块，保留 ToolCall / ToolResult 审计块。该行为仅作用于 AgentScope 聊天回复；独立 Read API、上传错误和任务面板的结构化 DTO 没有统一包装成 envelope，仍是后续迁移边界。

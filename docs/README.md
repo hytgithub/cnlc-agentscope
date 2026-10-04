@@ -65,6 +65,7 @@
 | 意图与交互设计 | [08-intent-and-interaction-design.md](08-intent-and-interaction-design.md) | 附件路由、ReAct、五个任务级 Tool |
 | 交互状态机 | [10-interaction-state-machine.md](10-interaction-state-machine.md) | 异常交互、集中 Policy、短期澄清和状态裁决 |
 | 状态与枚举中文词典 | [11-status-enum-glossary.md](11-status-enum-glossary.md) | Workflow、Execution、Validation、交互、ToolRun、规划等代码值的中文含义 |
+| Response Evidence Contract | [tasks/013-response-evidence-contract.md](tasks/013-response-evidence-contract.md) | 最终聊天回复的状态门控、证据引用、来源与确定性渲染 |
 | Conversation 持久化 | [12-conversation-persistence.md](12-conversation-persistence.md) | PostgreSQL 长期会话、Redis TTL、恢复和删除语义 |
 | 流式进度与 UI | [09-streaming-progress-and-ui-design.md](09-streaming-progress-and-ui-design.md) | 首次解释 SSE、Telemetry 投影和界面边界 |
 
@@ -75,7 +76,7 @@
 
 ## Task 执行记录（Task Execution Record）
 
-`docs/tasks/` 保存每个 Task 的实现与验证记录。当前前后端和首次解释流式联调记录见 [tasks/010-frontend-backend-integration.md](tasks/010-frontend-backend-integration.md)。执行记录说明当时环境与结果，不替代 Current Design。Task 10.3 见 [tasks/010-3-interaction-robustness.md](tasks/010-3-interaction-robustness.md)，Task 10.4 见 [tasks/010-4-conversation-persistence.md](tasks/010-4-conversation-persistence.md)。Task 012 的原生能力实验与职责决策见 [tasks/012-agentscope-native-capability-poc.md](tasks/012-agentscope-native-capability-poc.md)、[Task 012A.1](tasks/012a-1-skill-stability-grounding-poc.md) 和 [Task 012E](tasks/012e-agentscope-native-final-responsibility-boundaries.md)。
+`docs/tasks/` 保存每个 Task 的实现与验证记录。当前前后端和首次解释流式联调记录见 [tasks/010-frontend-backend-integration.md](tasks/010-frontend-backend-integration.md)。执行记录说明当时环境与结果，不替代 Current Design。Task 10.3 见 [tasks/010-3-interaction-robustness.md](tasks/010-3-interaction-robustness.md)，Task 10.4 见 [tasks/010-4-conversation-persistence.md](tasks/010-4-conversation-persistence.md)。Task 012 的原生能力实验与职责决策见 [tasks/012-agentscope-native-capability-poc.md](tasks/012-agentscope-native-capability-poc.md)、[Task 012A.1](tasks/012a-1-skill-stability-grounding-poc.md) 和 [Task 012E](tasks/012e-agentscope-native-final-responsibility-boundaries.md)；最终回复合同与本轮接入范围见 [Task 013](tasks/013-response-evidence-contract.md)。
 
 ## 验收（Acceptance）
 

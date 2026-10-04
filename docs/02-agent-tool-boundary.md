@@ -851,3 +851,11 @@ Task 012E 基于当前 AgentScope 2.0.8 源码、生产代码和 012A.1 真实�
 OperationPlan 是稳定、可审计、可拒绝的用户意图合同，不是第二个模型 Planner，也不是执行计划。Resolver 将模型给出的指代候选绑定到权威身份与范围；Validator/Policy 和应用执行边界始终由确定性代码强制。Skill 只能作为可选方法知识；Task 012A.1 的 qwen-plus 运行中 SkillViewer 为 0/60，不能依赖模型读取 Skill 保证业务安全。
 
 逐模块决策与 Response Grounding 边界见 [Task 012E](tasks/012e-agentscope-native-final-responsibility-boundaries.md)。这是目标职责决策和代码审计，不表示本节引用的生产代码已在本 Task 中重构。
+
+## 28. Response Evidence Contract（最终回复证据合同）
+
+Task 013 在执行结果之后增加不可变 `ResponseEvidenceEnvelope`（最终回复证据合同）。`TaskCommandResult` 保存服务端投影的 envelope、Task/Execution/InputVersion/ToolRun/StageRun/Report 证据引用及来源类型；Operation 层再用 Resolver 已绑定的 Scope 覆盖默认全井范围。该合同只说明“已发生什么、可证明什么”，不替代 OperationPlan（准备做什么）。
+
+所有 AgentScope 聊天业务答复先经过 `DeterministicRenderer`（确定性回复渲染器）。没有 Application/Tool 结果时，模型自由文本会被固定安全答复替换；无 `SUCCESS`（成功）证据、状态不匹配或报告引用缺失时，合同拒绝构造成功语义。`MOCK`（模拟）、`FIXTURE`（夹具）及 `MIXED`（混合来源）必须在用户可见正文标明“非真实业务结果”；`UNKNOWN`（来源未知）标明“结果来源未核验”。
+
+这一渲染保证适用于当前 AgentScope Tool / 上传 / 流式聊天回复，不代表模型自由文本可用于生产事实。非聊天 Read API 仍以其强类型读模型和来源字段返回事实，需在后续接口迁移时逐一复用 envelope；不得将 Mock 报告解释成真实测井结论。

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -73,9 +74,7 @@ async def test_toolkit_has_same_mock_tools_and_skill_is_the_only_config_differen
     assert set(with_skill_business) == business_names
     assert no_skill_business == with_skill_business
 
-    no_skill_schemas_by_name = {
-        schema["function"]["name"]: schema for schema in no_skill_schemas
-    }
+    no_skill_schemas_by_name = {schema["function"]["name"]: schema for schema in no_skill_schemas}
     with_skill_schemas_by_name = {
         schema["function"]["name"]: schema for schema in with_skill_schemas
     }
@@ -138,12 +137,13 @@ async def test_skill_registration_and_metadata_visibility_are_not_viewer_calls()
     assert {item["name"] for item in with_skill_audit["skill_metadata_visible"]} == set(
         with_skill_audit["registered_skill_names"]
     )
-    assert no_skill_audit["base_system_prompt_sha256"] == with_skill_audit[
-        "base_system_prompt_sha256"
-    ]
-    assert no_skill_audit["business_tool_schema_sha256"] == with_skill_audit[
-        "business_tool_schema_sha256"
-    ]
+    assert (
+        no_skill_audit["base_system_prompt_sha256"] == with_skill_audit["base_system_prompt_sha256"]
+    )
+    assert (
+        no_skill_audit["business_tool_schema_sha256"]
+        == with_skill_audit["business_tool_schema_sha256"]
+    )
 
 
 @pytest.mark.asyncio
@@ -190,9 +190,7 @@ async def test_all_mock_tool_schemas_and_call_records_follow_contract():
     assert isinstance(context_chunk, ToolChunk)
     assert context_chunk.metadata["result"]["source"] == "task_012a_test_fixture"
     started = await tools["start_full_interpretation"].call(well_id="WELL-A")
-    queried = await tools["query_interpretation_result"].call(
-        execution_id="V2", scope="2035-2038m"
-    )
+    queried = await tools["query_interpretation_result"].call(execution_id="V2", scope="2035-2038m")
     preflight = await tools["preflight_modify_parameter"].call(
         target="孔隙度", value=0.16, scope="whole_well"
     )
@@ -271,8 +269,7 @@ def test_fixed_cases_have_explicit_tool_expectations():
     assert len(cases) == 16
     assert [case["case_id"] for case in cases] == [f"{number:02}" for number in range(1, 17)]
     assert all(
-        {"expected_action", "allowed_tools", "forbidden_tools"} <= set(case)
-        for case in cases
+        {"expected_action", "allowed_tools", "forbidden_tools"} <= set(case) for case in cases
     )
     assert cases[1]["expected_action"] == "query_interpretation_result"
     assert "start_full_interpretation" in cases[1]["forbidden_tools"]
@@ -403,7 +400,18 @@ def test_poc_source_does_not_import_production_execution_or_persistence():
 
 
 def test_poc_import_does_not_load_production_task_runner():
-    assert "cnlc_agent.demo.task_tools" not in sys.modules
+    script = (
+        "import sys; "
+        "import experiments.agentscope_native_poc.agent; "
+        "assert 'cnlc_agent.demo.task_tools' not in sys.modules"
+    )
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -578,9 +586,7 @@ def test_grounding_evaluator_accepts_tool_grounded_simulated_version_operations(
 
 
 def test_parameter_expectation_checks_target_value_and_explicit_missing_scope():
-    case = {
-        "parameter_expectation": {"target": "POROSITY", "value": 0.16, "scope": None}
-    }
+    case = {"parameter_expectation": {"target": "POROSITY", "value": 0.16, "scope": None}}
     calls = [
         {
             "tool_name": "preflight_modify_parameter",

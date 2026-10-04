@@ -27,8 +27,14 @@ from agentscope.types import ReplyFinishedReason
 from cnlc_agent.application.commands import TaskCommandResult
 from cnlc_agent.application.stage_orchestrator import StageProgress
 from cnlc_agent.demo.progress import ExecutionProgressProjector
+from cnlc_agent.demo.response_renderer import render_response_evidence
 from cnlc_agent.domain.enums import StepId
 from cnlc_agent.domain.models import JsonObject
+from cnlc_agent.domain.response_evidence import (
+    ResponseOperation,
+    response_envelope_from_task_result,
+    response_operation_for_command,
+)
 from cnlc_agent.infrastructure.telemetry import event_observer
 from cnlc_agent.workflows.interpretation_workflow import step_observability
 
@@ -138,8 +144,7 @@ class ExecutionReplyStreamer:
             lines.extend([f"**{result.headline}**", result.summary])
             if result.metrics:
                 lines.append(
-                    "指标："
-                    + "；".join(f"{key}={value}" for key, value in result.metrics.items())
+                    "指标：" + "；".join(f"{key}={value}" for key, value in result.metrics.items())
                 )
             if result.items:
                 lines.append("结果明细：" + "；".join(str(item) for item in result.items[:6]))
@@ -259,6 +264,18 @@ class ExecutionReplyStreamer:
             final_text = "解释任务失败，请检查井资料或服务配置后重试。"
             if completed is not None:
                 status = completed.execution_status.value
+                envelope = response_envelope_from_task_result(
+                    completed,
+                    operation=response_operation_for_command(str(payload.get("command", "START"))),
+                )
+                if payload.get("command") == "CONFIRM":
+                    envelope = envelope.model_copy(
+                        update={
+                            "operation": ResponseOperation.STAGE_CONFIRM,
+                            "confirmed_stage": payload.get("confirmed_stage"),
+                            "confirmed_stage_run_id": payload.get("confirmed_stage_run_id"),
+                        }
+                    )
                 if status in {"SUCCESS", "WARNING"}:
                     if status == "WARNING":
                         yield ThinkingBlockDeltaEvent(
@@ -269,18 +286,31 @@ class ExecutionReplyStreamer:
                     try:
                         report_result = await self._get_report(task_id, execution_id)
                         report = report_result.report_markdown
+                        if report_result.report_markdown:
+                            envelope = response_envelope_from_task_result(
+                                report_result,
+                                operation=ResponseOperation.REPORT_GENERATION,
+                            )
+                        else:
+                            completion_error = True
                     except asyncio.CancelledError:
                         raise
                     except Exception:
                         completion_error = True
-                    final_text = "解释报告暂不可用，请查看聊天中的当前执行状态。"
+                    final_text = render_response_evidence(envelope)
+                    if report is None:
+                        final_text += "\n\n本轮指定 Execution 的报告暂不可用；未读取其他版本。"
+                    if payload.get("command") == "CONFIRM":
+                        final_text = "已记录阶段确认。\n\n" + final_text
+                    if status == "WARNING":
+                        final_text = "本次执行已完成，但存在告警。\n\n" + final_text
                 elif status == "BLOCKED":
                     yield ThinkingBlockDeltaEvent(
                         reply_id=reply_id,
                         block_id=block_id,
                         delta="\n解释流程已停止：缺少后续处理所需资料\n",
                     )
-                    final_text = "解释流程已停止：缺少后续处理所需资料。"
+                    final_text = render_response_evidence(envelope)
                 elif status == "WAITING_CONFIRMATION":
                     yield ThinkingBlockDeltaEvent(
                         reply_id=reply_id,
@@ -288,7 +318,10 @@ class ExecutionReplyStreamer:
                         delta="\n⏸ 当前阶段已完成，结果已发送到聊天中，等待确认继续\n",
                     )
                     try:
-                        final_text = await self._waiting_confirmation_text(task_id, execution_id)
+                        confirmation = await self._waiting_confirmation_text(task_id, execution_id)
+                        final_text = render_response_evidence(envelope) + "\n\n" + confirmation
+                        if payload.get("command") == "CONFIRM":
+                            final_text = "已记录阶段确认。\n\n" + final_text
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -300,7 +333,7 @@ class ExecutionReplyStreamer:
                         block_id=block_id,
                         delta="\n解释流程已进入人工复核\n",
                     )
-                    final_text = "解释流程已进入人工复核，请在任务面板查看执行事实。"
+                    final_text = render_response_evidence(envelope)
                     # 复核终态已有诊断报告时展示本版报告，不能伪装成验证通过的正式结论。
                     if completed.report_ready:
                         try:
@@ -323,7 +356,7 @@ class ExecutionReplyStreamer:
                         block_id=block_id,
                         delta=f"\n✗ 解释执行失败（错误代码：{code}）\n",
                     )
-                    final_text = f"解释执行失败（错误代码：{code}），请查看任务面板。"
+                    final_text = render_response_evidence(envelope)
             elif completion_error:
                 yield ThinkingBlockDeltaEvent(
                     reply_id=reply_id,

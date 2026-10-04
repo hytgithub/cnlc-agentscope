@@ -9,13 +9,14 @@ from uuid import uuid4
 from agentscope.agent import Agent
 from agentscope.event import (
     AgentEvent,
+    ModelCallStartEvent,
     ReplyEndEvent,
     TextBlockDeltaEvent,
     TextBlockEndEvent,
     TextBlockStartEvent,
     ToolResultEndEvent,
 )
-from agentscope.message import ToolCallBlock, ToolResultState
+from agentscope.message import Msg, TextBlock, ToolCallBlock, ToolResultState
 from agentscope.middleware import MiddlewareBase
 from agentscope.tool import ToolResponse
 from pydantic import ValidationError
@@ -25,11 +26,14 @@ from cnlc_agent.demo.interaction_state import (
     InteractionSnapshot,
     render_interaction_result,
 )
+from cnlc_agent.demo.response_renderer import render_response_evidence
 from cnlc_agent.demo.task_tools import TaskCommandRunner, interaction_chunk
-
-_NUMBER_PATTERN = re.compile(
-    r"(?<![\d.])([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(%)?"
+from cnlc_agent.domain.response_evidence import (
+    ResponseEvidenceEnvelope,
+    response_envelope_from_task_result,
 )
+
+_NUMBER_PATTERN = re.compile(r"(?<![\d.])([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(%)?")
 
 
 def extract_grounded_numbers(user_text: str) -> set[float]:
@@ -113,13 +117,117 @@ class InteractionStateMiddleware(MiddlewareBase):
         self.runner.begin_interaction_turn()
         source = next_handler(**input_kwargs)
         intercepted = None
+        response_evidence_seen = False
+        model_called = False
+        buffered_text_events: list[Any] = []
         try:
             try:
                 async for event in source:
+                    if isinstance(
+                        event,
+                        (TextBlockStartEvent, TextBlockDeltaEvent, TextBlockEndEvent),
+                    ):
+                        buffered_text_events.append(event)
+                        continue
+                    if isinstance(event, ReplyEndEvent):
+                        if not response_evidence_seen and model_called:
+                            # 无 Tool/Application evidence 的自由文本不能报告业务成功。
+                            block_id = uuid4().hex
+                            reply_id = agent.state.reply_id
+                            safe_text = render_response_evidence(None)
+                            safe_events = [
+                                TextBlockStartEvent(reply_id=reply_id, block_id=block_id),
+                                TextBlockDeltaEvent(
+                                    reply_id=reply_id, block_id=block_id, delta=safe_text
+                                ),
+                                TextBlockEndEvent(reply_id=reply_id, block_id=block_id),
+                            ]
+                            context_message = (
+                                agent.state.context[-1]
+                                if agent.state.context and agent.state.context[-1].id == reply_id
+                                else None
+                            )
+                            if context_message is not None:
+                                # AgentScope 每轮文本存入同一 AssistantMsg；保留 Tool 审计块。
+                                context_message.content = [
+                                    block
+                                    for block in context_message.content
+                                    if not isinstance(block, TextBlock)
+                                ] + [TextBlock(text=safe_text)]
+                            for safe_event in safe_events:
+                                yield safe_event
+                        else:
+                            for buffered_event in buffered_text_events:
+                                yield buffered_event
+                        buffered_text_events.clear()
+                        yield event
+                        continue
+                    if isinstance(event, ModelCallStartEvent):
+                        model_called = True
+                    if (
+                        isinstance(event, Msg)
+                        and event.id == agent.state.reply_id
+                        and not response_evidence_seen
+                        and model_called
+                    ):
+                        safe_text = render_response_evidence(None)
+                        event.content = [
+                            block for block in event.content if not isinstance(block, TextBlock)
+                        ] + [TextBlock(text=safe_text)]
+                        if (
+                            agent.state.context
+                            and agent.state.context[-1].id == agent.state.reply_id
+                        ):
+                            agent.state.context[-1].content = list(event.content)
                     yield event
                     if isinstance(event, ToolResultEndEvent):
                         operation = event.metadata.get("operation")
                         payload = event.metadata.get("result", event.metadata)
+                        response_data = operation or payload
+                        if response_data.get("response_evidence"):
+                            response_evidence_seen = True
+                            result_command = response_data.get("command")
+                            result_status = response_data.get("execution_status")
+                            envelopes = response_data["response_evidence"]
+                            operation_active = bool(
+                                operation and operation.get("created_execution_ids")
+                            ) and any(
+                                item.get("status") in {"QUEUED", "RUNNING"} for item in envelopes
+                            )
+                            result_active = result_command in {
+                                "START",
+                                "MODIFY",
+                                "FULL_RERUN",
+                                "CONFIRM",
+                            } and result_status in {"QUEUED", "RUNNING"}
+                            active = operation_active or result_active
+                            if not active:
+                                intercepted = response_data
+                                break
+                        elif isinstance(payload, dict) and payload.get("command") in {
+                            "START",
+                            "MODIFY",
+                            "FULL_RERUN",
+                            "STATUS",
+                            "GET_REPORT",
+                            "CONFIRM",
+                        }:
+                            response_evidence_seen = True
+                            if payload.get("execution_status") not in {"QUEUED", "RUNNING"}:
+                                try:
+                                    from cnlc_agent.application.commands import TaskCommandResult
+
+                                    task_result = TaskCommandResult.model_validate(payload)
+                                    intercepted = {
+                                        "response_evidence": [
+                                            response_envelope_from_task_result(
+                                                task_result
+                                            ).model_dump(mode="json")
+                                        ]
+                                    }
+                                    break
+                                except (TypeError, ValueError):
+                                    pass
                         if operation is not None and not operation.get("created_execution_ids"):
                             intercepted = operation
                             break
@@ -274,6 +382,27 @@ class InteractionStateMiddleware(MiddlewareBase):
 
 def render_operation_result(payload: dict[str, Any]) -> str:
     """业务读取沿用真实报告/状态 renderer；交互结果只显示服务器安全文案。"""
+    envelopes = payload.get("response_evidence")
+    if isinstance(envelopes, list) and envelopes:
+        return "\n\n".join(
+            render_response_evidence(ResponseEvidenceEnvelope.model_validate(item))
+            for item in envelopes
+        )
+    if payload.get("command") in {
+        "START",
+        "MODIFY",
+        "FULL_RERUN",
+        "STATUS",
+        "GET_REPORT",
+        "CONFIRM",
+    }:
+        from cnlc_agent.application.commands import TaskCommandResult
+
+        try:
+            task_result = TaskCommandResult.model_validate(payload)
+        except (TypeError, ValueError):
+            return "业务工具结果结构无效，本轮不能声明操作成功。"
+        return render_response_evidence(response_envelope_from_task_result(task_result))
     if "task_results" not in payload:
         return render_interaction_result(payload)
     if payload["task_results"]:

@@ -32,6 +32,15 @@ from cnlc_agent.demo.scope_resolver import ScopeResolver
 from cnlc_agent.demo.task_context import TaskReference
 from cnlc_agent.demo.task_tools import TaskCommandRunner
 from cnlc_agent.domain.models import Contract
+from cnlc_agent.domain.response_evidence import (
+    ResponseEvidenceEnvelope,
+    ResponseEvidenceKind,
+    ResponseEvidenceRef,
+    ResponseOperation,
+    ResponseStatus,
+    response_envelope_from_task_result,
+    response_scope_from_resolved_scope,
+)
 
 
 class PlanRequest(Contract):
@@ -89,6 +98,7 @@ class OperationToolResult(Contract):
     task_results: list[TaskCommandResult] = Field(default_factory=list)
     created_execution_ids: list[str] = Field(default_factory=list)
     capability_facts: list[CapabilityFact] = Field(default_factory=list)
+    response_evidence: list[ResponseEvidenceEnvelope] = Field(default_factory=list)
 
 
 class OperationInteractionController:
@@ -151,7 +161,64 @@ class OperationInteractionController:
                     if op.parameters.value is not None
                 )
                 output.message = f"当前{values}，本次没有产生新的执行。"
+            output.response_evidence = self._response_evidence(output, result)
             return output
+
+    @staticmethod
+    def _response_evidence(
+        output: OperationToolResult, result: OperationBridgeResult
+    ) -> list[ResponseEvidenceEnvelope]:
+        """将 Bridge 的执行事实映射为逐结果回复证据。"""
+
+        scopes = list(result.resolved_scopes.values())
+        if output.task_results:
+            envelopes = [
+                response_envelope_from_task_result(
+                    task_result,
+                    scope=(
+                        response_scope_from_resolved_scope(scopes[index])
+                        if index < len(scopes)
+                        else None
+                    ),
+                )
+                for index, task_result in enumerate(output.task_results)
+            ]
+            output.task_results = [
+                task_result.model_copy(update={"response_evidence": envelope})
+                for task_result, envelope in zip(output.task_results, envelopes, strict=True)
+            ]
+            return envelopes
+        status = {
+            "NEED_CLARIFICATION": ResponseStatus.NEED_CLARIFICATION,
+            "KNOWN_UNSUPPORTED": ResponseStatus.UNSUPPORTED,
+            "REJECTED": ResponseStatus.REJECTED,
+        }.get(output.outcome)
+        if status is None:
+            # Focus switch / cancel 是已完成的交互动作，不声称有测井业务结果。
+            return [
+                ResponseEvidenceEnvelope(
+                    operation=ResponseOperation.OTHER,
+                    status=ResponseStatus.SUCCESS,
+                    result_summary=output.message,
+                    evidence_refs=(
+                        ResponseEvidenceRef(
+                            kind=ResponseEvidenceKind.INTERACTION,
+                            reference_id=output.error_code or "interaction-completed",
+                        ),
+                    ),
+                )
+            ]
+        return [
+            ResponseEvidenceEnvelope.without_result(
+                operation=ResponseOperation.OTHER,
+                status=status,
+                result_summary=output.message,
+                error_code=output.error_code,
+                clarification=(
+                    output.message if status == ResponseStatus.NEED_CLARIFICATION else None
+                ),
+            )
+        ]
 
     def _save_pending(self, source: PartialOperationPlan, result: OperationBridgeResult) -> None:
         """仅使用 B Resolver 成功返回的引用锁，不能把模型 ID 标记为可信。"""
@@ -227,12 +294,16 @@ class OperationInteractionController:
             request.task_reference,
             actor=actor,
         )
-        return OperationToolResult(
+        output = OperationToolResult(
             outcome="SUCCESS",
             message="阶段已确认，解释流程继续执行。",
             task_results=[result],
             created_execution_ids=[result.execution_id],
         )
+        output.response_evidence = [
+            response_envelope_from_task_result(result, operation=ResponseOperation.STAGE_CONFIRM)
+        ]
+        return output
 
     @staticmethod
     def _project(result: OperationBridgeResult) -> OperationToolResult:

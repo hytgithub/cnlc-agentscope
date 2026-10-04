@@ -118,3 +118,17 @@ COMPARE（比较）、SCENARIO（试算）、任意局部重算、历史版本�
 Task 012E 对照 AgentScope 2.0.8 本地源码与真实模型实验后，确认 ReAct 的 Tool 选择不能替代 OperationPlan 这一稳定意图合同；Agent 给出的 task、execution、version、scope 仅是候选，必须经项目 Resolver、身份绑定、Validator/Policy 和写前重校验后才能到达应用命令。Skill 为可选方法知识，不是流程保证或权限组件；当前 qwen-plus 真实实验的 SkillViewer 调用为 0/60。
 
 本设计描述的当前工具/解析行为没有因该审计自动改变。模块完整决策、四阶段与确认口径差异、Grounding Response Contract 和后续迁移次序见 [Task 012E](tasks/012e-agentscope-native-final-responsibility-boundaries.md)。
+
+## 8. Response Evidence 与最终答复门控
+
+Task 013 的 `ResponseEvidenceEnvelope`（最终回复证据合同）由服务端 `TaskCommandResult` 构造，标识 Task / Execution / 已解析 Scope / 输入版本 / revision / 操作 / 真实执行状态 / 来源 / evidence refs。其 immutable typed fields 供 `DeterministicRenderer`（确定性回复渲染器）读取；模型不得重写或覆盖这些事实。
+
+| 状态 | 可渲染语义 | 禁止语义 |
+| --- | --- | --- |
+| `SUCCESS`（成功） | 仅在匹配 Task 与 Execution 证据存在时描述已完成；报告操作还须存在报告引用 | 不得仅凭 Operation Tool 的命令接受结果声明专业执行成功 |
+| `QUEUED`（排队等待）/ `RUNNING`（正在执行） | 队列、运行、阶段或等待确认状态 | 不得说解释完成或修改已生效 |
+| `NEED_CLARIFICATION`（需要澄清） | 只询问补充信息 | 不得假设范围或继续写入 |
+| `UNSUPPORTED`（不支持）/ `REJECTED`（拒绝） | 说明能力边界或本次未执行 | 不得渲染成成功 |
+| `FAILED`（失败） | 说明失败及下一步 | 不得隐藏错误状态 |
+
+`REAL`（真实）、`MOCK`（模拟）、`FIXTURE`（夹具）、`DERIVED`（派生）、`MIXED`（混合）、`UNKNOWN`（未知）来自输入版本与现有 ToolRun 元数据。Fixture / Mock 回复正文明确标明“非真实业务结果”；UNKNOWN 标明来源未核验。AgentScope middleware 对没有 Application/Tool evidence 的最终文本进行确定性替换。以上为聊天回复控制，不代表独立 Read API 和任务面板已经全部切换至该合同。

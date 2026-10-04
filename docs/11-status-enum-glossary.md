@@ -666,3 +666,56 @@ StageRunStatus（阶段执行状态）表达一次实际执行的生命周期，
 
 HTTP、鉴权和响应错误继续复用既有 `COMPANY_*` ToolError。详细设计见
 [真实公司 Provider 接入与规范化](architecture/real-company-provider.md)。
+
+## 44. Response Evidence Contract（最终回复证据合同，Task 013）
+
+### ResponseStatus（回复状态门控）
+
+| 代码值 | 中文名称 | 含义 |
+| --- | --- | --- |
+| `SUCCESS` | 成功 | 有匹配 Task / Execution 权威证据后才可表达业务完成；报告操作还需报告证据引用。 |
+| `QUEUED` | 排队等待 | Execution 已进入队列，不能说解释完成。 |
+| `RUNNING` | 正在执行 | Execution 正运行或等待阶段确认；不能说最终解释完成。 |
+| `NEED_CLARIFICATION` | 需要澄清 | 只能请求补齐必要信息，不得假设范围执行写操作。 |
+| `UNSUPPORTED` | 当前不支持 | 当前能力未开放，不得模糊表达成功。 |
+| `REJECTED` | 请求已拒绝 | 请求未执行，不得声称写入或修改完成。 |
+| `FAILED` | 执行失败 | 执行未成功，回复需如实说明并给出安全的后续动作。 |
+
+这些值只门控用户回复，不是 `ExecutionStatus` 的第二套生命周期。`WAITING_CONFIRMATION`（等待阶段确认）继续由原 `ExecutionStatus` 保存。
+
+### ResponseOperation（回复操作类型）
+
+| 代码值 | 中文名称 |
+| --- | --- |
+| `QUERY` | 查询结果 |
+| `START` | 首次解释 |
+| `MODIFY` | 修改参数并重新解释 |
+| `FULL_RERUN` | 全量重新解释 |
+| `STATUS` | 查询执行状态 |
+| `REPORT_READ` | 读取已有报告 |
+| `REPORT_GENERATION` | 生成新报告 |
+| `STAGE_CONFIRM` | 确认业务阶段 |
+| `OTHER` | 非业务执行的交互动作 |
+
+### ResponseSourceType（回复证据来源类型）
+
+| 代码值 | 中文名称 | 含义 |
+| --- | --- | --- |
+| `REAL` | 真实来源 | 输入与可审计 ToolRun 元数据支持真实结果来源。 |
+| `MOCK` | 模拟来源 | 使用 Mock Tool 结果，用户可见正文必须注明“非真实业务结果”。 |
+| `FIXTURE` | 夹具来源 | 使用 Fixture 输入/预设结果，用户可见正文必须注明“非真实业务结果”。 |
+| `DERIVED` | 派生来源 | 由已有结果派生；保留上游证据引用，不伪装成新的真实 Tool 调用。 |
+| `MIXED` | 混合来源 | 证据包含多种来源或无法统一归类，必须按非真实业务结果呈现。 |
+| `UNKNOWN` | 来源未知 | 无法核验来源；不得标为真实，用户可见正文注明来源未核验。 |
+
+### ResponseEvidenceKind（回复证据引用类型）
+
+| 代码值 | 中文名称 |
+| --- | --- |
+| `TASK` | 任务记录 |
+| `EXECUTION` | 执行记录 |
+| `INPUT_VERSION` | 输入版本 |
+| `TOOL_RUN` | 专业工具调用 |
+| `STAGE_RUN` | 阶段运行 |
+| `REPORT` | 报告 |
+| `INTERACTION` | 交互动作 |

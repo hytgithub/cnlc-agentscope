@@ -65,6 +65,12 @@ from cnlc_agent.domain.execution import (
 from cnlc_agent.domain.inputs import InterpretationInputVersion
 from cnlc_agent.domain.models import MockFixture, TaskRequest, utc_now
 from cnlc_agent.domain.override import InterpretationOverride
+from cnlc_agent.domain.response_evidence import (
+    ResponseEvidenceKind,
+    ResponseEvidenceRef,
+    ResponseOperation,
+    response_envelope_from_task_result,
+)
 from cnlc_agent.domain.session_binding import SessionTaskBinding, TaskSessionIdentity
 from cnlc_agent.domain.stages import InterpretationStage
 from cnlc_agent.infrastructure.artifact_store import FilesystemArtifactStore
@@ -487,7 +493,31 @@ class TaskCommandRunner:
                         actor=actor,
                     )
                     result = await TaskCommands(service).project(
-                        task_id, execution_id, "CONFIRM"
+                        task_id,
+                        execution_id,
+                        "CONFIRM",
+                        include_report=stage == InterpretationStage.REPORT,
+                    )
+                    result = result.model_copy(
+                        update={
+                            "confirmed_stage": stage.value,
+                            "confirmed_stage_run_id": stage_run_id,
+                            "evidence_refs": result.evidence_refs
+                            + (
+                                ResponseEvidenceRef(
+                                    kind=ResponseEvidenceKind.STAGE_RUN,
+                                    reference_id=stage_run_id,
+                                    source_type=result.source_type,
+                                ),
+                            ),
+                        }
+                    )
+                    result = result.model_copy(
+                        update={
+                            "response_evidence": response_envelope_from_task_result(
+                                result, operation=ResponseOperation.STAGE_CONFIRM
+                            )
+                        }
                     )
             self.set_active_task(task_id)
             if stage != InterpretationStage.REPORT:
