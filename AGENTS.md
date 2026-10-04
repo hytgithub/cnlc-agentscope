@@ -159,7 +159,7 @@ Documentation Impact
 
 只要存在“代码已变更但相关文档未同步”，该 Task **不得视为完成**。
 
-## 7. Task 边界原则
+## 6. Task 边界原则
 
 Codex 每次只完成当前 Task 明确要求的工作。
 
@@ -553,7 +553,8 @@ Kubernetes
 6. 测试结果；
 7. 未完成内容；
 8. Architecture Issue；
-9. 下一阶段依赖。
+9. 下一阶段依赖；
+10. Documentation Impact：本次影响、已更新、确认无需更新及遗留的文档清单。
 
 如没有 Architecture Issue，应明确说明：
 
