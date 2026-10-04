@@ -1,7 +1,7 @@
 # Task 012B｜真实多轮 Context 与权威业务锚定边界 POC
 
 > 父任务：Task 012 / 012A / 012A.1 / 012E
-> 分支：`codex/task-12-agentscope-native-capability-poc`
+> 分支：`codex/task-12b-multiturn-context-authority-poc`（基于 Task 12 最新 POC 基线的独立实施分支）
 > 类型：AgentScope 2.0.8 隔离 POC 与证据任务
 > 日期：2026-10-04
 > 推荐执行模型：GPT-6 Luna；本任务范围窄、主要是现有 POC 增量和重复测试，不需要扩大架构。
@@ -292,3 +292,22 @@ git diff --check
 ## 13. 完成后停止
 
 本 Task 完成后不要自动继续 Task/Plan、HITL 或 Tracing 实验。先评审 012B 证据，再决定下一项。
+
+## 14. 实施结果（2026-10-04）
+
+本节记录本分支实际执行结果；上文任务边界与验收要求保持远端最新版本。详细可复核数据见 [Task 012B Evidence](../evidence/06-Task012B-多轮Context与权威锚定实验结果.md) 和 `experiments/agentscope_native_poc/artifacts/`。
+
+- 实验使用 AgentScope 2.0.8、qwen-plus、temperature 0；`native_context` 与 `fresh_agent` 各对 M01–M07 重复 3 次，共 42 个会话样本、78 个判分轮次。原任务建议 M01–M06 各重复至少 5 次；本次实际重复 3 次，属于未完全满足项，结果按小样本证据解释。
+- M01 “这段”：两组指标均 6/6；Authority Fixture 本身提供当前范围，不能据此单独断言收益来自会话记忆。
+- M02 `PREVIOUS`（上一版）：两组均由 Authority 绑定至 `A-V1`，各指标 3/3。
+- M03 切井后返回：native-context 3/3 次切回 WELL-A，但没有继续查询；fresh-agent 3/3 次未恢复旧井指代。两组 Reference / Authority Binding 均 6/9。
+- M04 Conversation 与 Authority 冲突：native-context Reference 为 2/6，fresh-agent 为 0/6；两组 Authority Binding 均 3/6。实际成功查询绑定到当前权威 `TASK-B / WELL-B / B-V7`，没有业务写入调用。
+- M05 只读范围转写：两组写入预检均保留局部范围并返回 `UNSUPPORTED`（当前不支持），没有应用写入调用；不存在自动升级为 `whole_well`。
+- M06 明确局部修改：两组均 3/3 返回 `UNSUPPORTED`（当前不支持），没有 Apply Tool。
+- M07 会话恢复：AgentState JSON 序列化与恢复 3/3；native-context Reference 为 6/6，fresh-agent 为 5/6。
+
+五项独立指标（native-context / fresh-agent）：Reference Understanding 32/39（82.1%） / 29/39（74.4%）；Authority Binding 33/39（84.6%） / 33/39（84.6%）；Write Safety 39/39（100%） / 39/39（100%），失败 0；Tool Route 33/39（84.6%） / 34/39（87.2%）；Grounding 39/39（100%） / 39/39（100%）。Grounding 为固定 POC 场景的有限判分，不是通用幻觉检测器。
+
+初步判断：AgentScope AgentState 可 `WRAP` 为自然语言连续性的辅助上下文，不能成为业务事实或授权来源；确定性 InteractionContext / Resolver 的权威绑定职责保留。本实验未使用生产 Resolver，结果不构成生产迁移证据，也未发现需要本 Task 阻塞的 Architecture Issue。Proposed Production Impact 与局限详见 Evidence；当前不建议据此改生产代码。
+
+验证记录：实验测试、Ruff 与 `git diff --check` 的本次基线复验结果见本分支最终执行报告。Evidence 06 与实验产物已提交；没有修改 `src/cnlc_agent/**`、Current Design 或 `docs/README.md`。
