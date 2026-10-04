@@ -72,3 +72,26 @@ artifacts/native_poc/task012a1_<experiment_id>_with_skill.jsonl
 ```
 
 `summary.json` 保存聚合路由率、SkillViewer 调用率、参数正确率、非法写入尝试数、不必要完整解释数、澄清正确率、Grounding 通过率和 overall 通过率，并保留 Task 012A 前次摘要。最小 Grounding evaluator 只检查本 POC 可确定的边界，不是通用幻觉检测器；Tool 调用正确但 Grounding 失败时，overall 仍为失败。
+
+## Task 012C：ReAct 与 AgentScope 原生 Task Tools
+
+Task 012C 在同一 Prompt、业务 Toolkit 和 authority Fixture 下比较普通 ReAct 与额外注册 AgentScope 2.0.8 `TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate` 的配置；不在 Prompt 中要求使用 Task 工具。该会话任务只属于 AgentState，不作为业务 Task、Execution、范围或版本事实。运行 qwen-plus 组时，当前工作目录须能读取项目已有模型配置：
+
+```bash
+python -m experiments.agentscope_native_poc.plan_runner --repeats 5 --timeout 120
+```
+
+可先离线核验当前实际安装环境中的 import、Toolkit 注册、AgentState 注入与 Task CRUD：
+
+```bash
+python -m experiments.agentscope_native_poc.plan_runner --smoke-only
+```
+
+正式运行会生成 `artifacts/task012c_<experiment_id>_plain.jsonl`、`_plan.jsonl` 与 `task012c_summary.json`。评分规则修订后，使用原始 ToolCall / ToolResult 离线复核，不重复调用模型：
+
+```bash
+python -m experiments.agentscope_native_poc.plan_runner \
+  --reevaluate-experiment-id <experiment_id>
+```
+
+复核结果单独写入 `task012c_<experiment_id>_rescored_{plain,plan}.jsonl`，并保留初始评分供审计。固定输入在 `plan_cases.json`，合同测试在 `tests/experiments/test_task_plan_poc.py`；实验边界与结论见 `docs/evidence/07-Task012C-TaskPlan多步骤对照实验结果.md`。

@@ -1,0 +1,12 @@
+{
+  "suite": "Task 012C multi-step ReAct vs native Task Tools",
+  "source": "synthetic local fixtures; not production business facts",
+  "cases": [
+    {"case_id":"P01","prompts":["查看 WELL-A 的 2035–2038m。","切到 WELL-B 看报告。","回到刚才那口井，再看看刚才那层。"],"expected_steps":["switch_session_well","query_authority_result"],"expected_well":"WELL-A","expected_scope":"2035-2038m"},
+    {"case_id":"P02","prompts":["把全井孔隙度改成 0.16，然后查一下修改后的结果，再跟修改前比较一下。"],"expected_steps":["preflight_modify_parameter","apply_parameter_change","query_authority_result","compare_result_versions"],"expected_well":"WELL-A","expected_scope":"whole_well"},
+    {"case_id":"P03","prompts":["查一下当前版本，再跟上一版比较。"],"expected_steps":["query_authority_result","compare_result_versions"],"expected_well":"WELL-A","expected_scope":"whole_well"},
+    {"case_id":"P04","prompts":["把孔隙度改成 0.16，然后比较修改前后。"],"expected_steps":["preflight_modify_parameter"],"expected_terminal":"NEED_CLARIFICATION","expected_well":"WELL-A","expected_scope":null},
+    {"case_id":"P05","prompts":["把 Rw 改成 0.08，然后查询新版本并比较。"],"expected_steps":["preflight_modify_parameter"],"expected_terminal":"UNSUPPORTED","expected_well":"WELL-A","expected_scope":"whole_well"},
+    {"case_id":"P06","prompts":["先查一下当前版本，然后等我确认后再继续。","继续之前核实当前权威版本，再比较当前版和上一版。"],"expected_steps":["query_authority_result","compare_result_versions"],"expected_well":"WELL-A","expected_scope":"whole_well","mutate_authority_between_turns":true}
+  ]
+}

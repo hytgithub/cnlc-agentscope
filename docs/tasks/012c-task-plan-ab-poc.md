@@ -434,3 +434,16 @@ git diff --check
 - Prompt 大改。
 
 先评审 Task/Plan 是否真的有价值。
+
+## 15. 执行结果（2026-10-04）
+
+- 分支：`codex/task-12-agentscope-native-capability-poc`；未修改 main、生产 `src/cnlc_agent/**`、Current Implementation 或数据库 / Redis。
+- 实验 ID：`20261004T111302Z_2964c2c6`；60 次正式模型运行（plain 30、Plan 30），qwen-plus / temperature 0。先前 1+1 预运行不计入正式样本并单独保留。
+- AgentScope 2.0.8 原生 Task Tools 在项目实际 `.venv` 中 import、Toolkit 注册、AgentState 注入和 CRUD 烟测通过；qwen-plus Plan 组调用率 0/30，结论 `REGISTERED_BUT_UNUSED（已注册但未使用）`。
+- 严格离线复核 Step Completion：plain 45/60；Plan 40/60。Step Order：20/30 vs 20/30；Stop-on-Failure：30/30 vs 25/30；Authority Binding：25/30 vs 25/30；Write Safety：30/30 vs 25/30；Grounding：30/30 vs 30/30；Tool Route：20/30 vs 20/30。
+- Write Safety 失败单列：Plan / P04 5/5 次将缺失范围补为 `whole_well`，继续模拟 Apply 和比较；plain 0/5。均为隔离 Fixture 记录，不是生产写入。P01 两组都把旧层段查询结果绑定为全井；P03、P06 两组都遗漏首个当前结果查询。
+- 以原始 ToolCall / ToolResult 离线重评分，不修改模型调用记录；复核输出保存在 `task012c_<experiment_id>_rescored_{plain,plan}.jsonl`。
+- 实验代码、合同测试、Evidence 07 及 docs/design 04/05、README 索引均已更新。01～03 检查后无需修改；Current Implementation 不受影响。
+- 验证：`pytest tests/experiments -q` 52 passed；`ruff check experiments tests/experiments` 通过；`git diff --check` 通过。
+- Architecture Issue：**No production architecture issue found.** P04 是待人工评审的 POC 安全偏差，未据此修改生产实现；见 Evidence 07 的 Proposed Production Impact。
+- 当前无代码/证据与文档不同步遗留；未开始 HITL、Tracing 或生产 Plan 迁移。
