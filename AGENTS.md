@@ -2,60 +2,114 @@
 
 ## 1. 文档目的
 
-本文档定义 Codex 在本项目中的开发行为规范。
+本文档定义 Codex 在本项目中的开发行为规范和文档治理规则。
 
 Codex 的主要职责是：
 
-> 按照已经确认的项目上下文、业务 Workflow 和架构设计完成代码实现、测试和验证。
+> 按照当前项目主设计基线、已验证证据和当前 Task 完成代码实现、实验、测试和验证。
 
-Codex 不负责在开发过程中自行重新设计整个系统。
+Codex 不负责在开发过程中自行重新设计整个系统，也不得因为现有代码与目标设计不同就擅自删除现有安全能力。
 
-如果实现过程中发现现有设计存在问题，应优先记录问题并反馈，而不是未经确认直接修改核心架构。
+如果实现过程中发现现有实现与主设计基线存在冲突，应先区分：
+- 目标设计；
+- 当前实现；
+- 已验证证据；
+- 待验证假设。
+
+涉及核心架构变化时，必须形成 Architecture Issue 或明确迁移 Task，并提供测试／实验依据后再实施。
 
 ## 2. 必须优先阅读的项目文档
 
 开始任何开发 Task 之前，必须先阅读与当前任务相关的项目文档。
 
-核心文档包括：
+文档治理优先级如下：
+
+1. `AGENTS.md`：开发行为、证据门槛和文档治理；
+2. `docs/design/01～05`：项目主设计基线，按“需求 → 目标 → 效果 → 方案 → 测试”组织；
+3. `docs/evidence/`：现状事实、运行证据、AgentScope 原生能力实验与架构决策依据；
+4. 原有 `docs/*.md` Current Implementation 文档：说明当前代码和历史详细设计；
+5. `docs/tasks/`：一次具体实施或实验任务。
+
+建议先阅读：
 
 ```text
-docs/00-project-context.md
-docs/01-business-workflow.md
-docs/02-agent-tool-boundary.md
-docs/03-system-architecture.md
-docs/11-status-enum-glossary.md
-docs/mvp-acceptance.md
 AGENTS.md
+docs/README.md
+docs/design/README.md
+docs/design/01-测井解释智能体需求规格说明.md
+docs/design/02-测井解释智能体建设目标.md
+docs/design/03-测井解释智能体预期效果.md
+docs/design/04-测井解释智能体技术方案.md
+docs/design/05-测井解释智能体测试与验收方案.md
+docs/evidence/README.md
+docs/11-status-enum-glossary.md
 ```
 
-项目文档的优先级高于 Codex 自行推断的设计。
+按当前 Task 再读取 Current Implementation 和对应 Task 文档。
+
+如果 `docs/design/` 与旧实现文档描述不同：
+- `docs/design/` 回答“目标是什么、当前认可的方向是什么”；
+- Current Implementation 文档和代码回答“现在实际上怎么实现”；
+- 不得静默把旧实现当成永久目标，也不得无迁移证据直接按新目标破坏当前实现。
 
 ## 3. 当前系统核心原则
 
+目标架构采用以下职责原则，并通过 AgentScope 原生能力实验逐步验证：
+
 ```text
-Agent 负责决策
-Workflow 负责流程
-Tool 负责执行
-Algorithm 负责确定性计算
-LLM 负责理解、综合和文本生成
+Prompt 管原则
+Skill 管方法（仅在实验验证有价值时采用）
+Agent 管决策
+Tool 管动作
+Memory / Context 管对话理解
+State 管运行态
+Domain 管业务事实
+Plan / Task 管当前准备怎么做
+Trace 管为什么这么干
 ```
 
-禁止为了增加 Agent 数量而人为拆分业务。
+同时保留不可让模型替代的确定性边界：
+
+```text
+权限 / 授权
+Task / Execution / InputVersion 归属
+版本与并发一致性
+真实专业计算与正式业务依赖
+参数 Schema 与允许修改范围
+Artifact / 文件来源
+外部 API 状态、幂等、超时 unknown
+正式结果生效与历史保护
+```
+
+当前已有 Workflow、Operation、Stage、Task/Execution 等实现属于可复用资产。在没有 A/B 实验、回归测试和迁移计划前不得擅自删除。
+
+禁止为了增加 Agent 数量而人为拆分业务；当前优先使用一个主 Agent 验证自然语言理解、Tool 选择和交互能力。
 
 ## 4. 架构修改规则
 
-未经当前 Task 明确要求，Codex 不得擅自：
+未经当前 Task 明确要求且缺少证据时，Codex 不得擅自：
 
 - 新增或删除核心 Agent；
-- 修改业务主 Workflow；
-- 改变 W01-W10 的核心业务顺序；
-- 改变 MainAgent、InterpretationAgent、ValidationAgent 核心职责；
-- 将确定性专业算法替换为 LLM 推理；
-- 改变 InterpretationState 的整体定位；
+- 删除或替换现有 Workflow、Operation、Stage 等核心执行能力；
+- 改变 W01-W10 当前完整解释内部业务顺序；
+- 删除 MainAgent、InterpretationAgent、ValidationAgent 等当前实现资产；
+- 将确定性专业算法、权限、版本或一致性保护替换为 LLM 推理；
+- 改变 Task / Execution / InputVersion / Artifact 等权威业务事实模型；
 - 直接替换数据库 / Redis / Trace 等核心基础设施方案；
 - 进行大规模跨模块重构。
 
-如果 Codex 认为当前设计无法实现、存在明显冲突、严重耦合或明显不符合 AgentScope 实现方式，应记录 Architecture Issue，包括问题描述、涉及模块、当前设计、问题原因、影响范围、建议方案和是否阻塞当前 Task。
+上述内容是**变更门槛**，不是永久冻结旧架构。
+
+当 `docs/design/04` 的目标方案与当前实现不同，允许通过独立实验验证 AgentScope 原生能力。只有满足以下条件后，才可以正式迁移生产代码：
+
+1. 当前 Task 明确要求迁移；
+2. `docs/evidence/` 或 Task 记录中存在可重复证据；
+3. 明确 KEEP / REPLACE / WRAP / ADD 决策；
+4. 不降低权限、版本、专业结果和数据一致性安全；
+5. 有回归测试和回滚路径；
+6. 必要时同步修订 `docs/design/04` 与 `docs/design/05`。
+
+如果 Codex 认为当前设计无法实现、存在明显冲突、严重耦合或明显不符合 AgentScope 实现方式，应记录 Architecture Issue，包括问题描述、涉及模块、当前设计、目标设计、证据、影响范围、建议方案和是否阻塞当前 Task。
 
 ## 5. Task 边界原则
 
@@ -73,15 +127,18 @@ Codex 每次只完成当前 Task 明确要求的工作。
 
 ## 6. Agent 开发规则
 
-当前 V0.1 核心 Agent：
+当前实现中存在：
 
 ```text
 MainAgent
 InterpretationAgent
 ValidationAgent
+LoggingInterpretationDemoAgent（AgentScope Agent）
 ```
 
-未经架构文档调整，不新增核心业务 Agent。
+其中前三者是当前项目职责类／实现资产，不应仅因名称为 Agent 就视为最终多 Agent 架构；真正的 AgentScope Agent 以代码事实为准。
+
+目标方案当前优先验证**一个主 Agent + Prompt / Skill / Toolkit / Context** 能否承担更多理解与决策职责。未经主设计与实验证据，不新增核心业务 Agent，也不提前删除现有职责类。
 
 ### 6.1 MainAgent
 
@@ -205,21 +262,17 @@ Agent 使用结果进行综合判断
 
 ## 13. Workflow 开发规则
 
-Workflow 负责：
+当前 W01-W10 是**完整解释内部的现有确定性业务流程**，用于组织已实现的专业步骤和错误边界。
 
-```text
-步骤编排
-条件判断
-状态转换
-Retry
-Rollback
-Review
-Error Handling
-```
+它不等于：
 
-Workflow 不承担复杂专业推理。
+> 所有用户自然语言操作都必须重新进入 W01-W10。
 
-当前业务 Workflow W01-W10 不得随意修改，如需调整必须先形成 Architecture Issue。
+查询、报告读取、受控修改、版本比较、阶段确认等操作应根据主设计和 Capability 选择合适路径。
+
+Workflow 仍负责当前实现中的步骤编排、状态转换、Retry、Rollback、Review 和 Error Handling，不承担复杂专业推理。
+
+W01-W10 不得在普通 Task 中随意修改；若 AgentScope 原生能力实验表明某些“智能编排职责”可以上移到 Agent / Skill / Toolkit，也必须通过 Architecture Issue、evidence 和迁移 Task 决定，不能直接删除 Workflow 的确定性安全职责。
 
 ## 14. Workflow 状态规则
 
