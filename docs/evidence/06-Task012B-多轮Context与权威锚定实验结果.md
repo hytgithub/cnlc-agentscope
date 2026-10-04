@@ -1,8 +1,11 @@
 # Task 012B｜多轮 Context 与权威锚定实验结果
 
 > 日期：2026-10-04
-> POC 分支：`codex/task-12-agentscope-native-capability-poc`
-> Commit A：`97773c6`
+> 012B 实施分支：`codex/task-12b-multiturn-context-authority-poc`
+> 最终汇总目标分支：`codex/task-12-agentscope-native-capability-poc`
+> 原始本地实验 commit：`97773c66372d0759fc3c836bf93128a1fb60e1f2`
+> Branch migration 后实验 commit：`371ab1d27ae014561957de5af4208850fe6b30a6`
+> 当前 Evidence commit（本次元数据修订前）：`ad88dd928b9c4ba196af8bd511b3ab34362db3e2`
 > 实验 ID：`20261004T083451Z_74e9c5a4`
 > AgentScope：2.0.8
 > 模型：项目 qwen-plus，temperature 0
