@@ -9,6 +9,26 @@
 
 状态、枚举、动作码和流程节点的中文含义统一见 [11-status-enum-glossary.md](11-status-enum-glossary.md)。
 
+## 文档同步规则
+
+本项目实行“**代码与文档同步完成**”原则：
+
+> 每次代码、配置、架构、接口、状态、测试或用户行为发生变化，都必须在同一 Task 中检查并完善受到影响的文档。
+
+不要求机械修改全部五份主设计文档，而是按影响范围更新：
+
+- 需求变化 → `docs/design/01`
+- 目标变化 → `docs/design/02`
+- 用户效果变化 → `docs/design/03`
+- 技术方案变化 → `docs/design/04`
+- 测试 / 验收变化 → `docs/design/05`
+- 新实验 / 新证据 → `docs/evidence/`
+- 当前实现变化 → 对应 Current Implementation 文档
+- 状态 / 枚举变化 → `docs/11-status-enum-glossary.md`
+- 单次实施结果 → `docs/tasks/`
+
+如果代码已经改变而相关文档没有同步，该 Task 不算完成。详细规则见根目录 `AGENTS.md`。
+
 ## 项目主设计基线（Project Design Baseline）
 
 | 阶段 | 文档 | 治理状态 |
