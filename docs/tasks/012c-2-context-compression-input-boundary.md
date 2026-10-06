@@ -308,8 +308,8 @@ Conversation Context 判断：`WRAP`。Authority Context、Resolver、Task / Exe
 ### 分支与交付
 
 - 分支：`codex/task-12-agentscope-native-capability-poc`。
-- 本次实现基于 Task 012C.2 最新已知基线 `ffc007c`；工作树存在未提交 Task 012C.2 改动。
-- 本 Task 的独立提交与推送按用户后续明确指示执行；最终提交 ID 及远端状态以 Git 历史为准。
+- 本次实现基于 Task 012C.2 基线 `ffc007c8f0129bcc7ce733898c1edeb68e285bad`。
+- 实现提交：`6afa678d120db5b6ece0119fcef482bf459e2d02`（`fix: preserve current turn across context compression`），已推送到远端同名分支。
 - 新增文件：`tests/integration/test_context_compression_input_boundary.py`、`docs/evidence/09-Task012C2-ContextCompression输入边界.md`。
 - 修改文件：本 Task、Task 012 总任务、Design 04 / 05、Current Implementation 08 / 10 / 12、两个 README、middleware 与相关 integration / unit tests。
 - 未完成项：生产持久化 Session 场景和真实模型 / 真实井数据并未在本 Task 验收；HITL / Tracing 不在本 Task 范围内。
