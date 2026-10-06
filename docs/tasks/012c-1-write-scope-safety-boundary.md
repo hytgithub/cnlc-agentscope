@@ -362,6 +362,6 @@ Task 只有在以下全部完成后才能关闭：
 
 - Architecture Issue：压缩后模型收到框架摘要作为最近 user-role 输入，导致模型候选 Task 引用偏向旧井；Bridge 安全拒绝但交互无法完成。需要单独定位 AgentScope Conversation Context 输入边界，当前 Task 不扩大范围修复。
 - Branch：`codex/task-12-agentscope-native-capability-poc`。
-- Commit：尚未创建。
-- Push：未推送。
+- Commit：`dacec28f136c9a9b2e277c5b9ec87f86075027a7`（`feat: enforce Task 012C.1 write scope boundary`）。
+- Push：已推送到远端同名分支。
 - 后续依赖：四参数的自然业务粒度待业务确认；压缩会话输入问题待架构评审。完成本 Task 后停止，不自动开始 HITL / Tracing。
