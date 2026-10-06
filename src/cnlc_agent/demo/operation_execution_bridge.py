@@ -182,6 +182,10 @@ class OperationExecutionBridge:
                             ),
                         )
                         result.resolved_executions[op.operation_id] = execution
+                        if op.action == ActionType.MODIFY_PARAMETER and op.scope is None:
+                            # 缺省参数修改范围必须澄清；不能把整井能力白名单
+                            # 误当成用户授权，也不能在后续 Resolver 中制造整井 scope。
+                            continue
                         op.scope = op.scope or WholeWellScope()
                         result.resolved_scopes[op.operation_id] = await scopes.resolve_reference(
                             task.task_id, execution.execution_id, op.scope
@@ -203,6 +207,24 @@ class OperationExecutionBridge:
                                 == view.execution_id
                             )
                         ]
+                    for op in plan.operations:
+                        if (
+                            op.action == ActionType.MODIFY_PARAMETER
+                            and op.scope is None
+                            and not any(
+                                issue.operation_id == op.operation_id for issue in resolved.issues
+                            )
+                        ):
+                            # B 可能证明 View 就是 current 并消除 C 的版本冲突；
+                            # 冲突消除后仍需重新执行缺范围澄清检查。
+                            resolved.issues.append(
+                                ClarificationIssue(
+                                    operation_id=op.operation_id,
+                                    slot=ClarificationSlot.SCOPE,
+                                    error_code="CLARIFICATION_REQUIRED",
+                                    message="请明确本次参数修改范围；查看范围不会自动成为写入范围",
+                                )
+                            )
                     result.validation = self.validator.validate(
                         resolved, resolved_task_references=result.resolved_tasks
                     )

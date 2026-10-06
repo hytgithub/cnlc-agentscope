@@ -32,8 +32,8 @@
 3. 012B：真实多轮 Context 与权威业务锚定边界（已执行；原始三次运行证据保留）
 4. 012B.1：已补齐 M01～M06 第 4、5 次、保留 M07 三次，并更新 Evidence 06、04/05；012B 补齐闭环完成
 5. 012C：AgentScope 原生 Task Tools 多步骤对照（已执行；Evidence 07；`REGISTERED_BUT_UNUSED（已注册但未使用）`）
-6. 012C.1：写范围语义与生产安全边界核对（下一步；审计缺 scope → WholeWellScope 的正式产品语义）
-7. 012C.1 评审通过后再决定：HITL/Interrupt、TracingMiddleware
+6. 012C.1：写范围语义与生产安全边界核对（已完成；按结论 B 做了最小生产安全修复并记录 Evidence 08；参数天然粒度仍待业务确认）
+7. 012C.1 语义评审后再决定：HITL/Interrupt、TracingMiddleware
 8. 012E：当前阶段职责边界审计（已形成阶段性结论，不视为最终架构定稿）
 
 ## 硬边界

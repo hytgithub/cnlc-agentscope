@@ -415,10 +415,10 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                 # 每轮官方服务重新创建 Agent/Tools，内存仓库仍由同一会话 runner 持有。
                 for text, command in [
                     ("只重新算Sw", None),
-                    ("把孔隙度、渗透率改成0.16", "MODIFY"),
+                    ("把全井孔隙度、渗透率改成0.16", "MODIFY"),
                     ("给我上一版报告", "GET_REPORT"),
                     ("现在处理到哪里了？", "STATUS"),
-                    ("改成0.17", None),
+                    ("全井改成0.17", None),
                     ("孔隙度", "MODIFY"),
                 ]:
                     execution_count = len(await runner.repository.list_executions(first["task_id"]))
@@ -445,7 +445,9 @@ async def test_official_chat_upload_sse_and_saved_report(tmp_path, data_dir, mon
                     # 官方 HTTP 每轮新建 Agent，仍须保留同一 Runner 的 Pending owner。
                     if command is None:
                         assert operation["outcome"] == (
-                            "NEED_CLARIFICATION" if text == "改成0.17" else "KNOWN_UNSUPPORTED"
+                            "NEED_CLARIFICATION"
+                            if text == "全井改成0.17"
+                            else "KNOWN_UNSUPPORTED"
                         ), operation
                         assert not operation["created_execution_ids"]
                         assert (

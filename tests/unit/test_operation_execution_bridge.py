@@ -47,6 +47,7 @@ def node(action="MODIFY_PARAMETER", *, op_id="op1", target=None, **kwargs):
         "target": target or ("POROSITY" if action == "MODIFY_PARAMETER" else "WELL"),
     }
     if action == "MODIFY_PARAMETER":
+        data["scope"] = {"kind": "WHOLE_WELL"}
         data["parameters"] = {"value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}}
     data.update(kwargs)
     return data
@@ -292,7 +293,9 @@ async def test_status_rejects_historical_selection(env, kind):
 )
 async def test_supported_parameters_really_create_one_execution(env, target, parameters, expected):
     runner, first, bridge = env
-    result = await bridge.execute(plan(node(target=target, parameters=parameters)))
+    result = await bridge.execute(
+        plan(node(target=target, parameters=parameters, scope={"kind": "WHOLE_WELL"}))
+    )
     assert result.outcome == "SUCCESS", result
     assert await count(runner) == 2
     assert len(result.created_execution_ids) == 1
@@ -301,6 +304,100 @@ async def test_supported_parameters_really_create_one_execution(env, target, par
     assert result.results[0].source_execution_id == first.execution_id
     completed = await runner.wait_for_completion(first.task_id, result.created_execution_ids[0])
     assert completed.report_ready
+
+
+@pytest.mark.parametrize(
+    "target,parameters",
+    [
+        ("POROSITY", {"value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}}),
+        ("PERMEABILITY", {"value": {"mode": "ABSOLUTE", "value": 0.4, "unit": "mD"}}),
+        (
+            "WELL",
+            {
+                "parameter_name": "sampling_interval",
+                "value": {"mode": "ABSOLUTE", "value": 0.2, "unit": "m"},
+            },
+        ),
+        ("MODEL", {"model_id": "model-v2"}),
+    ],
+)
+async def test_missing_scope_requires_clarification_for_each_parameter(env, target, parameters):
+    runner, _, bridge = env
+    await reject(
+        env,
+        plan(node(target=target, parameters=parameters, scope=None)),
+        "CLARIFICATION_REQUIRED",
+    )
+    assert runner.interaction_context.active.scope is None
+
+
+async def test_active_scope_is_inherited_only_for_its_bound_version(env):
+    runner, first, bridge = env
+    from cnlc_agent.demo.operation_models import WholeWellScope
+
+    runner.set_active_base(first.task_id, first.execution_id, WholeWellScope())
+    result = await bridge.execute(
+        plan(node(task_reference={"kind": "TASK_ID", "value": first.task_id}, scope=None))
+    )
+    assert result.outcome == "SUCCESS", result
+    assert result.resolved_scopes["op1"].scope == WholeWellScope()
+    await runner.wait_for_completion(first.task_id, result.created_execution_ids[0])
+
+
+async def test_view_scope_never_becomes_implicit_write_scope(env):
+    runner, first, bridge = env
+    from cnlc_agent.demo.operation_models import IntervalScope
+
+    runner.clear_active_base()
+    execution = await runner.repository.get_execution(first.execution_id)
+    interval = IntervalIndex(execution).identities()[0]
+    runner.set_view_context(
+        first.task_id,
+        first.execution_id,
+        IntervalScope(interval_id=interval.interval_id),
+    )
+    result = await bridge.execute(
+        plan(node(task_reference={"kind": "TASK_ID", "value": first.task_id}, scope=None))
+    )
+    assert result.outcome == "NEED_CLARIFICATION", result.model_dump(mode="json")
+    assert result.error_code == "CLARIFICATION_REQUIRED"
+    assert result.resolved_scopes == {}
+    assert await count(runner) == 1
+
+
+async def test_old_view_scope_cannot_override_current_active_write_scope(env):
+    runner, first, bridge = env
+    from cnlc_agent.demo.operation_models import IntervalScope, WholeWellScope
+
+    current = await second_version(runner, first)
+    runner.set_active_base(current.task_id, current.execution_id, WholeWellScope())
+    first_execution = await runner.repository.get_execution(first.execution_id)
+    interval = IntervalIndex(first_execution).identities()[0]
+    runner.set_view_context(
+        first.task_id, first.execution_id, IntervalScope(interval_id=interval.interval_id)
+    )
+    result = await bridge.execute(plan(node(scope=None)))
+    assert result.outcome == "SUCCESS", result
+    assert result.resolved_executions["op1"].execution_id == current.execution_id
+    assert result.resolved_scopes["op1"].scope == WholeWellScope()
+    await runner.wait_for_completion(current.task_id, result.created_execution_ids[0])
+
+
+async def test_active_local_scope_is_not_upgraded_to_whole_well(env):
+    runner, first, bridge = env
+    from cnlc_agent.demo.operation_models import IntervalScope
+
+    execution = await runner.repository.get_execution(first.execution_id)
+    interval = IntervalIndex(execution).identities()[0]
+    runner.set_active_base(
+        first.task_id,
+        first.execution_id,
+        IntervalScope(interval_id=interval.interval_id),
+    )
+    result = await bridge.execute(plan(node(scope=None)))
+    assert result.outcome == "KNOWN_UNSUPPORTED", result
+    assert result.error_code == "UNSUPPORTED_OPERATION"
+    assert await count(runner) == 1
 
 
 async def test_multi_modify_aggregation_and_duplicate_deduplication(env, monkeypatch):
@@ -324,6 +421,24 @@ async def test_multi_modify_aggregation_and_duplicate_deduplication(env, monkeyp
     assert isinstance(command, ModifyInterpretationCommand)
     assert command.changes == InterpretationOverride(por=0.16, perm=0.4)
     assert await count(runner) == 2
+
+
+async def test_one_missing_scope_blocks_entire_multi_modify_plan(env, monkeypatch):
+    runner, _, bridge = env
+    execute = AsyncMock(wraps=runner.execute)
+    monkeypatch.setattr(runner, "execute", execute)
+    result = await bridge.execute(
+        plan(node(), node(op_id="missing-scope", scope=None))
+    )
+    assert result.outcome == "NEED_CLARIFICATION", result
+    assert result.error_code == "CLARIFICATION_REQUIRED"
+    assert result.validation is not None
+    assert any(
+        issue.operation_id == "missing-scope" and issue.slot == "SCOPE"
+        for issue in result.validation.missing_slots
+    )
+    execute.assert_not_awaited()
+    assert await count(runner) == 1
 
 
 async def test_conflicting_modify_values_do_not_execute(env):

@@ -80,6 +80,8 @@ PLAN 接受 PartialOperationPlan。
 问能力用 CAPABILITY_QUERY；
 通常 persist_mode=CREATE_VERSION。
 缺目标或值必须保留缺槽，不猜。
+修改范围只有在用户本轮明确表达时才提交；不得把缺范围补成 WHOLE_WELL。省略范围时，
+服务器只可能继承与 Active 基线同版本绑定的可信范围，否则会要求用户澄清。查看范围不等于写范围。
 
 “孔隙度改成0.16” -> MODIFY_PARAMETER / POROSITY / ABSOLUTE 0.16 / unit=1。
 PLAN 节点的数值必须放在 parameters.value，不能放在节点顶层。
@@ -512,7 +514,7 @@ class MockTaskShellModel(ChatModelBase):
             plan["operations"].append(op)
 
         layer = re.search(r"第([0-9、，,和\s]+)层", instruction)
-        scope: dict[str, Any] = {"kind": "WHOLE_WELL"}
+        scope: dict[str, Any] | None = None
         if layer:
             ordinals = [int(n) for n in re.findall(r"\d+", layer.group(1))]
             scope = (
@@ -520,6 +522,10 @@ class MockTaskShellModel(ChatModelBase):
                 if len(ordinals) == 1
                 else {"kind": "MULTI_INTERVAL_ORDINAL", "ordinals": ordinals}
             )
+        elif any(
+            phrase in instruction for phrase in ("全井", "整井", "整口井", "全口井", "整个井")
+        ):
+            scope = {"kind": "WHOLE_WELL"}
         modify = any(
             word in lower for word in ("修改", "改成", "改为", "改一下", "提高", "降低")
         )

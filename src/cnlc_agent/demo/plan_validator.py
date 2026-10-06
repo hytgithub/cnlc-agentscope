@@ -301,7 +301,17 @@ class PlanValidator:
                 ClarificationIssue(slot=ClarificationSlot.TARGET, message="请明确需要进行的操作")
             )
         finalized = finalize_partial_plan(plan)
-        result.missing_slots.extend(context_issues)
+        unsupported_ids = {
+            fact.operation_id for fact in result.capability_issues if fact.operation_id is not None
+        }
+        result.missing_slots.extend(
+            issue
+            for issue in context_issues
+            if not (
+                issue.slot == ClarificationSlot.SCOPE
+                and issue.operation_id in unsupported_ids
+            )
+        )
         result.missing_slots.extend(finalized.issues)
         writes = [op for op in plan.operations if op.action not in READ_ACTIONS]
         if writes and plan.input_classification == InputClassification.READ_REQUEST:

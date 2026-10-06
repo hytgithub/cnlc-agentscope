@@ -100,7 +100,7 @@ def test_task_creation_actions_do_not_inherit_active_or_require_existing_task(ac
 
 def test_explicit_active_base_beats_view_version():
     resolved = OperationContextResolver().resolve(plan(), context(base="active-V2", view_task="A"))
-    assert resolved.issues == []
+    assert [issue.slot for issue in resolved.issues] == ["SCOPE"]
     assert resolved.plan.operations[0].execution_reference.execution_id == "active-V2"
 
 
@@ -109,7 +109,7 @@ def test_explicit_task_wins_without_foreign_version_inheritance(task_id):
     resolved = OperationContextResolver().resolve(
         plan(task_reference={"kind": "TASK_ID", "value": task_id}), context(base="active-V2")
     )
-    assert resolved.issues == []
+    assert [issue.slot for issue in resolved.issues] == ["SCOPE"]
     assert resolved.plan.operations[0].task_reference.value == task_id
     assert resolved.plan.operations[0].execution_reference is None
 
@@ -147,7 +147,7 @@ def test_scope_inherits_only_with_matching_task_and_version():
     assert resolver.resolve(plan("QUERY"), ctx).plan.operations[0].scope.interval_id == "view-layer"
     explicit = resolver.resolve(plan(execution_reference={"kind": "TASK_CURRENT"}), ctx)
     assert explicit.plan.operations[0].scope is None
-    assert explicit.issues == []
+    assert [issue.slot for issue in explicit.issues] == ["SCOPE"]
 
 
 def test_view_only_cannot_supply_write_task_and_recent_is_opt_in():

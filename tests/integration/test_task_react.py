@@ -84,14 +84,18 @@ class ScriptedTaskModel(ChatModelBase):
             previous = json.loads(output if isinstance(output, str) else output[0].text)
         # 独立脚本直接形成结构化 Tool Call，验证生产入口，不依赖 Mock 关键词解析。
         action = {
-            "把孔隙度、渗透率改成0.16": "MODIFY_PARAMETER",
+            "把全井孔隙度、渗透率改成0.16": "MODIFY_PARAMETER",
             "全部重新跑": "FULL_RERUN",
             "给我上一版报告": "REPORT",
             "现在处理到哪里了？": "STATUS",
             "改成0.17": "MODIFY_PARAMETER",
+            "全井改成0.17": "MODIFY_PARAMETER",
             "帮我改一下": "MODIFY_PARAMETER",
+            "全井帮我改一下": "MODIFY_PARAMETER",
             "孔隙度": "MODIFY_PARAMETER",
             "0.16": "MODIFY_PARAMETER",
+            "全井孔隙度修改为0.16": "MODIFY_PARAMETER",
+            "全井孔隙度修改为0.17": "MODIFY_PARAMETER",
             "只重新算Sw": "RECALCULATE",
         }[instruction]
         operations = [{"operation_id": "op1", "action": action, "target": "WELL"}]
@@ -109,7 +113,7 @@ class ScriptedTaskModel(ChatModelBase):
             operations[0]["execution_reference"] = {
                 "kind": "PREVIOUS" if action == "REPORT" else "TASK_CURRENT"
             }
-        if instruction == "改成0.17":
+        if instruction in {"改成0.17", "全井改成0.17"}:
             operations = [
                 {
                     "operation_id": "op1",
@@ -119,6 +123,15 @@ class ScriptedTaskModel(ChatModelBase):
             ]
         if instruction == "帮我改一下":
             operations = [{"operation_id": "op1", "action": action}]
+        if instruction == "全井帮我改一下":
+            operations = [{
+                "operation_id": "op1",
+                "action": action,
+                "scope": {"kind": "WHOLE_WELL"},
+            }]
+        if "全井" in instruction:
+            for operation in operations:
+                operation["scope"] = {"kind": "WHOLE_WELL"}
         if action == "RECALCULATE":
             operations[0]["target"] = "WATER_SATURATION"
             operations[0]["execution_reference"] = {"kind": "TASK_CURRENT"}
@@ -210,7 +223,13 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
     await runner.wait_for_completion(first["task_id"], first["execution_id"])
     seen_results = []
     streamed_events = {}
-    for text in ["把孔隙度、渗透率改成0.16", "给我上一版报告", "全部重新跑", "现在处理到哪里了？"]:
+    instructions = [
+        "把全井孔隙度、渗透率改成0.16",
+        "给我上一版报告",
+        "全部重新跑",
+        "现在处理到哪里了？",
+    ]
+    for text in instructions:
         events = [e async for e in agent.reply_stream(UserMsg(name="user", content=text))]
         streamed_events[text] = events
         results = [e for e in events if isinstance(e, ToolResultEndEvent)]
@@ -227,7 +246,7 @@ async def test_upload_then_react_modify_previous_full_and_status(data_dir):
     assert full["execution_sequence"] == 3 and full["reused_steps"] == []
     assert full["effective_override"] == modified["effective_override"]
     assert status["execution_id"] == full["execution_id"]
-    modified_events = streamed_events["把孔隙度、渗透率改成0.16"]
+    modified_events = streamed_events["把全井孔隙度、渗透率改成0.16"]
     modified_progress = "".join(
         event.delta for event in modified_events if isinstance(event, ThinkingBlockDeltaEvent)
     )
@@ -281,7 +300,7 @@ async def test_react_three_turn_clarification_executes_exactly_once(data_dir):
 
         first_reply = [
             event
-            async for event in agent.reply_stream(UserMsg(name="user", content="帮我改一下"))
+        async for event in agent.reply_stream(UserMsg(name="user", content="全井帮我改一下"))
         ]
         assert next(
             event for event in first_reply if isinstance(event, ToolResultEndEvent)
@@ -382,7 +401,7 @@ async def test_modify_disconnect_does_not_cancel_shared_execution(data_dir, monk
         return await original(self, request)
 
     monkeypatch.setattr(MockModelGateway, "generate", waiting_model)
-    stream = agent.reply_stream(UserMsg(name="user", content="把孔隙度、渗透率改成0.16"))
+    stream = agent.reply_stream(UserMsg(name="user", content="把全井孔隙度、渗透率改成0.16"))
     events = []
     async for event in stream:
         events.append(event)
@@ -432,7 +451,7 @@ async def test_modify_failure_stream_stops_at_failed_step(data_dir, monkeypatch)
         events = [
             event
             async for event in agent.reply_stream(
-                UserMsg(name="user", content="把孔隙度、渗透率改成0.16")
+                UserMsg(name="user", content="把全井孔隙度、渗透率改成0.16")
             )
         ]
         progress = "".join(
@@ -529,7 +548,9 @@ async def test_mock_shell_supports_context_compression_and_keeps_task_identity(d
 
         events = [
             event
-            async for event in agent.reply_stream(UserMsg(name="user", content="孔隙度修改为0.16"))
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="全井孔隙度修改为0.16")
+            )
         ]
         modified = next(e for e in events if isinstance(e, ToolResultEndEvent)).metadata["result"]
         assert modified["task_id"] == first["task_id"]
@@ -565,7 +586,9 @@ async def test_mock_shell_resolves_active_previous_and_named_wells(data_dir, fix
         await runner.wait_for_completion(first["task_id"], first["execution_id"])
         modified_events = [
             event
-            async for event in agent.reply_stream(UserMsg(name="user", content="孔隙度修改为0.17"))
+            async for event in agent.reply_stream(
+                UserMsg(name="user", content="全井孔隙度修改为0.17")
+            )
         ]
         modified_a = next(
             event for event in modified_events if isinstance(event, ToolResultEndEvent)
@@ -642,7 +665,7 @@ async def test_mock_shell_resolves_active_previous_and_named_wells(data_dir, fix
         modify_again_events = [
             event
             async for event in agent.reply_stream(
-                UserMsg(name="user", content="把孔隙度改成0.18重新解释")
+                UserMsg(name="user", content="把全井孔隙度改成0.18重新解释")
             )
         ]
         modified_again = next(

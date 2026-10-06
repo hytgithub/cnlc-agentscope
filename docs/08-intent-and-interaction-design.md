@@ -59,7 +59,8 @@ Pydantic 校验。框架早于 on_acting 的 Schema 错误出口由项目 Agent 
 
 | 用户输入 | 语义 | 当前结果 |
 | --- | --- | --- |
-| 孔隙度改成0.16 | MODIFY_PARAMETER（修改参数）、POROSITY（孔隙度） | 新版本，应用层决定复用范围。 |
+| 孔隙度改成0.16 | MODIFY_PARAMETER（修改参数）、POROSITY（孔隙度） | 缺范围且无同版本可信 Active scope 时返回 CLARIFICATION_REQUIRED（需要澄清），不创建版本；若有可信 Active scope 则可继承。 |
+| 全井孔隙度改成0.16 | MODIFY_PARAMETER（修改参数）、POROSITY（孔隙度）、WHOLE_WELL（整井范围） | 本轮原话明确全井范围后，按现有参数契约创建新版本。 |
 | 孔隙度、渗透率都改成0.16 | 同一计划两个参数节点 | 聚合为一个命令、一个 Execution。 |
 | 改成0.17 → 孔隙度 | 缺 TARGET（目标）→ 补齐 | 第一轮零执行，第二轮恰好一次。 |
 | 全部重跑 | FULL_RERUN（全量重跑） | 保留有效参数，从 W01 开始。 |
@@ -101,7 +102,7 @@ View=V3 时返回 V2。历史版本读取不改变 Task.current_execution_id；�
 模型只可表达 INTERVAL_ORDINAL 或 MULTI_INTERVAL_ORDINAL（多个层号引用，正整数且稳定去重）。
 ScopeResolver 从已授权 Task + Execution 快照解析成稳定 interval identity；完整 OperationPlan
 不接收 ordinal。模型输入 Schema 隐藏且运行时拒绝 interval_id、interval_ids、resolved_ids。
-局部范围不允许静默退化成整井，多个层号必须全部存在。
+局部范围不允许静默退化成整井，多个层号必须全部存在。参数修改不从 View 自动继承范围；无范围时只可继承与 Active execution 完全匹配的服务端 scope，否则澄清。模型提交的 WHOLE_WELL 必须与本轮用户原话中的全井表达相符。
 
 ## 6. 流式展示和边界
 

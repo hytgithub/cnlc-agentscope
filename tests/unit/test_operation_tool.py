@@ -40,6 +40,7 @@ def request(target="POROSITY", **fields):
                     "operation_id": "op1",
                     "action": "MODIFY_PARAMETER",
                     "target": target,
+                    "scope": {"kind": "WHOLE_WELL"},
                     "parameters": {"value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "1"}},
                     **fields,
                 }

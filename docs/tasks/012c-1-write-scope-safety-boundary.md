@@ -324,3 +324,44 @@ Task 只有在以下全部完成后才能关闭：
 完成后不要自动开始 HITL / Interrupt 或 Tracing。
 
 先人工评审写范围最终语义，再继续 AgentScope 剩余能力验证。
+
+---
+
+## 13. 执行结果（2026-10-04）
+
+### 决策与实现
+
+选择结论 B：仅允许同一 Task / Execution 工作基线上的可信 Active scope 继承；无本轮明确范围且无匹配 Active scope 时返回 `NEED_CLARIFICATION（需要澄清）`。View scope 不赋予写权限。`por`、`perm`、`sampling_interval`、`prediction_model` 目前均仅声明整井 capability，但是否“业务上天然整井”缺少依据，逐项标记 `BUSINESS_CONFIRMATION_REQUIRED（需要业务确认）`，未补造专业规则。
+
+实现了 Resolver 缺 scope issue、Bridge 不再把缺失写范围合成为整井、Middleware 拒绝模型候选但未被本轮文字支持的 `WHOLE_WELL`；同步调整 Mock 模型提示和旧测试夹具，使成功用例明确给出整井意图。局部 scope 仍按 capability 稳定拒绝，多 operation 的预检保持整体阻断。
+
+### 新增 / 修改文件
+
+- 新增 `docs/evidence/08-Task012C1-写范围语义与安全边界核对.md`。
+- 修改 `src/cnlc_agent/demo/operation_context_resolver.py`、`operation_execution_bridge.py`、`interaction_middleware.py`、`demo_agent.py`、`plan_validator.py`。
+- 修改范围测试：`tests/unit/test_operation_context_resolver.py`、`test_operation_execution_bridge.py`、`test_operation_clarification.py`、`test_operation_tool.py`；集成测试：`tests/integration/test_interaction_robustness.py`、`test_task_react.py`、`test_demo_web_http.py`。
+- 修改 `docs/design/04-测井解释智能体技术方案.md`、`docs/design/05-测井解释智能体测试与验收方案.md`、`docs/08-intent-and-interaction-design.md`、`docs/10-interaction-state-machine.md`、`docs/evidence/README.md`、`docs/README.md`、`docs/tasks/012-agentscope-native-capability-poc.md`。
+- Evidence 07 中保留 012C 原实验结论和 post-review 注记，没有改写原始数据。
+
+### 测试与检查
+
+- 目标测试组：`164 passed`。
+- `pytest tests/unit -q`：`741 passed, 1 warning`（Starlette `BlockingPortal` 弃用提醒）。
+- 相关 ReAct / Web 集成测试：`31 passed, 1 failed`。失败项 `test_mock_shell_supports_context_compression_and_keeps_task_identity` 在 AgentScope 强制压缩后把框架摘要作为最近 user-role 内容，Mock 模型从摘要中的旧井号提交引用，最终被 Bridge 以 `SESSION_WELL_NOT_FOUND` 安全拒绝；没有创建 Execution。该问题是未解决的上下文输入/引用路由回归，列为 Architecture Issue，不得视为集成测试通过。
+- `pytest tests/integration -q`：`177 passed, 22 skipped, 2 failed`。`test_read_api_restores_durable_binding_before_any_new_chat` 因未设置 `DATABASE_URL` 无法启动；上下文压缩的 ReAct 用例安全拒绝旧摘要井号引用，见 Architecture Issue。PostgreSQL / Redis、模型凭证及 GDSX 文件相关 22 项按项目约定跳过。
+- `ruff check src tests`：全仓失败，当前报告 222 项问题，集中在本 Task 未修改的既有 `pygdsx` / `wplm` 文件；本次触及的 12 个源代码 / 测试文件单独检查 All checks passed。`git diff --check`：通过。
+
+### Documentation Impact
+
+- 已更新 Evidence 08、Task 012C.1 执行结果、Task 012 路线、设计 04/05、Current Implementation 08/10、Evidence 导航和 `docs/README.md`。
+- 设计 01/02/03 已检查无需改：本次没有需求、建设目标或产品效果语义变更；状态/枚举无新增，因此 `docs/11-status-enum-glossary.md` 无需修改。
+- Evidence 07 保留并满足 post-review 记录要求；本次另建 Evidence 08 记录审计矩阵、决策、测试和运行问题。
+- 遗留文档/实现不一致：AgentScope 压缩会话中当前输入与历史摘要的呈现/引用提取尚未解决，已在 Evidence 08 记录，不能以摘要作为 Authority。
+
+### 架构与交付状态
+
+- Architecture Issue：压缩后模型收到框架摘要作为最近 user-role 输入，导致模型候选 Task 引用偏向旧井；Bridge 安全拒绝但交互无法完成。需要单独定位 AgentScope Conversation Context 输入边界，当前 Task 不扩大范围修复。
+- Branch：`codex/task-12-agentscope-native-capability-poc`。
+- Commit：尚未创建。
+- Push：未推送。
+- 后续依赖：四参数的自然业务粒度待业务确认；压缩会话输入问题待架构评审。完成本 Task 后停止，不自动开始 HITL / Tracing。

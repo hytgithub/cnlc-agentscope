@@ -25,11 +25,17 @@ from cnlc_agent.demo.interaction_state import (
     InteractionSnapshot,
     render_interaction_result,
 )
+from cnlc_agent.demo.operation_models import ActionType, WholeWellScope
 from cnlc_agent.demo.task_tools import TaskCommandRunner, interaction_chunk
 
 _NUMBER_PATTERN = re.compile(
     r"(?<![\d.])([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(%)?"
 )
+_WHOLE_WELL_WORDING = re.compile(r"全井|整井|整口井|全口井|整个井")
+
+
+class UngroundedWriteScope(ValueError):
+    """模型候选整井范围没有本轮用户措辞支持，不能进入执行桥。"""
 
 
 def extract_grounded_numbers(user_text: str) -> set[float]:
@@ -57,25 +63,35 @@ def _scope_ordinals(scope: Any) -> list[int]:
 
 
 def validate_grounded_operation_values(request: Any, user_text: str) -> None:
-    """验证关键数值来自当前轮；不判断数字对应的业务意图。"""
+    """验证关键数值和整井范围来自当前轮；不判断数字对应的业务意图。"""
 
     from cnlc_agent.demo.operation_interaction import ClarificationReplyRequest, PlanRequest
 
     numbers = extract_grounded_numbers(user_text)
     values: list[float] = []
     ordinals: list[int] = []
+    write_scopes: list[Any] = []
     if isinstance(request, PlanRequest):
         ordinals.extend(_scope_ordinals(request.plan.shared_context.scope))
+        if any(op.action == ActionType.MODIFY_PARAMETER for op in request.plan.operations):
+            write_scopes.append(request.plan.shared_context.scope)
         for operation in request.plan.operations:
             value = operation.parameters.value
             if value is not None and value.mode == "ABSOLUTE":
                 values.append(value.value)
             ordinals.extend(_scope_ordinals(operation.scope))
+            if operation.action == ActionType.MODIFY_PARAMETER:
+                write_scopes.append(operation.scope)
     elif isinstance(request, ClarificationReplyRequest):
         value = request.patch.value
         if value is not None and value.mode == "ABSOLUTE":
             values.append(value.value)
         ordinals.extend(_scope_ordinals(request.patch.scope))
+        write_scopes.append(request.patch.scope)
+    if any(isinstance(scope, WholeWellScope) for scope in write_scopes) and not (
+        _WHOLE_WELL_WORDING.search(user_text)
+    ):
+        raise UngroundedWriteScope("whole-well scope is not stated in the current user turn")
     if any(value not in numbers for value in values) or any(
         float(ordinal) not in numbers for ordinal in ordinals
     ):
@@ -190,6 +206,26 @@ class InteractionStateMiddleware(MiddlewareBase):
                         "",
                     )
                     validate_grounded_operation_values(request, user_text)
+        except UngroundedWriteScope:
+            if pending_before_validation is not None and invalid_operation_mode not in {
+                "PLAN",
+                "CANCEL",
+                "SET_ACTIVE_CONTEXT",
+            }:
+                self.runner.retain_operation_clarification()
+            else:
+                self.runner.clear_operation_clarification()
+            chunk = interaction_chunk(
+                "CLARIFICATION_REQUIRED",
+                "请明确本次修改范围（如全井或具体层段）；系统不会根据模型候选范围扩大写入。",
+            )
+            yield ToolResponse(
+                id=input_kwargs["tool_call"].id,
+                content=chunk.content,
+                state=ToolResultState.ERROR,
+                metadata=chunk.metadata,
+            )
+            return
         except (ValidationError, ValueError, TypeError):
             if pending_before_validation is not None and invalid_operation_mode not in {
                 "PLAN",

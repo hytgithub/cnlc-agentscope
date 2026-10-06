@@ -86,7 +86,8 @@ SSE 断开仍不取消后台 Worker。
 | NO_TASK | MODIFY | REJECT | modify_well_interpretation | 否 | TASK_NOT_FOUND |
 | NO_TASK | FULL_RERUN | REJECT | rerun_well_interpretation | 否 | TASK_NOT_FOUND |
 | NO_TASK / READY | START | EXECUTE | run_well_interpretation | 是 | 新 Task/Input/Execution，沿用上传行为 |
-| READY | MODIFY | EXECUTE | modify_well_interpretation | 是 | Application 规划 RUN/REUSE，流式报告 |
+| READY | MODIFY，范围明确或有匹配 Active scope | EXECUTE | modify_well_interpretation | 是 | Application 规划 RUN/REUSE，流式报告 |
+| READY | MODIFY，缺范围且无匹配 Active scope | CLARIFY | interpret_interpretation_operation | 否 | NEED_CLARIFICATION（需要澄清）；View 不作为写范围，WHOLE_WELL 不自动补齐 |
 | READY | NO_EFFECTIVE_CHANGE | REJECT | modify_well_interpretation | 否 | 参数已经是目标值，本次没有新执行 |
 | READY | FULL_RERUN | EXECUTE | rerun_well_interpretation | 是 | W01 起全量执行，保留参数 |
 | READY | STATUS | QUERY | get_interpretation_status | 否 | 本轮重新读取持久事实 |
@@ -104,6 +105,8 @@ SSE 断开仍不取消后台 Worker。
 | REVIEW_REQUIRED | STATUS | QUERY | get_interpretation_status | 否 | 明确需要人工复核，不自动继续 |
 | WARNING | REPORT | QUERY | get_interpretation_report | 否 | 本版已完成报告 |
 | WARNING | MODIFY | EXECUTE | modify_well_interpretation | 是 | 允许后续写操作，保留应用校验 |
+
+参数修改范围先由确定性 Resolver 解析：本轮明确范围优先；省略时只可继承与 Active Task / Execution 匹配的 scope。View 仅供读取，不会自动转成写入范围；缺少可继承范围时零执行并等待用户澄清。对话层还会核对模型提交的 WHOLE_WELL（整井范围）是否得到本轮用户措辞支持。
 | MULTI_WELL | CURRENT | QUERY / EXECUTE | 对应业务 Tool | 写动作才可能 | active task，不使用最近 ToolResult |
 | MULTI_WELL | PREVIOUS_TASK | QUERY / EXECUTE | 对应业务 Tool | 写动作才可能 | 上一口井；成功后成为 active |
 | MULTI_WELL | WELL_ID | QUERY / EXECUTE | 对应业务 Tool | 写动作才可能 | Session 中该井最近 Task |

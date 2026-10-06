@@ -77,7 +77,7 @@ async def test_clarification_completes_once_after_compression(data_dir):
     agent, runner = make_agent(data_dir)
     first = await start(runner)
     try:
-        results, reply, _ = await ask(agent, "改成0.16")
+        results, reply, _ = await ask(agent, "全井改成0.16")
         assert results[0].metadata["error_code"] == "CLARIFICATION_REQUIRED"
         assert "请明确" in reply
         assert (
@@ -137,7 +137,7 @@ async def test_running_rejects_writes_and_reads_live_step(data_dir, monkeypatch)
     execution = submitted.metadata["result"]
     try:
         await asyncio.wait_for(entered.wait(), 5)
-        for instruction in ("孔隙度改成0.18", "全部重新跑", "再重新解释一次"):
+        for instruction in ("全井孔隙度改成0.18", "全部重新跑", "再重新解释一次"):
             results, reply, _ = await ask(agent, instruction)
             assert results[0].metadata["error_code"] == "TASK_EXECUTION_ACTIVE"
             assert "#2" in reply and "W06" in reply
@@ -168,7 +168,7 @@ async def test_running_rejects_writes_and_reads_live_step(data_dir, monkeypatch)
         ("Rw改成0.08", "UNSUPPORTED_OPERATION"),
         ("Archie m改成2", "UNSUPPORTED_OPERATION"),
         ("含水饱和度改成0.3", "UNSUPPORTED_OPERATION"),
-        ("把孔隙度改成0.16，然后全部重跑一次", "COMPOUND_EXECUTION_UNSUPPORTED"),
+        ("把全井孔隙度改成0.16，然后全部重跑一次", "COMPOUND_EXECUTION_UNSUPPORTED"),
         ("修改POR，再重新算SW，再比较上一版", "UNSUPPORTED_OPERATION"),
         ("为什么2035-2038是水层？", "UNSUPPORTED_OPERATION"),
         ("什么是含水饱和度", "UNSUPPORTED_OPERATION"),
@@ -190,8 +190,8 @@ async def test_no_change_and_modify_with_report(data_dir):
     agent, runner = make_agent(data_dir)
     first = await start(runner)
     try:
-        await ask(agent, "把孔隙度改成0.16，解释完给我报告")
-        results, reply, _ = await ask(agent, "孔隙度改成0.16")
+        await ask(agent, "把全井孔隙度改成0.16，解释完给我报告")
+        results, reply, _ = await ask(agent, "全井孔隙度改成0.16")
         assert results[0].metadata["error_code"] == "NO_EFFECTIVE_CHANGE"
         assert "孔隙度已经是0.16" in reply and "没有产生新的执行" in reply
         assert len(await runner.repository.list_executions(first.task_id)) == 2
@@ -276,8 +276,81 @@ async def test_terminal_interaction_status_facts(data_dir, status):
         if status == "WARNING":
             results, _, _ = await ask(agent, "给我报告")
             assert results[0].metadata["result"]["report_ready"]
-            results, _, _ = await ask(agent, "孔隙度改成0.19")
+            results, _, _ = await ask(agent, "全井孔隙度改成0.19")
             assert results[0].metadata["result"]["command"] == "MODIFY"
+    finally:
+        await runner.dispatcher.shutdown()
+
+
+async def test_missing_modify_scope_is_clarified_without_execution(data_dir):
+    agent, runner = make_agent(data_dir)
+    first = await start(runner)
+    try:
+        results, reply, _ = await ask(agent, "孔隙度改成0.16")
+        assert results[0].metadata["error_code"] == "CLARIFICATION_REQUIRED"
+        assert "范围" in reply
+        pending = runner.pending_operation_clarification()
+        assert pending is not None
+        assert any(issue.slot == "SCOPE" for issue in pending.issues)
+        assert len(await runner.repository.list_executions(first.task_id)) == 1
+    finally:
+        await runner.dispatcher.shutdown()
+
+
+async def test_model_cannot_invent_whole_well_scope(data_dir, monkeypatch):
+    from uuid import uuid4
+
+    from agentscope.message import ToolCallBlock
+    from agentscope.model import ChatResponse
+
+    agent, runner = make_agent(data_dir)
+    first = await start(runner)
+
+    async def invented_scope(*args, **kwargs):
+        return ChatResponse(
+            content=[
+                ToolCallBlock(
+                    id=uuid4().hex,
+                    name="interpret_interpretation_operation",
+                    input=json.dumps(
+                        {
+                            "request": {
+                                "mode": "PLAN",
+                                "plan": {
+                                    "input_classification": "EXECUTION_REQUEST",
+                                    "persist_mode": "CREATE_VERSION",
+                                    "original_instruction": "孔隙度改成0.16",
+                                    "operations": [
+                                        {
+                                            "operation_id": "op1",
+                                            "action": "MODIFY_PARAMETER",
+                                            "target": "POROSITY",
+                                            "scope": {"kind": "WHOLE_WELL"},
+                                            "parameters": {
+                                                "value": {
+                                                    "mode": "ABSOLUTE",
+                                                    "value": 0.16,
+                                                    "unit": "1",
+                                                }
+                                            },
+                                        }
+                                    ],
+                                },
+                            }
+                        }
+                    ),
+                )
+            ],
+            is_last=True,
+        )
+
+    monkeypatch.setattr(agent.model, "_call_api", invented_scope)
+    try:
+        results, reply, _ = await ask(agent, "孔隙度改成0.16")
+        assert results[0].metadata["error_code"] == "CLARIFICATION_REQUIRED"
+        assert "范围" in reply
+        assert runner.pending_operation_clarification() is None
+        assert len(await runner.repository.list_executions(first.task_id)) == 1
     finally:
         await runner.dispatcher.shutdown()
 
@@ -332,7 +405,7 @@ async def test_pending_is_anchored_to_named_well_and_refresh_state(data_dir, fix
     await runner.wait_for_completion(second.task_id, second.execution_id)
     runner.set_active_task(first.task_id)
     try:
-        results, _, _ = await ask(agent, "WELL_MOCK_002 改成0.16")
+        results, _, _ = await ask(agent, "WELL_MOCK_002 全井改成0.16")
         assert results[0].metadata["error_code"] == "CLARIFICATION_REQUIRED"
         assert (
             runner.pending_operation_clarification().locked_references[0].task_id == second.task_id
@@ -519,7 +592,7 @@ async def test_invalid_clarification_reply_preserves_pending(data_dir, monkeypat
     agent, runner = make_agent(data_dir)
     first = await start(runner)
     try:
-        await ask(agent, "帮我改一下")
+        await ask(agent, "全井帮我改一下")
         await ask(agent, "孔隙度")
         before = runner.pending_operation_clarification()
         assert {issue.slot for issue in before.issues} == {"VALUE"}

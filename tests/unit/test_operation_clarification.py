@@ -34,6 +34,7 @@ def partial():
                     "operation_id": "change",
                     "action": "MODIFY_PARAMETER",
                     "task_reference": {"kind": "WELL_ID", "value": "WELL_A"},
+                    "scope": {"kind": "WHOLE_WELL"},
                     "parameters": {
                         "value": {"mode": "ABSOLUTE", "value": 0.16, "unit": "fraction"}
                     },

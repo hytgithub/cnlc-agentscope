@@ -11,6 +11,7 @@
 - 05：Task 012A.1 Skill 稳定性、重复运行与 Response Grounding 实验结果。
 - 06：Task 012B 原始多轮 Context 与权威锚定结果，以及 Task 012B.1 补齐后的 5 次汇总证据；
 - 07：Task 012C AgentScope 原生 Task Tools 多步骤 A/B 结果，含 60 次运行、离线复核指标及 P04 写安全失败。
+- 08：Task 012C.1 写范围语义与生产安全边界审计，含 scope 来源矩阵、S01–S07 代码级核对和最小修复回归。
 
 ## 使用规则
 

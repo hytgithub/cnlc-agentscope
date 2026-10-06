@@ -152,6 +152,20 @@ class OperationContextResolver:
             )
             if scope is None and candidate is not None and same_version:
                 scope = candidate.scope
+            if (
+                op.action == ActionType.MODIFY_PARAMETER
+                and scope is None
+                and result.plan.input_classification != InputClassification.CAPABILITY_QUERY
+                and not any(issue.operation_id == op.operation_id for issue in result.issues)
+            ):
+                result.issues.append(
+                    ClarificationIssue(
+                        operation_id=op.operation_id,
+                        slot=ClarificationSlot.SCOPE,
+                        error_code="CLARIFICATION_REQUIRED",
+                        message="请明确本次参数修改范围；查看范围不会自动成为写入范围",
+                    )
+                )
             op.task_reference, op.execution_reference, op.scope = task, execution, scope
         return result
 

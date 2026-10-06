@@ -50,6 +50,7 @@
 - [evidence/05-Task012A1-Skill稳定性与Grounding实验结果.md](evidence/05-Task012A1-Skill稳定性与Grounding实验结果.md)
 - [evidence/06-Task012B-多轮Context与权威锚定实验结果.md](evidence/06-Task012B-多轮Context与权威锚定实验结果.md)
 - [evidence/07-Task012C-TaskPlan多步骤对照实验结果.md](evidence/07-Task012C-TaskPlan多步骤对照实验结果.md)
+- [evidence/08-Task012C1-写范围语义与安全边界核对.md](evidence/08-Task012C1-写范围语义与安全边界核对.md)
 
 证据用于支撑技术方案和验收方案的修订，不自动改写需求、目标和预期效果。详见 [evidence/README.md](evidence/README.md)。
 
