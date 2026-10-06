@@ -104,6 +104,10 @@ ScopeResolver 从已授权 Task + Execution 快照解析成稳定 interval ident
 不接收 ordinal。模型输入 Schema 隐藏且运行时拒绝 interval_id、interval_ids、resolved_ids。
 局部范围不允许静默退化成整井，多个层号必须全部存在。参数修改不从 View 自动继承范围；无范围时只可继承与 Active execution 完全匹配的服务端 scope，否则澄清。模型提交的 WHOLE_WELL 必须与本轮用户原话中的全井表达相符。
 
+### 5.1 本轮输入与压缩摘要
+
+AgentScope 2.0.8 的 Compression Summary 可能以 `user` role 参与模型输入；role 名称不代表它是本轮原话。`reply_stream(inputs=...)` 收到的 Current Turn Input 必须与历史 summary 分离：本轮 WELL / Task / Execution / Scope / Version 引用和数值 grounding 只能以当前原始输入或 Resolver / Repository Authority 为证。当前输入若在压缩时被移除或切分，由 reply 生命周期 Middleware 暂存并在模型调用前恢复；本轮结束清除，不新增持久化 current-input store。Conversation Summary 仅用于语言连续性，不能授权、覆盖当前输入或恢复旧 Pending。
+
 ## 6. 流式展示和边界
 
 创建型 Operation 结果兼容既有唯一 TaskCommandResult，继续由 ExecutionStreamingMiddleware 展示

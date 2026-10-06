@@ -259,6 +259,61 @@ git diff --check
 
 预期仍为 `WRAP`：compression 只改变历史上下文表示，不改变 Authority 规则。
 
+## 13. 执行记录（2026-10-06）
+
+### 实现与文件
+
+- 在 `InteractionStateMiddleware` 的 `on_reply` 中从原始 `inputs` 建立 request-local 当前用户消息上下文；reply 正常结束或异常退出时都清除。
+- 在 `on_model_call` 检查当前消息 ID；被 Compression 丢弃或切分时将本轮原消息恢复到 AgentState 和模型输入中。
+- Tool 候选中的显式 Well / Task / Execution / 版本引用、WholeWell 和层号范围只接受当前轮证据；不再从可能含有 summary 的历史 AgentState 反查用户原话。
+- 新增压缩边界集成回归和单元回归；更新 C01 既有压缩后 Pending 测试，断言模型收到原始本轮 instruction 且暂存上下文不跨轮残留。
+- 新增 Evidence 09；同步 Design 04 / 05、Current Implementation 08 / 10 / 12、Task 012 索引、Evidence README 和 `docs/README.md`。
+
+### C01–C08 与独立指标结论
+
+- C01：通过；Pending 澄清输入保真、单次完成并清除。
+- C02：通过；摘要含旧井时默认报告仍绑定 Active Well。
+- C03：通过；本轮显式 Well 优先并由 Resolver 校验。
+- C04：通过；“上一口井”由本轮措辞触发，目标由 Session 顺序解析。
+- C05：通过；摘要中的 WholeWell 不产生写授权，缺范围时澄清。
+- C06：通过；本轮明确 WholeWell 可通过既有 scope 校验。
+- C07：通过；摘要旧版本不能覆盖已推进的 Authority 当前版本。
+- C08：安全澄清；summary 的层号候选不能代替本轮范围证据，未执行查询。
+- Current-Turn Fidelity：C01–C08 回归均核对当前输入；Summary Leakage：8 个场景未观察到摘要单独成为业务引用或授权。
+- Authority Binding：仍由 Session / Resolver / Repository 解析。Write Safety：独立记录 **0 次** summary 导致的越权写入；Pending Safety：C01 一次性消费通过；Grounding：业务结果仍由 ToolResult / Repository 支撑。
+
+### AgentScope 判断与 Architecture Issue
+
+源码核验显示 AgentScope 2.0.8 的压缩 summary 作为 `UserMsg` 加入模型输入，compression 还可能裁切保留边界消息；没有原生语义字段能直接区分当前轮和历史 summary。局部 Architecture Issue 是 Mock shell 原按最后一个 user-role 识别 instruction，导致 summary 误选。采用最小生命周期包装修复；不关闭 compression，也不把 summary 升级为 Authority。
+
+Conversation Context 判断：`WRAP`。Authority Context、Resolver、Task / Execution 归属与 C.1 写入边界保持 `KEEP`。没有提出额外生产迁移建议；`Proposed Production Impact` 仅列出本 Task 的 middleware 和设计文档同步项，见 Evidence 09。
+
+### 验证
+
+- `tests/integration/test_context_compression_input_boundary.py`：5 passed。
+- `tests/integration/test_interaction_robustness.py`：43 passed。
+- `tests/integration/test_task_react.py`：30 passed。
+- `tests/integration/test_demo_web_http.py`：2 passed。
+- `tests/unit`：745 passed；有 1 条 Starlette `BlockingPortal` deprecation warning。
+- 定向组合回归：37 passed。
+- Ruff：All checks passed；`git diff --check`：通过。
+- 未运行整个 `tests/integration`；Task 要求的四个指定集成文件与 unit suite 均已运行。
+
+### Documentation Impact
+
+- 影响并更新：Design 04 / 05；Current Implementation 08 / 10 / 12；Task 012 总任务索引；`docs/README.md`、`docs/evidence/README.md`；新增 Evidence 09。
+- 检查后无需更新：Design 01–03（需求、建设目标和用户可观察目标未变化）；`docs/11-status-enum-glossary.md`（没有新增稳定状态或错误码）。
+- 当前实现、边界与验收口径已同步；无已知“代码已变更但文档未同步”遗留项。
+
+### 分支与交付
+
+- 分支：`codex/task-12-agentscope-native-capability-poc`。
+- 本次实现基于 Task 012C.2 最新已知基线 `ffc007c`；工作树存在未提交 Task 012C.2 改动。
+- 本 Task 的独立提交与推送按用户后续明确指示执行；最终提交 ID 及远端状态以 Git 历史为准。
+- 新增文件：`tests/integration/test_context_compression_input_boundary.py`、`docs/evidence/09-Task012C2-ContextCompression输入边界.md`。
+- 修改文件：本 Task、Task 012 总任务、Design 04 / 05、Current Implementation 08 / 10 / 12、两个 README、middleware 与相关 integration / unit tests。
+- 未完成项：生产持久化 Session 场景和真实模型 / 真实井数据并未在本 Task 验收；HITL / Tracing 不在本 Task 范围内。
+
 ### Current Turn 正式契约
 
 > **本轮用户原始输入与历史压缩摘要是两个不同来源；任何“本轮明确授权/明确引用”判定都只能基于 Current Turn 或确定性 Authority，不得由 Historical Summary 单独满足。**

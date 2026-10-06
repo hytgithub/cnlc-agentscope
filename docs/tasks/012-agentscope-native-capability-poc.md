@@ -33,8 +33,8 @@
 4. 012B.1：已补齐 M01～M06 第 4、5 次、保留 M07 三次，并更新 Evidence 06、04/05；012B 补齐闭环完成
 5. 012C：AgentScope 原生 Task Tools 多步骤对照（已执行；Evidence 07；`REGISTERED_BUT_UNUSED（已注册但未使用）`）
 6. 012C.1：写范围语义与生产安全边界核对（已完成；按结论 B 做了最小生产安全修复并记录 Evidence 08；参数天然粒度仍待业务确认）
-7. 012C.2：Context Compression 当前输入与历史摘要边界（下一步；修复摘要被误当本轮输入的 Architecture Issue）
-8. 012C.2 评审通过后再决定：HITL/Interrupt、TracingMiddleware
+7. 012C.2：Context Compression 当前输入与历史摘要边界（已完成；Evidence 09；`WRAP`，仅在本轮生命周期内保真当前输入，摘要不成为 Authority）
+8. 012C.2 评审通过后再决定：HITL/Interrupt、TracingMiddleware（尚未实施）
 9. 012E：当前阶段职责边界审计（已形成阶段性结论，不视为最终架构定稿）
 
 ## 硬边界

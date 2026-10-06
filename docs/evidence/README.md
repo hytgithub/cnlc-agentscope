@@ -11,7 +11,8 @@
 - 05：Task 012A.1 Skill 稳定性、重复运行与 Response Grounding 实验结果。
 - 06：Task 012B 原始多轮 Context 与权威锚定结果，以及 Task 012B.1 补齐后的 5 次汇总证据；
 - 07：Task 012C AgentScope 原生 Task Tools 多步骤 A/B 结果，含 60 次运行、离线复核指标及 P04 写安全失败。
-- 08：Task 012C.1 写范围语义与生产安全边界审计，含 scope 来源矩阵、S01–S07 代码级核对和最小修复回归。
+- 08：Task 012C.1 写范围语义与生产安全边界审计，含 scope 来源矩阵、S01–S07 代码级核对和最小修复回归；
+- 09：Task 012C.2 AgentScope Context Compression 当前输入、历史摘要与 Authority 边界核验及回归结果。
 
 ## 使用规则
 
@@ -34,3 +35,5 @@ Task 012A / 012A.1 / 012B 当前 POC 的代码与结果位于：
 后续实验结果应优先回填本目录或对应 Task 证据，再修订 `docs/design/04` 与 `docs/design/05`。
 
 Task 012B.1 已完成 M01–M06 重复补齐，并将 Evidence 06 回写到 `docs/design/04` 与 `docs/design/05`。Task 012C 已完成 Task/Plan 隔离 A/B 并将 Evidence 07 回写到主设计；不把隔离 POC 等同生产验收，也不自动授权生产迁移。
+
+Task 012C.2 通过 Evidence 09 记录压缩调用链和本轮输入保真回归；其 `WRAP` 结论仅覆盖当前交互边界，不改变 Task / Execution / Scope / Version 的权威来源。

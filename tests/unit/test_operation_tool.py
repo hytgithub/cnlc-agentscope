@@ -7,7 +7,13 @@ import pytest
 from pydantic import ValidationError
 
 from cnlc_agent.config.settings import AppSettings, PersistenceSettings
-from cnlc_agent.demo.interaction_middleware import validate_grounded_operation_values
+from cnlc_agent.demo.interaction_middleware import (
+    UngroundedAuthorityReference,
+    UngroundedScopeReference,
+    UngroundedWriteScope,
+    validate_grounded_authority_references,
+    validate_grounded_operation_values,
+)
 from cnlc_agent.demo.operation_models import OperationPlan
 from cnlc_agent.demo.operation_parser import ClarificationSlot, PartialOperationPlan
 from cnlc_agent.demo.operation_tool import OperationToolInput, build_agent_task_tools
@@ -454,6 +460,30 @@ def multi_ordinal_plan(ordinals):
     return {"mode": "PLAN", "plan": request(scope=scope)["plan"]}
 
 
+def report_request(*, task_reference=None, execution_reference=None):
+    """构造只读引用请求，测试模型候选不能越过本轮来源边界。"""
+
+    operation = {
+        "operation_id": "report",
+        "action": "REPORT",
+        "target": "REPORT",
+        "parameters": {},
+    }
+    if task_reference is not None:
+        operation["task_reference"] = task_reference
+    if execution_reference is not None:
+        operation["execution_reference"] = execution_reference
+    return {
+        "mode": "PLAN",
+        "plan": {
+            "input_classification": "READ_REQUEST",
+            "persist_mode": "CREATE_VERSION",
+            "original_instruction": "报告",
+            "operations": [operation],
+        },
+    }
+
+
 @pytest.mark.parametrize(
     "user_text,request_payload,valid",
     [
@@ -506,3 +536,44 @@ def test_current_turn_value_and_ordinal_grounding(user_text, request_payload, va
     else:
         with pytest.raises(ValueError):
             validate_grounded_operation_values(structured, user_text)
+
+
+def test_summary_only_whole_well_does_not_ground_current_write_scope():
+    structured = OperationToolInput.model_validate({"request": request()}).request
+    with pytest.raises(UngroundedWriteScope):
+        validate_grounded_operation_values(structured, "孔隙度改成0.16")
+    validate_grounded_operation_values(structured, "全井孔隙度改成0.16")
+
+
+def test_summary_only_well_or_task_id_cannot_become_explicit_reference():
+    request_data = report_request(task_reference={"kind": "WELL_ID", "value": "WELL-A"})
+    structured = OperationToolInput.model_validate({"request": request_data}).request
+    with pytest.raises(UngroundedAuthorityReference):
+        validate_grounded_authority_references(structured, "给我报告")
+
+    request_data = report_request(task_reference={"kind": "WELL_ID", "value": "WELL-B"})
+    structured = OperationToolInput.model_validate({"request": request_data}).request
+    validate_grounded_authority_references(structured, "看看 WELL-B 的报告")
+
+
+def test_previous_and_explicit_version_candidates_require_current_turn_evidence():
+    request_data = report_request(task_reference={"kind": "PREVIOUS_TASK"})
+    structured = OperationToolInput.model_validate({"request": request_data}).request
+    with pytest.raises(UngroundedAuthorityReference):
+        validate_grounded_authority_references(structured, "给我报告")
+    validate_grounded_authority_references(structured, "看看上一口井的报告")
+
+    request_data = report_request(
+        execution_reference={"kind": "EXECUTION_ID", "execution_id": "execution-old"}
+    )
+    structured = OperationToolInput.model_validate({"request": request_data}).request
+    with pytest.raises(UngroundedAuthorityReference):
+        validate_grounded_authority_references(structured, "看当前报告")
+
+
+def test_summary_layer_ordinal_cannot_select_scope_for_current_turn():
+    structured = OperationToolInput.model_validate(
+        {"request": multi_ordinal_plan([5])}
+    ).request
+    with pytest.raises(UngroundedScopeReference):
+        validate_grounded_operation_values(structured, "刚才那层怎么样")

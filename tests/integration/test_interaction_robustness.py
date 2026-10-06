@@ -11,6 +11,7 @@ from agentscope.tool import Toolkit
 
 from cnlc_agent.config.settings import AppSettings, PersistenceSettings
 from cnlc_agent.demo.demo_agent import LoggingInterpretationDemoAgent, MockTaskShellModel
+from cnlc_agent.demo.interaction_middleware import current_turn_text
 from cnlc_agent.demo.operation_tool import build_agent_task_tools
 from cnlc_agent.demo.task_tools import TaskCommandRunner, build_task_tools
 from cnlc_agent.domain.enums import StepStatus
@@ -18,6 +19,21 @@ from cnlc_agent.domain.errors import ApplicationError, ToolError
 from cnlc_agent.domain.models import MockFixture
 from cnlc_agent.infrastructure.mock import MockModelGateway
 from cnlc_agent.tools.mock import MockResultTool
+
+
+class RecordingMockTaskShellModel(MockTaskShellModel):
+    """测试桩记录模型实际收到的最后一条用户输入，不保存为业务状态。"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.last_user_instruction = None
+
+    async def _call_api(self, model_name, messages, **kwargs):
+        user_messages = [message for message in messages if message.role == "user"]
+        self.last_user_instruction = (
+            user_messages[-1].get_text_content() if user_messages else None
+        )
+        return await super()._call_api(model_name, messages, **kwargs)
 
 
 def make_agent(data_dir, provider="fixture", mode="demo"):
@@ -36,7 +52,7 @@ def make_agent(data_dir, provider="fixture", mode="demo"):
     agent = LoggingInterpretationDemoAgent(
         name="demo",
         system_prompt="",
-        model=MockTaskShellModel(),
+        model=RecordingMockTaskShellModel(),
         toolkit=Toolkit(tools=build_agent_task_tools(runner)),
         stream_step_delay_seconds=0,
         stream_report_chunk_delay_seconds=0,
@@ -92,6 +108,8 @@ async def test_clarification_completes_once_after_compression(data_dir):
         )
         results, _, events = await ask(agent, "孔隙度")
         modified = results[0].metadata["result"]
+        assert agent.model.last_user_instruction == "孔隙度"
+        assert current_turn_text() == ""
         assert modified["command"] == "MODIFY" and modified["effective_override"]["por"] == 0.16
         assert modified["task_id"] == first.task_id
         assert runner.pending_operation_clarification() is None

@@ -107,6 +107,8 @@ SSE 断开仍不取消后台 Worker。
 | WARNING | MODIFY | EXECUTE | modify_well_interpretation | 是 | 允许后续写操作，保留应用校验 |
 
 参数修改范围先由确定性 Resolver 解析：本轮明确范围优先；省略时只可继承与 Active Task / Execution 匹配的 scope。View 仅供读取，不会自动转成写入范围；缺少可继承范围时零执行并等待用户澄清。对话层还会核对模型提交的 WHOLE_WELL（整井范围）是否得到本轮用户措辞支持。
+
+Context Compression 不改变上述交互状态：AgentScope 2.0.8 在 reply 内收到 `inputs` 后可能于首次推理前压缩上下文，生成的 summary 以 user role 加入模型请求。本项目 Middleware 在本轮 reply 内隔离并恢复原始用户消息，grounding 校验只读该原始输入；`finally` 路径清除请求级 Current Turn。摘要可帮助解释“刚才”等语言指代，但不能满足本轮明确 WELL / Task / Version / Scope 校验，也不恢复 Redis 丢失的 Pending 或 Authority。
 | MULTI_WELL | CURRENT | QUERY / EXECUTE | 对应业务 Tool | 写动作才可能 | active task，不使用最近 ToolResult |
 | MULTI_WELL | PREVIOUS_TASK | QUERY / EXECUTE | 对应业务 Tool | 写动作才可能 | 上一口井；成功后成为 active |
 | MULTI_WELL | WELL_ID | QUERY / EXECUTE | 对应业务 Tool | 写动作才可能 | Session 中该井最近 Task |
@@ -120,7 +122,7 @@ SSE 断开仍不取消后台 Worker。
 | 多操作冲突 | MODIFY + FULL_RERUN / 不支持的比较 | CLARIFY | 纯交互 Tool / 整批保护 | 否 | 明确支持与不支持部分，本次未执行 |
 | DOMAIN_QUERY | 层段原因 / 证据 / 概念问答 | REJECT | 纯交互 Tool | 否 | 可提供报告，受控专业问答和证据查询尚未开放 |
 | OUT_OF_DOMAIN | 天气 / Java / 笑话 | REJECT | 无 | 否 | 单井常规测井解释领域边界 |
-| CONTEXT_COMPRESSION | CURRENT / PREVIOUS_TASK / pending completion | 按事实裁决 | 同上 | 按动作 | active 与完整 pending 在 Session State；不从摘要补造 |
+| CONTEXT_COMPRESSION | CURRENT / PREVIOUS_TASK / pending completion | 按事实裁决 | 同上 | 按动作 | 原始 Current Turn 与历史摘要分离；摘要不提供 Task / Execution / Scope 授权；Active 与完整 Pending 按 Session State / owner / TTL 校验 |
 | BACKEND_RESTART | CURRENT / PREVIOUS_TASK / WELL_ID | 按事实裁决 | 同上 | 按动作 | PG Binding 恢复，pending 安全丢弃 |
 | BROWSER_REFRESH | 查询 / 历史报告 | QUERY | 同上 / Read API | 否 | 既有 Session State + PG 恢复，无 SSE replay |
 

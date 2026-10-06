@@ -3,6 +3,8 @@
 import json
 import re
 from collections.abc import AsyncGenerator, Callable
+from contextvars import ContextVar
+from copy import deepcopy
 from typing import Any
 from uuid import uuid4
 
@@ -15,7 +17,7 @@ from agentscope.event import (
     TextBlockStartEvent,
     ToolResultEndEvent,
 )
-from agentscope.message import ToolCallBlock, ToolResultState
+from agentscope.message import Msg, ToolCallBlock, ToolResultState
 from agentscope.middleware import MiddlewareBase
 from agentscope.tool import ToolResponse
 from pydantic import ValidationError
@@ -32,10 +34,47 @@ _NUMBER_PATTERN = re.compile(
     r"(?<![\d.])([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(%)?"
 )
 _WHOLE_WELL_WORDING = re.compile(r"全井|整井|整口井|全口井|整个井")
+_PREVIOUS_TASK_WORDING = re.compile(r"上一口井|前一口井|之前那口井")
+_PREVIOUS_VERSION_WORDING = re.compile(r"上一版|前一版|上一版本|前一版本")
+_LATEST_SUCCESSFUL_WORDING = re.compile(r"最近成功|最新成功|最近一次成功")
+_CURRENT_TURN_MESSAGES: ContextVar[tuple[Msg, ...] | None] = ContextVar(
+    "cnlc_current_turn_messages",
+    default=None,
+)
 
 
 class UngroundedWriteScope(ValueError):
     """模型候选整井范围没有本轮用户措辞支持，不能进入执行桥。"""
+
+
+class UngroundedAuthorityReference(ValueError):
+    """摘要单独支持的显式 Task / Execution ID 不得进入 Resolver。"""
+
+
+class UngroundedScopeReference(ValueError):
+    """摘要单独支持的层号或深度不能充当本轮范围授权。"""
+
+
+def current_turn_messages(inputs: Any) -> tuple[Msg, ...] | None:
+    """仅从本次 AgentScope reply 的原始 inputs 取得用户消息。"""
+
+    if inputs is None:
+        return None
+    messages = inputs if isinstance(inputs, list) else [inputs]
+    return tuple(
+        deepcopy(message)
+        for message in messages
+        if isinstance(message, Msg) and message.role == "user"
+    )
+
+
+def current_turn_text() -> str:
+    """返回当前 reply 的原始用户文字；历史摘要不参与本轮证据判断。"""
+
+    messages = _CURRENT_TURN_MESSAGES.get()
+    if messages is None:
+        return ""
+    return "\n".join(message.get_text_content() or "" for message in messages)
 
 
 def extract_grounded_numbers(user_text: str) -> set[float]:
@@ -92,10 +131,61 @@ def validate_grounded_operation_values(request: Any, user_text: str) -> None:
         _WHOLE_WELL_WORDING.search(user_text)
     ):
         raise UngroundedWriteScope("whole-well scope is not stated in the current user turn")
-    if any(value not in numbers for value in values) or any(
-        float(ordinal) not in numbers for ordinal in ordinals
-    ):
+    if any(float(ordinal) not in numbers for ordinal in ordinals):
+        raise UngroundedScopeReference("scope ordinal is not stated in this turn")
+    if any(value not in numbers for value in values):
         raise ValueError("operation numbers are not grounded in this turn")
+
+
+def validate_grounded_authority_references(request: Any, user_text: str) -> None:
+    """只允许本轮明确表达的显式 ID / 序号进入业务引用解析。"""
+
+    from cnlc_agent.demo.operation_interaction import PlanRequest, SetActiveContextRequest
+
+    task_references = []
+    execution_references = []
+    if isinstance(request, PlanRequest):
+        task_references.append(request.plan.shared_context.task_reference)
+        execution_references.append(request.plan.shared_context.execution_reference)
+        for operation in request.plan.operations:
+            task_references.append(operation.task_reference)
+            execution_references.append(operation.execution_reference)
+    elif isinstance(request, SetActiveContextRequest):
+        task_references.append(request.task_reference)
+        execution_references.append(request.execution_reference)
+
+    previous_task_requested = any(
+        reference is not None and reference.kind == "PREVIOUS_TASK"
+        for reference in task_references
+    )
+    for reference in task_references:
+        if (
+            reference is not None
+            and reference.kind == "PREVIOUS_TASK"
+            and not _PREVIOUS_TASK_WORDING.search(user_text)
+        ):
+            raise UngroundedAuthorityReference("previous task is not requested in this turn")
+        if (
+            reference is not None
+            and reference.kind in {"WELL_ID", "TASK_ID"}
+            and reference.value not in user_text
+        ):
+            raise UngroundedAuthorityReference("task reference is not stated in this turn")
+    for reference in execution_references:
+        if reference is None:
+            continue
+        if reference.execution_id is not None and reference.execution_id not in user_text:
+            raise UngroundedAuthorityReference("execution id is not stated in this turn")
+        if reference.sequence is not None and str(reference.sequence) not in user_text:
+            raise UngroundedAuthorityReference("execution sequence is not stated in this turn")
+        if reference.kind == "PREVIOUS" and not _PREVIOUS_VERSION_WORDING.search(user_text):
+            raise UngroundedAuthorityReference("previous version is not requested in this turn")
+        if (
+            reference.kind == "LATEST_SUCCESSFUL"
+            and not previous_task_requested
+            and not _LATEST_SUCCESSFUL_WORDING.search(user_text)
+        ):
+            raise UngroundedAuthorityReference("latest successful version is not requested")
 
 
 def raw_operation_mode(raw: str) -> str | None:
@@ -125,11 +215,16 @@ class InteractionStateMiddleware(MiddlewareBase):
     ) -> AsyncGenerator[Any, None]:
         """无关回复、断流和失败同样结束澄清有效窗口。"""
 
-        self.runner.attach_session_runtime_context(agent.state.middle_context)
-        self.runner.begin_interaction_turn()
-        source = next_handler(**input_kwargs)
+        current_turn_token = _CURRENT_TURN_MESSAGES.set(
+            current_turn_messages(input_kwargs.get("inputs"))
+        )
         intercepted = None
+        turn_started = False
         try:
+            self.runner.attach_session_runtime_context(agent.state.middle_context)
+            self.runner.begin_interaction_turn()
+            turn_started = True
+            source = next_handler(**input_kwargs)
             try:
                 async for event in source:
                     yield event
@@ -170,7 +265,50 @@ class InteractionStateMiddleware(MiddlewareBase):
                 if agent.state.context and agent.state.context[-1].id == reply_id:
                     yield agent.state.context[-1]
         finally:
-            self.runner.end_interaction_turn()
+            try:
+                if turn_started:
+                    self.runner.end_interaction_turn()
+            finally:
+                _CURRENT_TURN_MESSAGES.reset(current_turn_token)
+
+    async def on_model_call(
+        self,
+        agent: Agent,
+        input_kwargs: dict[str, Any],
+        next_handler: Callable[..., Any],
+    ) -> Any:
+        """若压缩丢弃或切分本轮输入，在请求内将原消息恢复到上下文尾部。"""
+
+        current = _CURRENT_TURN_MESSAGES.get()
+        if not current:
+            return await next_handler(**input_kwargs)
+        messages = list(input_kwargs["messages"])
+        for source in current:
+            context_index = next(
+                (
+                    index
+                    for index, message in enumerate(agent.state.context)
+                    if message.id == source.id
+                ),
+                None,
+            )
+            current_copy = deepcopy(source)
+            if context_index is None:
+                agent.state.context.append(current_copy)
+            else:
+                agent.state.context[context_index] = current_copy
+
+            model_index = next(
+                (index for index, message in enumerate(messages) if message.id == source.id),
+                None,
+            )
+            model_copy = deepcopy(source)
+            if model_index is None:
+                messages.append(model_copy)
+            else:
+                messages[model_index] = model_copy
+
+        return await next_handler(**{**input_kwargs, "messages": messages})
 
     async def on_acting(
         self,
@@ -197,14 +335,8 @@ class InteractionStateMiddleware(MiddlewareBase):
                 if call.name == OPERATION_TOOL_NAME:
                     invalid_operation_mode = raw_operation_mode(call.input)
                     request = OperationToolInput.model_validate_json(call.input).request
-                    user_text = next(
-                        (
-                            msg.get_text_content() or ""
-                            for msg in reversed(agent.state.context)
-                            if msg.role == "user"
-                        ),
-                        "",
-                    )
+                    user_text = current_turn_text()
+                    validate_grounded_authority_references(request, user_text)
                     validate_grounded_operation_values(request, user_text)
         except UngroundedWriteScope:
             if pending_before_validation is not None and invalid_operation_mode not in {
@@ -218,6 +350,46 @@ class InteractionStateMiddleware(MiddlewareBase):
             chunk = interaction_chunk(
                 "CLARIFICATION_REQUIRED",
                 "请明确本次修改范围（如全井或具体层段）；系统不会根据模型候选范围扩大写入。",
+            )
+            yield ToolResponse(
+                id=input_kwargs["tool_call"].id,
+                content=chunk.content,
+                state=ToolResultState.ERROR,
+                metadata=chunk.metadata,
+            )
+            return
+        except UngroundedAuthorityReference:
+            if pending_before_validation is not None and invalid_operation_mode not in {
+                "PLAN",
+                "CANCEL",
+                "SET_ACTIVE_CONTEXT",
+            }:
+                self.runner.retain_operation_clarification()
+            else:
+                self.runner.clear_operation_clarification()
+            chunk = interaction_chunk(
+                "CLARIFICATION_REQUIRED",
+                "请在本轮明确任务或版本引用；历史摘要不能单独指定操作对象。",
+            )
+            yield ToolResponse(
+                id=input_kwargs["tool_call"].id,
+                content=chunk.content,
+                state=ToolResultState.ERROR,
+                metadata=chunk.metadata,
+            )
+            return
+        except UngroundedScopeReference:
+            if pending_before_validation is not None and invalid_operation_mode not in {
+                "PLAN",
+                "CANCEL",
+                "SET_ACTIVE_CONTEXT",
+            }:
+                self.runner.retain_operation_clarification()
+            else:
+                self.runner.clear_operation_clarification()
+            chunk = interaction_chunk(
+                "CLARIFICATION_REQUIRED",
+                "请在本轮明确层号或深度范围；历史摘要不能单独恢复操作范围。",
             )
             yield ToolResponse(
                 id=input_kwargs["tool_call"].id,

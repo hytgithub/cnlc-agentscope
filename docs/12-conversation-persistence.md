@@ -147,6 +147,15 @@ E2 正式路径通过统一 Operation Tool 将只读操作更新到 View、写�
 完整聊天历史通过 Message 分页恢复给 UI。模型运行上下文仍使用 AgentScope `AgentState.context` 和既有
 context compression；Conversation repository 不把 100/500/1000 条历史一次性塞回模型上下文。
 
+AgentScope 2.0.8 的 `reply_stream(inputs=...)` 原始本轮输入在 `on_reply.input_kwargs` 可见；同一 reply
+在首次 reasoning 前可能触发压缩，summary 会作为 `UserMsg` 放在历史 context 之前，且可能覆盖／切分
+最近消息。项目的 reply Middleware 在当前请求内暂存原始 UserMsg；模型调用前若原消息已被压缩移除或切分，
+将其恢复到普通 AgentState 对话历史和当前模型输入。请求级值使用 ContextVar，并在 reply 的 `finally`
+路径清除，不单独持久化，也不作为 Task / Execution / Scope 的 Authority。Summary 的 `user` role 不代表
+它是本轮原话；本轮明确引用和写 scope 校验只使用本轮输入，Authority 仍来自 SessionTaskBinding、
+Active/ViewContext、Resolver 与 Repository。Pending 只从受 owner、TTL、one-shot 约束的 Session State
+恢复，不从 Conversation 摘要恢复。详见 [Evidence 09](evidence/09-Task012C2-ContextCompression输入边界.md)。
+
 ## 9. 安全与 ownership
 
 Session 读写始终校验 `(user_id, agent_id, session_id)`；Message API 从唯一的 `(user_id, session_id)`
