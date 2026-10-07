@@ -229,7 +229,7 @@ Architecture Issue：**No Architecture Issue found.** 没有生产架构迁移�
 
 Documentation Impact：影响并更新主设计 04 / 05、Task 012 / 012D、docs README、evidence README、POC README；新增 Evidence 10 及可复核产物。主设计 01～03 经检查无需修改，因需求、目标和用户效果不变。Current Implementation 08 / 09 / 10、状态词典 11 经检查无需修改，因生产交互、SSE/UI、状态机及稳定代码值不变。没有代码已经改变但相关文档未同步的遗留。
 
-Git：在 `codex/task-12-agentscope-native-capability-poc` 提交本 Task，push 到同名 origin 分支；具体 commit 以本完成记录所在提交为准。
+Git：实现提交 `3123d60570dab5b20858fbf1d083a98d916b276e`（`feat(experiments): validate native HITL and interrupt boundaries`），已 push 到 `codex/task-12-agentscope-native-capability-poc`。
 
 ### 独立审查与取舍
 
