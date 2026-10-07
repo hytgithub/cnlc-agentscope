@@ -35,8 +35,9 @@
 6. 012C.1：写范围语义与生产安全边界核对（已完成；按结论 B 做了最小生产安全修复并记录 Evidence 08；参数天然粒度仍待业务确认）
 7. 012C.2：Context Compression 当前输入与历史摘要边界（已完成；Evidence 09；`WRAP`，仅在本轮生命周期内保真当前输入，摘要不成为 Authority）
 8. 012D：AgentScope HITL / Interrupt 阶段确认 A/B POC（已完成；Evidence 10；业务确认 KEEP，当前生产接入 NO_CLEAR_VALUE，局部 WRAP 候选）
-9. 012D 评审通过后再决定：TracingMiddleware
-10. 012E：当前阶段职责边界审计（已形成阶段性结论，不视为最终架构定稿）
+9. 012F：TracingMiddleware 与业务审计 Trace 边界验证（下一步）
+10. 012F 评审后收口 Task 012，并准备技术方案 04 v1.0
+11. 012E：当前阶段职责边界审计（已形成阶段性结论，不视为最终架构定稿）
 
 ## 硬边界
 
