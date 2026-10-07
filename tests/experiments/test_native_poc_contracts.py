@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -391,7 +392,11 @@ def test_poc_source_does_not_import_production_execution_or_persistence():
         "redis",
         "httpx",
     }
-    for path in [*POC_ROOT.glob("*.py"), *(PROJECT_ROOT / "tests/experiments").glob("*.py")]:
+    # 012D 明确要求复用当前业务确认入口；012A～012C 的独立 Mock 保持原隔离契约。
+    paths = [*POC_ROOT.glob("*.py"), *(PROJECT_ROOT / "tests/experiments").glob("*.py")]
+    for path in paths:
+        if path.name in {"hitl_runner.py", "test_hitl_interrupt_poc.py"}:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         imported = set()
         for node in ast.walk(tree):
@@ -403,7 +408,24 @@ def test_poc_source_does_not_import_production_execution_or_persistence():
 
 
 def test_poc_import_does_not_load_production_task_runner():
-    assert "cnlc_agent.demo.task_tools" not in sys.modules
+    # 其他 integration/012D 会合法导入 Runner；用新进程测旧 POC 本身的导入副作用。
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import experiments.agentscope_native_poc.agent; "
+                "import experiments.agentscope_native_poc.multiturn_runner; "
+                "import experiments.agentscope_native_poc.plan_runner; "
+                "import sys; assert 'cnlc_agent.demo.task_tools' not in sys.modules"
+            ),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(

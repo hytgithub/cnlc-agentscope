@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-07",
+  "agentscope_version": "2.0.8",
+  "model": "offline scripted ChatModelBase; no network LLM",
+  "business_fixture": "MockFixture + TaskCommandRunner + InMemoryTaskRepository + StageOrchestrator",
+  "cases": 28,
+  "pytest": {
+    "name": "pytest",
+    "errors": "0",
+    "failures": "0",
+    "skipped": "0",
+    "tests": "28",
+    "time": "1.088",
+    "timestamp": "2026-10-07T11:19:23.782843+08:00",
+    "hostname": "hytdeMacBook-Pro.local"
+  },
+  "emitted_native_events": {
+    "REQUIRE_USER_CONFIRM": 19,
+    "REQUIRE_EXTERNAL_EXECUTION": 1
+  },
+  "source_sha256": {
+    "event/_event.py": "191178f9386d814f714ddf11a6fcbad6cc1d81c59d4e4e32d44d543069e7fd70",
+    "agent/_agent.py": "d758463070c77086eaf2b2c8349a7fbd82a88632b9b59da58ff8345edb60d10f",
+    "state/_state.py": "9a0a9085e21badfab3bd072fbc1ca831dbbd5f6eeb060a9b3f876891662fe453",
+    "app/_router/_chat.py": "615cdef8034b32b854e86382761fb4245b1dd3a4c12f64f9bd6c7240fc851b84",
+    "app/_service/_chat.py": "8555276d6b45304a51406d8967b5e61a05931a50ad6a48f20ab12b92d49944e1"
+  },
+  "decision": {
+    "business_confirmation": "KEEP",
+    "stage_hitl_integration": "NO_CLEAR_VALUE",
+    "native_interaction": "WRAP candidate / VERIFY production"
+  },
+  "limits": [
+    "No production or UI changes",
+    "No PostgreSQL/Redis process recovery test",
+    "No real external API cancellation test",
+    "No natural-language LLM quality claim",
+    "A uses fixed-target POC precheck before existing CONFIRM_STAGE"
+  ]
+}

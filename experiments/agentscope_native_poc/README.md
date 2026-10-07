@@ -95,3 +95,17 @@ python -m experiments.agentscope_native_poc.plan_runner \
 ```
 
 复核结果单独写入 `task012c_<experiment_id>_rescored_{plain,plan}.jsonl`，并保留初始评分供审计。固定输入在 `plan_cases.json`，合同测试在 `tests/experiments/test_task_plan_poc.py`；实验边界与结论见 `docs/evidence/07-Task012C-TaskPlan多步骤对照实验结果.md`。
+
+## Task 012D：HITL / Interrupt 隔离 A/B
+
+`hitl_runner.py` 使用 AgentScope 2.0.8 原生 Agent / Permission / Event，包装现有 Mock TaskCommandRunner / Operation / StageOrchestrator。012D 明确要求复用现有业务确认能力，故这一模块允许导入生产应用入口；012A～012C 的独立 Mock 隔离约束继续保留。没有新业务状态机、真实专业规则或生产 UI 迁移。
+
+```bash
+.venv/bin/pytest tests/experiments/test_hitl_interrupt_poc.py -q
+```
+
+28 个测试覆盖 H01～H09；离线脚本模型只替代公网模型响应，权限暂停、Tool、业务状态与确认运行实际实现。若要记录原生事件，给 `CNLC_HITL_EVIDENCE` 指定新 JSONL 路径；测试结束后追加各 case 的实际发出事件，需结合 pytest/JUnit 结果判定成功，单有 JSONL 不表示测试通过。
+
+结果见 `artifacts/native_poc/task012d_hitl_{events.jsonl,tests.xml,summary.json}` 与 [Evidence 10](../../docs/evidence/10-Task012D-HITL-Interrupt对照实验结果.md)。本轮判定业务确认 `KEEP（保留）`，生产阶段接入 `NO_CLEAR_VALUE（没有明确收益）`，局部交互 `WRAP（包装）` 候选；序列化恢复不能泛化为实际浏览器/HTTP/持久服务验收。
+
+Tool Contract：`confirm_checkpoint` 仅确认固定 Fixture 目标；输入为 task_id/execution_id/stage/stage_run_id，输出为 fixture=true、同一目标与 execution_status；非法事件抛 ValueError，业务旧目标/无权限使用现有 InfrastructureError（基础设施/业务归属错误）；调用复用 Runner 的 timeout/lease 配置，不增加重试；原生状态为 asking/allowed/denied/interrupted（等待确认/允许执行/被拒绝/已中断），业务状态仍使用现有 StageRun；Mock 实现复用现有专业工具，测试见上述文件。`external_checkpoint` 仅产生原生外部等待事件，H08 用独立 Mock 作业验证中断和迟到结果隔离，不访问真实 API 或提供取消能力。

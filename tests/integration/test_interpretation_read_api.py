@@ -99,9 +99,11 @@ async def test_read_api_restores_durable_binding_before_any_new_chat(
     monkeypatch.setenv("CNLC_PERSISTENCE", "postgres-redis")
     monkeypatch.setenv("CNLC_COMPANY_TOKEN", "test-token")
     redis = FakeRedis(decode_responses=True)
+    # 本测试仅验证业务 Session/Task Binding 恢复；会话消息存储走独立测试。
+    # postgres-redis 已改用 _conversation_storage，旧 _redis_storage 替身不会生效。
     monkeypatch.setattr(
-        "cnlc_agent.demo.agentscope_app._redis_storage",
-        lambda _: RedisStorage(connection_pool=redis.connection_pool),
+        "cnlc_agent.demo.agentscope_app._conversation_storage",
+        lambda _connections, _persistence: RedisStorage(connection_pool=redis.connection_pool),
     )
     settings = AppSettings(
         mode="demo", model_provider="mock", mock_data_dir=data_dir, _env_file=None

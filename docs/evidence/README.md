@@ -37,3 +37,5 @@ Task 012A / 012A.1 / 012B 当前 POC 的代码与结果位于：
 Task 012B.1 已完成 M01–M06 重复补齐，并将 Evidence 06 回写到 `docs/design/04` 与 `docs/design/05`。Task 012C 已完成 Task/Plan 隔离 A/B 并将 Evidence 07 回写到主设计；不把隔离 POC 等同生产验收，也不自动授权生产迁移。
 
 Task 012C.2 通过 Evidence 09 记录压缩调用链和本轮输入保真回归；其 `WRAP` 结论仅覆盖当前交互边界，不改变 Task / Execution / Scope / Version 的权威来源。
+
+Task 012D 已完成 HITL / Interrupt 隔离 A/B，见 [Evidence 10](10-Task012D-HITL-Interrupt对照实验结果.md)：28 个参数化测试，19 次原生确认、1 次外部等待。业务确认 `KEEP（保留）`，当前阶段生产接入 `NO_CLEAR_VALUE（没有明确收益）`，局部 `WRAP（包装）` 候选保持 `VERIFY（生产待验证）`；没有生产迁移或真实 UI/持久服务恢复验收。

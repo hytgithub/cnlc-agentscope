@@ -206,3 +206,47 @@ git diff --check
 ## 14. 完成后停止
 
 完成 012D 后停止。不要自动开始 TracingMiddleware、04 v1.0 定稿、真实业务 B01～B08，也不要删除现有 CONFIRM_STAGE。先人工评审 HITL 证据。
+## 15. 完成记录（2026-10-07）
+
+本次实现：新增隔离 `hitl_runner.py`，用真实 AgentScope 2.0.8 原生权限/事件包装现有 Mock Runner / Operation / StageOrchestrator；不修改生产代码。A/B 共用固定目标 Fixture，A 走 CONFIRM_STAGE，B 锁定 reply/call/目标后重查业务事实、复用已有确认事务。A 的 POC 预检不能代表生产入口 event 幂等。
+
+新增文件：实验模块、`tests/experiments/test_hitl_interrupt_poc.py`、Evidence 10、事件 JSONL / JUnit XML / summary JSON。修改文件：旧 POC 导入隔离测试、Read API 测试替身、POC README、主设计 04/05、Task 012/012D、docs/evidence 导航。旧隔离检查已在新进程运行；Read API 替身修正为实际 `_conversation_storage` 入口，保留生产配置校验。
+
+核心设计与测试结果：
+
+- H01～H09 共 28 个参数化测试通过；两个测试确认点均唯一推进；拒绝、并发重复、旧 Active/Execution/Stage/ownership 与事件篡改均安全拦截。
+- 记录运行实际产生 19 次 RequireUserConfirmEvent、1 次 RequireExternalExecutionEvent；来源路径、真实字段、原生重复/未知 ID 行为见 [Evidence 10](../evidence/10-Task012D-HITL-Interrupt对照实验结果.md)。
+- 原生 AgentState 可 JSON 恢复到新 Agent，再次 reply_stream 可继续原确认；缺 AgentState 时从 StageRun 重建事件。原生 reply_id 未检查，可改名/改参/添加允许规则，Adapter 限制这些能力。
+- UserInterrupt 只停止 Agent 后续调用，独立外部作业仍能完成；迟到结果未推进业务。已有报告读取不需要 HITL，未来生成确认保持 BUSINESS_CONFIRMATION_REQUIRED（需要业务确认）。
+- UI / SSE 仅核验现有源码支持；本次未接入生产页面，未宣称真实浏览器刷新或真实 PostgreSQL/Redis 多进程恢复通过。
+- 最终判定：业务确认 `KEEP（保留）`；当前阶段生产接入 `NO_CLEAR_VALUE（没有明确收益）`；原生局部交互有 `WRAP（包装）` 候选价值，生产仍 `VERIFY（待验证）`。新适配模块 224 行，无生产代码减少。
+
+验证：experiments **80 passed**；unit **745 passed**；task_react **30 passed**；interaction_robustness **43 passed**；完整 `pytest -q` **1009 passed / 22 skipped / 1 warning**（外部服务、真实模型、GDSX 的 opt-in 环境缺失；warning 为上游 Starlette/anyio 弃用提示）。Ruff 对全部修改 Python 文件通过，import 与 `git diff --check` 通过。
+
+未完成内容／下一阶段依赖：真实 UI/HTTP、持久服务跨进程恢复和分布式并发、真实外部取消能力、Q05/REPORT 产品确认语义均保持待独立验证。它们不属于本轮生产交付承诺；完成后停止，等待人工评审，不自动执行 Tracing 或 B01～B08。
+
+Architecture Issue：**No Architecture Issue found.** 没有生产架构迁移；框架边界差异已记录于 Evidence 10。
+
+Documentation Impact：影响并更新主设计 04 / 05、Task 012 / 012D、docs README、evidence README、POC README；新增 Evidence 10 及可复核产物。主设计 01～03 经检查无需修改，因需求、目标和用户效果不变。Current Implementation 08 / 09 / 10、状态词典 11 经检查无需修改，因生产交互、SSE/UI、状态机及稳定代码值不变。没有代码已经改变但相关文档未同步的遗留。
+
+Git：在 `codex/task-12-agentscope-native-capability-poc` 提交本 Task，push 到同名 origin 分支；具体 commit 以本完成记录所在提交为准。
+
+### 独立审查与取舍
+
+独立只读审查核对源码、事件产物和文档：无 Critical（严重问题）/ Important（重要问题）；发现的 Minor（轻微问题）行数差异已在审查返回前同步为 224 行，无延期项。审查未独立重跑全套测试；上述测试结果来自本 Task 的实际命令输出。
+
+审查中明确保留的边界（均不作为本轮生产能力通过）：
+
+| 取舍 | 理由 | 错判代价／后续验证 |
+| --- | --- | --- |
+| A 的固定目标预检仅作为 POC 夹具 | 当前 CONFIRM_STAGE 仍按任务引用解析 | 若泛化会高估生产 event 幂等；迁移前需旧按钮/竞态专项回归 |
+| 单 Adapter 并发不能泛化为分布式并发 | 本轮测试固定同实例；Repository 原事务保留 | 若误用会遗漏检查后的 Active/ownership 竞态；生产接入前验证多请求/多进程 |
+| JSON 恢复不能泛化为浏览器和真实存储恢复 | 测试仅新 Agent/新 reply 调用，HTTP/UI 仅核验源码 | 若误用会漏持久失败与刷新丢状态；后续做真实端到端恢复 |
+| 独立 Mock 作业不能证明真实取消或业务回调隔离 | 没有真实 API 接入 | 若误用会误报已取消或放过迟到入库；真实 API 专项验证 |
+| UserInterrupt 仅覆盖 parked reply | 运行中取消 task 是另一条框架路径 | 若误用会漏正在生成/执行的取消边界；专项取消测试 |
+| 离线模型不证明自然语言/重试质量 | 模型输出被脚本化 | 若误用会高估切井/拒绝/查询理解；后续真实模型实验 |
+| 限定唯一 checkpoint，不承诺通用多工具 HITL | Adapter 对非唯一结果拒绝 | 若误用会拒绝合法多工具确认；扩范围需独立合同 |
+| Q05/REPORT/拒绝终态/专业准确性仍未定 | 不补造业务规则或把 Mock 当专业证据 | 若误用会定稿未经批准规则；依赖业务/真实计算验收 |
+| 未减少生产代码，不宣称 UI 简化 | 没有生产接入 | 若误用会批准无收益迁移；当前 NO_CLEAR_VALUE，先评审证据 |
+
+回归测试夹具取舍：Read API 的旧 `_redis_storage` 替身改挂实际 `_conversation_storage`，只验证业务 Binding 恢复；误用的代价是遗漏真实会话持久化问题，专用 opt-in 测试与本轮跳过限制均已明确保留。
